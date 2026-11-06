@@ -1257,7 +1257,10 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         match self.create(el) {
-            Ok(st) => self.state = Some(st),
+            Ok(st) => {
+                crate::WINDOW_UP.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.state = Some(st);
+            }
             Err(e) => {
                 self.error = Some(e);
                 el.exit();

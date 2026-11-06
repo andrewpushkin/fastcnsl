@@ -29,6 +29,28 @@ pub const VERSION: &str = match option_env!("RAGAMUFFIN_VERSION") {
 /// The project's home page.
 pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
+/// Set once the window exists; read by the startup watchdog.
+pub static WINDOW_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How long to wait for a window before explaining the hang.
+const STARTUP_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The message printed when no window appeared in time.
+fn startup_hang_message() -> String {
+    let display = std::env::var("WAYLAND_DISPLAY")
+        .map(|w| format!("Wayland display {w}"))
+        .or_else(|_| std::env::var("DISPLAY").map(|d| format!("X display {d}")))
+        .unwrap_or_else(|_| "display server".to_owned());
+    let mut msg = format!(
+        "ragamuffin: still waiting for the {display} after {}s; it is not responding.",
+        STARTUP_WATCHDOG.as_secs()
+    );
+    if theme::is_wsl() {
+        msg.push_str(" WSLg seems stuck: run `wsl --shutdown` in Windows, then start WSL again.");
+    }
+    msg
+}
+
 /// Number of terminal columns a character occupies (1 or 2).
 pub fn grid_width(c: char) -> usize {
     unicode_width::UnicodeWidthChar::width(c).unwrap_or(1).max(1)
@@ -51,6 +73,15 @@ fn x11_keyboard_library_installed() -> bool {
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     highlight::preload();
+
+    // A hung display server blocks window creation forever without any
+    // error; say so instead of sitting there silently.
+    std::thread::spawn(|| {
+        std::thread::sleep(STARTUP_WATCHDOG);
+        if !WINDOW_UP.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("{}", startup_hang_message());
+        }
+    });
 
     let cfg = config::Config::load_or_create();
     let mut builder = EventLoop::<session::UserEvent>::with_user_event();
@@ -88,5 +119,15 @@ fn main() {
     if let Some(e) = app.error {
         eprintln!("ragamuffin: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hang_message_names_the_display_and_the_timeout() {
+        let m = super::startup_hang_message();
+        assert!(m.contains("not responding"));
+        assert!(m.contains("10s"));
     }
 }
