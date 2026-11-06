@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fontconfig fonts-dejavu-core fonts-jetbrains-mono \
         # Windows cross-compilation (x86_64-pc-windows-gnu)
         mingw-w64 \
+        # headless smoke tests: virtual X display, input, screenshots
+        xvfb xdotool imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup component add clippy rustfmt \

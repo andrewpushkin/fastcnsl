@@ -13,6 +13,7 @@
 #   make check-all  type-check Linux, Windows and macOS targets
 #   make windows    cross-compile dist/ragamuffin.exe
 #   make run        build, then start dist/ragamuffin on this machine
+#   make screenshot run it on a virtual display, save dist/screenshot.png
 #   make shell      interactive shell inside the container
 #   make clean      remove build output
 #   make distclean  also remove the image and the cargo cache volume
@@ -30,7 +31,7 @@ DOCKER_RUN := docker run --rm $(TTY) \
 	-w /work \
 	$(IMAGE)
 
-.PHONY: all build debug test clippy fmt check-all windows run shell image clean distclean
+.PHONY: all build debug test clippy fmt check-all windows run screenshot shell image clean distclean
 
 all: build
 
@@ -72,6 +73,9 @@ windows: $(STAMP)
 # newer Linux host, including WSLg.
 run: build
 	./dist/ragamuffin
+
+screenshot: build
+	$(DOCKER_RUN) scripts/screenshot.sh dist/screenshot.png
 
 shell: $(STAMP)
 	$(DOCKER_RUN) bash
