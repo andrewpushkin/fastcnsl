@@ -3,6 +3,7 @@
 mod config;
 mod detect;
 mod highlight;
+mod input;
 mod render;
 mod search;
 mod session;
