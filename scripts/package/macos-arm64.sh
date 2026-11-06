@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# Builds Ragamuffin.app for Apple Silicon and zips it. Runs in
-# docker/macos-arm64.Dockerfile, or natively on a Mac.
+# macOS Apple Silicon steps. Runs in docker/macos-arm64.Dockerfile, or
+# natively on a Mac.
+#   macos-arm64.sh build   compile the binary
+#   macos-arm64.sh zip     bundle it as Ragamuffin.app, sign, zip
 source "$(dirname "$0")/common.sh"
+STEP="${1:?usage: macos-arm64.sh build|zip}"
 TRIPLE=aarch64-apple-darwin
-
-say "building ragamuffin $VERSION for $TRIPLE"
-cargo build --release --locked --target "$TRIPLE"
 BIN="$TARGET_DIR/$TRIPLE/release/ragamuffin"
+
+if [[ "$STEP" == build ]]; then
+    say "compiling ragamuffin $VERSION for $TRIPLE"
+    cargo build --release --locked --target "$TRIPLE"
+    echo "-> ${BIN#$ROOT/}"
+    exit 0
+fi
+[[ "$STEP" == zip ]] || { echo "unknown step: $STEP" >&2; exit 1; }
+need_binary "$BIN" macos-arm64
 
 say "bundling Ragamuffin.app"
 STAGE="$TARGET_DIR/package-macos"

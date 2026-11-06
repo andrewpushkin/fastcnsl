@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
-# Builds the Linux x86-64 .deb and AppImage. Runs in docker/linux-x86_64.Dockerfile.
-#   linux-x86_64.sh [deb|appimage|all]
+# Linux x86-64 steps. Runs in docker/linux-x86_64.Dockerfile.
+#   linux-x86_64.sh build      compile target/linux-x86_64/release/ragamuffin
+#   linux-x86_64.sh deb        package the compiled binary as a .deb
+#   linux-x86_64.sh appimage   package the compiled binary as an AppImage
 source "$(dirname "$0")/common.sh"
-WHAT="${1:-all}"
-
-say "building ragamuffin $VERSION for x86_64-unknown-linux-gnu"
-cargo build --release --locked
+STEP="${1:?usage: linux-x86_64.sh build|deb|appimage}"
 BIN="$TARGET_DIR/release/ragamuffin"
 
-if [[ "$WHAT" == deb || "$WHAT" == all ]]; then
+case "$STEP" in
+build)
+    say "compiling ragamuffin $VERSION for x86_64-unknown-linux-gnu"
+    cargo build --release --locked
+    echo "-> ${BIN#$ROOT/}"
+    ;;
+deb)
+    need_binary "$BIN" linux-x86_64
     say "packaging .deb"
     OUT="$DIST/ragamuffin_${VERSION}_amd64.deb"
     cargo deb --no-build --output "$OUT"
     echo "-> ${OUT#$ROOT/}"
-fi
-
-if [[ "$WHAT" == appimage || "$WHAT" == all ]]; then
+    ;;
+appimage)
+    need_binary "$BIN" linux-x86_64
     say "packaging AppImage"
     APPDIR="$TARGET_DIR/Ragamuffin.AppDir"
     rm -rf "$APPDIR"
@@ -30,4 +36,9 @@ if [[ "$WHAT" == appimage || "$WHAT" == all ]]; then
     OUT="$DIST/Ragamuffin-${VERSION}-x86_64.AppImage"
     ARCH=x86_64 appimagetool --no-appstream --runtime-file /opt/appimage-runtime-x86_64 "$APPDIR" "$OUT"
     echo "-> ${OUT#$ROOT/}"
-fi
+    ;;
+*)
+    echo "unknown step: $STEP" >&2
+    exit 1
+    ;;
+esac

@@ -46,7 +46,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [linux-x86_64, windows-x86_64, windows-arm64]
+        include:
+          - target: linux-x86_64
+            packages: linux-x86_64-deb linux-x86_64-appimage
+          - target: windows-x86_64
+            packages: windows-x86_64-zip
+          - target: windows-arm64
+            packages: windows-arm64-zip
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -54,7 +60,10 @@ jobs:
           path: .cache/cargo
           key: cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ matrix.target }}-
-      - run: make ${{ matrix.target }}
+      - name: Compile
+        run: make ${{ matrix.target }}
+      - name: Package
+        run: make ${{ matrix.packages }}
       - uses: actions/upload-artifact@v4
         with:
           name: ragamuffin-${{ matrix.target }}
@@ -79,7 +88,10 @@ jobs:
             ~/.cargo/git
           key: cargo-macos-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-macos-
-      - run: scripts/package/macos-arm64.sh
+      - name: Compile
+        run: scripts/package/macos-arm64.sh build
+      - name: Package
+        run: scripts/package/macos-arm64.sh zip
       - uses: actions/upload-artifact@v4
         with:
           name: ragamuffin-macos-arm64

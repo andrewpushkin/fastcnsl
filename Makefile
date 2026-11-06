@@ -6,15 +6,21 @@
 #   target/<platform>/    cargo output per platform image
 #   .cache/cargo/         downloaded crates (shared by all images)
 #
-# Release packages, one Docker image per platform (docker/<platform>.Dockerfile):
+# Release builds, one Docker image per platform (docker/<platform>.Dockerfile).
+# Compiling and packaging are separate targets; a package target compiles
+# first if needed.
 #
-#   make all              every platform below
-#   make linux-x86_64     .deb + AppImage
-#   make deb              only the .deb
-#   make appimage         only the AppImage
-#   make windows-x86_64   ragamuffin-<ver>-windows-x86_64.zip
-#   make windows-arm64    ragamuffin-<ver>-windows-arm64.zip
-#   make macos-arm64      ragamuffin-<ver>-macos-arm64.zip
+#   make all                      every package below
+#
+#   make linux-x86_64             compile -> target/linux-x86_64/release/
+#   make linux-x86_64-deb         -> dist/ragamuffin_<ver>_amd64.deb
+#   make linux-x86_64-appimage    -> dist/Ragamuffin-<ver>-x86_64.AppImage
+#   make windows-x86_64           compile -> target/windows-x86_64/.../ragamuffin.exe
+#   make windows-x86_64-zip       -> dist/ragamuffin-<ver>-windows-x86_64.zip
+#   make windows-arm64            compile -> target/windows-arm64/.../ragamuffin.exe
+#   make windows-arm64-zip        -> dist/ragamuffin-<ver>-windows-arm64.zip
+#   make macos-arm64              compile -> target/macos-arm64/.../ragamuffin
+#   make macos-arm64-zip          -> dist/ragamuffin-<ver>-macos-arm64.zip (Ragamuffin.app)
 #
 # The macOS image downloads the macOS SDK while it is built. Read the
 # licensing note at the top of docker/macos-arm64.Dockerfile first.
@@ -36,6 +42,7 @@
 
 CARGO_CACHE  := $(CURDIR)/.cache/cargo
 PLATFORMS    := linux-x86_64 windows-x86_64 windows-arm64 macos-arm64
+PACKAGES     := linux-x86_64-deb linux-x86_64-appimage windows-x86_64-zip windows-arm64-zip macos-arm64-zip
 # Optional overrides for the macOS SDK download (see docker/macos-arm64.Dockerfile).
 MACOS_SDK_ARGS := $(foreach v,MACOS_SDK_VERSION MACOS_SDK_URL MACOS_SDK_SHA256,$(if $($(v)),--build-arg $(v)=$($(v))))
 
@@ -54,12 +61,12 @@ DEV_IMAGE := ragamuffin-dev
 DEV_STAMP := target/.image-dev
 DEV_RUN    = $(call docker_run,$(DEV_IMAGE),target)
 
-.PHONY: all $(PLATFORMS) deb appimage \
+.PHONY: all $(PLATFORMS) $(PACKAGES) \
 	build run debug test clippy fmt check-all screenshot shell clean distclean
 
 # ---------------------------------------------------------------- releases
 
-all: $(PLATFORMS)
+all: $(PACKAGES)
 	@echo
 	@echo "Packages in dist/:"
 	@ls -1 dist | grep -v -e '^ragamuffin$$' -e '^screenshots$$' | sed 's/^/  /'
@@ -74,23 +81,32 @@ target/.image-macos-arm64: docker/macos-arm64.Dockerfile
 	docker build $(MACOS_SDK_ARGS) -f $< -t ragamuffin-macos-arm64 docker
 	@mkdir -p $(dir $@) && touch $@
 
+LINUX   = $(call docker_run,ragamuffin-linux-x86_64,target/linux-x86_64) scripts/package/linux-x86_64.sh
+WIN_X64 = $(call docker_run,ragamuffin-windows-x86_64,target/windows-x86_64) scripts/package/windows.sh x86_64
+WIN_ARM = $(call docker_run,ragamuffin-windows-arm64,target/windows-arm64) scripts/package/windows.sh arm64
+MACOS   = $(call docker_run,ragamuffin-macos-arm64,target/macos-arm64) scripts/package/macos-arm64.sh
+
+# Compile only.
 linux-x86_64: target/.image-linux-x86_64
-	$(call docker_run,ragamuffin-linux-x86_64,target/linux-x86_64) scripts/package/linux-x86_64.sh all
-
-deb: target/.image-linux-x86_64
-	$(call docker_run,ragamuffin-linux-x86_64,target/linux-x86_64) scripts/package/linux-x86_64.sh deb
-
-appimage: target/.image-linux-x86_64
-	$(call docker_run,ragamuffin-linux-x86_64,target/linux-x86_64) scripts/package/linux-x86_64.sh appimage
-
+	$(LINUX) build
 windows-x86_64: target/.image-windows-x86_64
-	$(call docker_run,ragamuffin-windows-x86_64,target/windows-x86_64) scripts/package/windows.sh x86_64
-
+	$(WIN_X64) build
 windows-arm64: target/.image-windows-arm64
-	$(call docker_run,ragamuffin-windows-arm64,target/windows-arm64) scripts/package/windows.sh arm64
-
+	$(WIN_ARM) build
 macos-arm64: target/.image-macos-arm64
-	$(call docker_run,ragamuffin-macos-arm64,target/macos-arm64) scripts/package/macos-arm64.sh
+	$(MACOS) build
+
+# Package (compiles first).
+linux-x86_64-deb: linux-x86_64
+	$(LINUX) deb
+linux-x86_64-appimage: linux-x86_64
+	$(LINUX) appimage
+windows-x86_64-zip: windows-x86_64
+	$(WIN_X64) zip
+windows-arm64-zip: windows-arm64
+	$(WIN_ARM) zip
+macos-arm64-zip: macos-arm64
+	$(MACOS) zip
 
 # ------------------------------------------------------------- development
 

@@ -127,11 +127,17 @@ in `target/`, downloaded crates in `.cache/`. `make clean` is a plain
 `rm -rf target dist` and needs no Docker.
 
 ```sh
-make all              # every release package
-make linux-x86_64     # .deb + AppImage
-make windows-x86_64   # zip
-make windows-arm64    # zip
-make macos-arm64      # zip (the image downloads the macOS SDK, see below)
+make all                     # every release package below
+
+make linux-x86_64            # compile only
+make linux-x86_64-deb        # .deb
+make linux-x86_64-appimage   # AppImage
+make windows-x86_64          # compile only
+make windows-x86_64-zip      # zip
+make windows-arm64           # compile only
+make windows-arm64-zip       # zip
+make macos-arm64             # compile only (the image downloads the macOS SDK, see below)
+make macos-arm64-zip         # Ragamuffin.app in a zip
 
 make build            # quick build for this machine -> dist/ragamuffin
 make run              # build and start it
