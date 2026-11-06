@@ -157,16 +157,21 @@ mod tests {
         out
     }
 
-    /// Waits until the screen contains `needle`, or panics after 5 s.
-    fn wait_for<L: EventListener>(s: &Session<L>, rx: &mpsc::Receiver<Event>, needle: &str) {
+    /// Waits until the screen contains `needle` at least `times` times, or
+    /// panics after 5 s.
+    fn wait_for_n<L: EventListener>(s: &Session<L>, rx: &mpsc::Receiver<Event>, needle: &str, times: usize) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if screen_text(s).contains(needle) {
+            if screen_text(s).matches(needle).count() >= times {
                 return;
             }
             let _ = rx.recv_timeout(Duration::from_millis(50));
         }
-        panic!("{needle:?} never appeared; screen:\n{}", screen_text(s));
+        panic!("{needle:?} didn't appear {times}×; screen:\n{}", screen_text(s));
+    }
+
+    fn wait_for<L: EventListener>(s: &Session<L>, rx: &mpsc::Receiver<Event>, needle: &str) {
+        wait_for_n(s, rx, needle, 1);
     }
 
     #[test]
@@ -186,8 +191,9 @@ mod tests {
         let (s, rx) = spawn("/bin/cat", &[]);
         s.write(&b"ping\r"[..]);
         s.write(b"pong\r".to_vec());
-        wait_for(&s, &rx, "pong");
-        // The terminal echoes the input and cat repeats it.
+        // The terminal echoes each line as it's typed, and cat repeats it
+        // later: wait for cat's copy of the last line.
+        wait_for_n(&s, &rx, "pong", 2);
         assert!(screen_text(&s).matches("ping").count() >= 2);
     }
 

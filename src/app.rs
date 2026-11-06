@@ -105,6 +105,8 @@ struct State {
     custom_title_bar: bool,
     /// For double-click on the empty tab bar (maximize).
     last_bar_click: Option<Instant>,
+    /// Cursor last sent to the window system.
+    cursor: CursorIcon,
 }
 
 /// Writes "Tab N: app" into `buf`, reusing its allocation.
@@ -213,6 +215,7 @@ impl App {
             wake_at: None,
             custom_title_bar: custom,
             last_bar_click: None,
+            cursor: CursorIcon::Text,
         };
         st.new_tab(cfg)?;
         Ok(st)
@@ -336,6 +339,16 @@ fn grid_size(r: &Renderer, cfg: &Config, scale: f64) -> WindowSize {
 impl State {
     fn scale(&self) -> f32 {
         self.window.scale_factor() as f32
+    }
+
+    /// Changes the mouse cursor only when it differs from the current one.
+    /// Setting it on every mouse move re-uploads the cursor image on
+    /// Wayland, which some compositors (WSLg) answer by hiding the cursor.
+    fn set_cursor(&mut self, icon: CursorIcon) {
+        if icon != self.cursor {
+            self.cursor = icon;
+            self.window.set_cursor(icon);
+        }
     }
 
     fn metrics(&self) -> Metrics {
@@ -828,13 +841,13 @@ impl State {
                 menu.hover = hover;
                 self.window.request_redraw();
             }
-            self.window.set_cursor(CursorIcon::Default);
+            self.set_cursor(CursorIcon::Default);
             return;
         }
         if matches!(self.overlay, Overlay::None)
             && let Some(dir) = self.resize_edge(x, y)
         {
-            self.window.set_cursor(CursorIcon::from(dir));
+            self.set_cursor(CursorIcon::from(dir));
             if self.hover != Hover::None {
                 self.hover = Hover::None;
                 self.window.request_redraw();
@@ -847,7 +860,7 @@ impl State {
             self.window.request_redraw();
         }
         if !matches!(self.overlay, Overlay::None) || y < self.top() {
-            self.window.set_cursor(CursorIcon::Default);
+            self.set_cursor(CursorIcon::Default);
             return;
         }
 
@@ -877,7 +890,12 @@ impl State {
         self.hover = search_button;
         self.scrollbar.hover = over_bar;
         self.search_hover = over_search;
-        self.window.set_cursor(if over_bar || over_search { CursorIcon::Default } else { CursorIcon::Text });
+        // (Inline set_cursor: the terminal lock still borrows `self.tabs`.)
+        let icon = if over_bar || over_search { CursorIcon::Default } else { CursorIcon::Text };
+        if icon != self.cursor {
+            self.cursor = icon;
+            self.window.set_cursor(icon);
+        }
 
         if let (Some(grab), Some(g)) = (self.scrollbar.drag, geo.as_ref()) {
             let target = ui::offset_for_thumb(g, y - grab, hist) as i32;
