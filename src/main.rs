@@ -35,7 +35,7 @@ pub fn grid_width(c: char) -> usize {
 }
 
 /// winit's X11 backend loads libxkbcommon-x11 at startup and panics if it
-/// is missing; check first so `auto` can fall back to Wayland.
+/// is missing; check first so a missing library doesn't crash the app.
 #[cfg(target_os = "linux")]
 fn x11_keyboard_library_installed() -> bool {
     let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("LD_LIBRARY_PATH")
@@ -59,15 +59,11 @@ fn main() {
         use config::DisplayBackend;
         use winit::platform::wayland::EventLoopBuilderExtWayland;
         use winit::platform::x11::EventLoopBuilderExtX11;
-        let wsl = theme::is_wsl();
         let x11_libs = x11_keyboard_library_installed();
-        if wsl && !x11_libs && cfg.display_backend == DisplayBackend::Auto {
-            log::warn!(
-                "WSL: libxkbcommon-x11 is not installed, so using Wayland, where WSLg hides the mouse \
-                 cursor until a click. Fix: sudo apt install libxkbcommon-x11-0"
-            );
+        if cfg.display_backend == DisplayBackend::X11 && !x11_libs {
+            log::warn!("display_backend = \"x11\" needs libxkbcommon-x11 (e.g. sudo apt install libxkbcommon-x11-0); using the default");
         }
-        match cfg.display_backend.resolve(wsl, x11_libs) {
+        match cfg.display_backend.resolve(x11_libs) {
             Some(DisplayBackend::X11) => {
                 builder.with_x11();
             }

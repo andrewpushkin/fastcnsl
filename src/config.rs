@@ -36,10 +36,7 @@ impl ThemeMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DisplayBackend {
-    /// X11 under WSL (WSLg's Wayland support has no cursor-shape or
-    /// decoration protocol: the mouse cursor stays hidden until a click and
-    /// windows get no native title bar); otherwise winit's choice, Wayland
-    /// when available.
+    /// winit's choice: Wayland when available, else X11.
     #[default]
     Auto,
     Wayland,
@@ -47,13 +44,39 @@ pub enum DisplayBackend {
 }
 
 impl DisplayBackend {
-    /// The backend to force, if any, given whether we run under WSL and
-    /// whether the X11 keyboard library winit needs is installed.
-    pub fn resolve(self, wsl: bool, x11_libs: bool) -> Option<DisplayBackend> {
+    /// The backend to force, if any. X11 needs libxkbcommon-x11 (winit
+    /// panics without it), so without it the default is kept.
+    pub fn resolve(self, x11_libs: bool) -> Option<DisplayBackend> {
         match self {
-            DisplayBackend::Auto if wsl && x11_libs => Some(DisplayBackend::X11),
             DisplayBackend::Auto => None,
+            DisplayBackend::X11 if !x11_libs => None,
             b => Some(b),
+        }
+    }
+}
+
+/// Where the window buttons (minimize, maximize, close) go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleBar {
+    /// The OS title bar under WSL, the tab bar everywhere else. WSLg hides
+    /// the mouse cursor over windows without an OS frame until they are
+    /// clicked.
+    #[default]
+    Auto,
+    /// Buttons in the tab bar (on macOS: the native buttons, moved there).
+    Custom,
+    /// The operating system's title bar, on its own line.
+    System,
+}
+
+impl TitleBar {
+    /// True when the app draws its own title bar.
+    pub fn is_custom(self, wsl: bool) -> bool {
+        match self {
+            TitleBar::Auto => !wsl,
+            TitleBar::Custom => true,
+            TitleBar::System => false,
         }
     }
 }
@@ -90,10 +113,9 @@ pub struct Config {
     pub code_theme_light: String,
     /// Render bold text in the bright variant of the 8 basic colours.
     pub bold_is_bright: bool,
-    /// Put the window buttons (minimize, maximize, close) in the tab bar
-    /// instead of an OS title bar. On macOS the native buttons move into
-    /// the tab bar; that part applies after a restart.
-    pub custom_title_bar: bool,
+    /// "auto", "custom" (window buttons in the tab bar) or "system" (the
+    /// OS title bar). On macOS a change applies after a restart.
+    pub title_bar: TitleBar,
     /// Linux only: "auto", "wayland" or "x11". Applies after a restart.
     pub display_backend: DisplayBackend,
 }
@@ -114,7 +136,7 @@ impl Default for Config {
             code_theme_dark: "base16-ocean.dark".to_owned(),
             code_theme_light: "InspiredGitHub".to_owned(),
             bold_is_bright: false,
-            custom_title_bar: true,
+            title_bar: TitleBar::Auto,
             display_backend: DisplayBackend::Auto,
         }
     }
@@ -316,14 +338,26 @@ mod tests {
     }
 
     #[test]
-    fn display_backend_prefers_x11_on_wsl() {
-        assert_eq!(DisplayBackend::Auto.resolve(true, true), Some(DisplayBackend::X11));
-        assert_eq!(DisplayBackend::Auto.resolve(true, false), None, "no libxkbcommon-x11: stay on Wayland");
-        assert_eq!(DisplayBackend::Auto.resolve(false, true), None);
-        assert_eq!(DisplayBackend::Wayland.resolve(true, true), Some(DisplayBackend::Wayland));
-        assert_eq!(DisplayBackend::X11.resolve(false, false), Some(DisplayBackend::X11));
+    fn display_backend() {
+        assert_eq!(DisplayBackend::Auto.resolve(true), None, "auto keeps winit's choice");
+        assert_eq!(DisplayBackend::Wayland.resolve(false), Some(DisplayBackend::Wayland));
+        assert_eq!(DisplayBackend::X11.resolve(true), Some(DisplayBackend::X11));
+        assert_eq!(DisplayBackend::X11.resolve(false), None, "no libxkbcommon-x11: don't crash");
         let cfg: Config = toml::from_str("display_backend = \"x11\"").unwrap();
         assert_eq!(cfg.display_backend, DisplayBackend::X11);
+    }
+
+    #[test]
+    fn title_bar_uses_the_os_frame_under_wsl() {
+        assert!(!TitleBar::Auto.is_custom(true));
+        assert!(TitleBar::Auto.is_custom(false));
+        assert!(TitleBar::Custom.is_custom(true));
+        assert!(!TitleBar::System.is_custom(false));
+        // The old boolean key from earlier versions is ignored.
+        let cfg: Config = toml::from_str("custom_title_bar = true").unwrap();
+        assert_eq!(cfg.title_bar, TitleBar::Auto);
+        let cfg: Config = toml::from_str("title_bar = \"system\"").unwrap();
+        assert_eq!(cfg.title_bar, TitleBar::System);
     }
 
     #[test]

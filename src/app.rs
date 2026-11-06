@@ -142,7 +142,7 @@ impl App {
         let attrs = winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "ragamuffin", "ragamuffin");
         // Window buttons in the tab bar: no OS frame on Windows/Linux; on
         // macOS the native traffic lights float over the tab bar instead.
-        let custom = self.cfg.custom_title_bar;
+        let custom = self.cfg.title_bar.is_custom(theme::is_wsl());
         #[cfg(not(target_os = "macos"))]
         let attrs = attrs.with_decorations(!custom);
         #[cfg(target_os = "macos")]
@@ -246,12 +246,13 @@ impl App {
         if old.shell != cfg.shell || old.shell_args != cfg.shell_args {
             log::info!("shell change applies to new tabs");
         }
-        if old.custom_title_bar != cfg.custom_title_bar {
+        let custom = cfg.title_bar.is_custom(theme::is_wsl());
+        if custom != st.custom_title_bar {
             if cfg!(target_os = "macos") {
                 log::info!("title bar change applies after a restart on macOS");
             } else {
-                st.custom_title_bar = cfg.custom_title_bar;
-                st.window.set_decorations(!cfg.custom_title_bar);
+                st.custom_title_bar = custom;
+                st.window.set_decorations(!custom);
             }
         }
         st.window.request_redraw();
