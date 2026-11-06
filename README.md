@@ -117,7 +117,13 @@ code_theme_dark = "base16-ocean.dark"
 code_theme_light = "InspiredGitHub"
 bold_is_bright = false
 custom_title_bar = true          # window buttons in the tab bar; false: OS title bar
+display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to apply)
 ```
+
+On WSL, `auto` uses X11: WSLg's Wayland support hides the mouse cursor until
+you click, and can't give windows a native title bar. X11 needs
+`libxkbcommon-x11-0` (`sudo apt install libxkbcommon-x11-0`); without it
+ragamuffin stays on Wayland and logs a hint.
 
 Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
 `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)`.

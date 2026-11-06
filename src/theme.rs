@@ -167,6 +167,18 @@ pub fn detect_os_dark() -> Option<bool> {
     }
 }
 
+/// True when running inside Windows Subsystem for Linux (WSLg).
+pub fn is_wsl() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux::is_wsl()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// On Linux, polls the OS setting every 2 s on a background thread and
 /// sends `UserEvent::OsTheme` when it changes. Elsewhere winit reports
 /// changes itself, so this does nothing.
@@ -210,7 +222,7 @@ mod linux {
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    fn is_wsl() -> bool {
+    pub fn is_wsl() -> bool {
         std::env::var_os("WSL_DISTRO_NAME").is_some()
             || std::fs::read_to_string("/proc/version").is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"))
     }

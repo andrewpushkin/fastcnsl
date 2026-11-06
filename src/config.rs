@@ -32,6 +32,32 @@ impl ThemeMode {
     }
 }
 
+/// Which Linux display protocol to use. Ignored on Windows and macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplayBackend {
+    /// X11 under WSL (WSLg's Wayland support has no cursor-shape or
+    /// decoration protocol: the mouse cursor stays hidden until a click and
+    /// windows get no native title bar); otherwise winit's choice, Wayland
+    /// when available.
+    #[default]
+    Auto,
+    Wayland,
+    X11,
+}
+
+impl DisplayBackend {
+    /// The backend to force, if any, given whether we run under WSL and
+    /// whether the X11 keyboard library winit needs is installed.
+    pub fn resolve(self, wsl: bool, x11_libs: bool) -> Option<DisplayBackend> {
+        match self {
+            DisplayBackend::Auto if wsl && x11_libs => Some(DisplayBackend::X11),
+            DisplayBackend::Auto => None,
+            b => Some(b),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -68,6 +94,8 @@ pub struct Config {
     /// instead of an OS title bar. On macOS the native buttons move into
     /// the tab bar; that part applies after a restart.
     pub custom_title_bar: bool,
+    /// Linux only: "auto", "wayland" or "x11". Applies after a restart.
+    pub display_backend: DisplayBackend,
 }
 
 impl Default for Config {
@@ -87,6 +115,7 @@ impl Default for Config {
             code_theme_light: "InspiredGitHub".to_owned(),
             bold_is_bright: false,
             custom_title_bar: true,
+            display_backend: DisplayBackend::Auto,
         }
     }
 }
@@ -284,6 +313,17 @@ mod tests {
         std::fs::write(&path, "font_size = 9.0").unwrap();
         w.mark_seen();
         assert_eq!(w.poll(), None);
+    }
+
+    #[test]
+    fn display_backend_prefers_x11_on_wsl() {
+        assert_eq!(DisplayBackend::Auto.resolve(true, true), Some(DisplayBackend::X11));
+        assert_eq!(DisplayBackend::Auto.resolve(true, false), None, "no libxkbcommon-x11: stay on Wayland");
+        assert_eq!(DisplayBackend::Auto.resolve(false, true), None);
+        assert_eq!(DisplayBackend::Wayland.resolve(true, true), Some(DisplayBackend::Wayland));
+        assert_eq!(DisplayBackend::X11.resolve(false, false), Some(DisplayBackend::X11));
+        let cfg: Config = toml::from_str("display_backend = \"x11\"").unwrap();
+        assert_eq!(cfg.display_backend, DisplayBackend::X11);
     }
 
     #[test]
