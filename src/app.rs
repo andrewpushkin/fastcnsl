@@ -19,7 +19,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
-use crate::chrome::{self, Action, Menu, Metrics, OptionsState, Panel};
+use crate::chrome::{self, Action, Caption, Menu, Metrics, OptionsState, Panel};
 use crate::config::{Config, ConfigWatcher, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
@@ -101,6 +101,10 @@ struct State {
     grid: WindowSize,
     /// Redraw again at this time (scrollbar fade-out).
     wake_at: Option<Instant>,
+    /// Window buttons are in the tab bar rather than an OS title bar.
+    custom_title_bar: bool,
+    /// For double-click on the empty tab bar (maximize).
+    last_bar_click: Option<Instant>,
 }
 
 /// Writes "Tab N: app" into `buf`, reusing its allocation.
@@ -134,6 +138,18 @@ impl App {
         let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "ragamuffin", "ragamuffin");
         #[cfg(all(unix, not(target_os = "macos")))]
         let attrs = winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "ragamuffin", "ragamuffin");
+        // Window buttons in the tab bar: no OS frame on Windows/Linux; on
+        // macOS the native traffic lights float over the tab bar instead.
+        let custom = self.cfg.custom_title_bar;
+        #[cfg(not(target_os = "macos"))]
+        let attrs = attrs.with_decorations(!custom);
+        #[cfg(target_os = "macos")]
+        let attrs = if custom {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs.with_titlebar_transparent(true).with_title_hidden(true).with_fullsize_content_view(true)
+        } else {
+            attrs
+        };
         let window = Arc::new(el.create_window(attrs).map_err(|e| e.to_string())?);
         window.set_ime_allowed(true);
         window.set_cursor(CursorIcon::Text);
@@ -195,6 +211,8 @@ impl App {
             font_pt: cfg.font_size,
             grid,
             wake_at: None,
+            custom_title_bar: custom,
+            last_bar_click: None,
         };
         st.new_tab(cfg)?;
         Ok(st)
@@ -224,6 +242,14 @@ impl App {
         st.apply_palette(cfg);
         if old.shell != cfg.shell || old.shell_args != cfg.shell_args {
             log::info!("shell change applies to new tabs");
+        }
+        if old.custom_title_bar != cfg.custom_title_bar {
+            if cfg!(target_os = "macos") {
+                log::info!("title bar change applies after a restart on macOS");
+            } else {
+                st.custom_title_bar = cfg.custom_title_bar;
+                st.window.set_decorations(!cfg.custom_title_bar);
+            }
         }
         st.window.request_redraw();
     }
@@ -317,6 +343,30 @@ impl State {
 
     fn top(&self) -> f32 {
         chrome::tab_bar_height(&self.metrics())
+    }
+
+    /// Window controls in the tab bar for this platform.
+    fn caption(&self) -> Caption {
+        if !self.custom_title_bar {
+            Caption::NONE
+        } else if cfg!(target_os = "macos") {
+            Caption { buttons: false, left_inset: (78.0 * self.scale()).round() }
+        } else {
+            Caption { buttons: true, left_inset: 0.0 }
+        }
+    }
+
+    fn tab_bar(&self) -> chrome::TabBar {
+        chrome::tab_bar(&self.metrics(), self.tabs.len(), &self.caption())
+    }
+
+    /// Window edge under (x, y) when the app draws its own frame.
+    fn resize_edge(&self, x: f32, y: f32) -> Option<winit::window::ResizeDirection> {
+        if !self.caption().buttons || self.window.is_maximized() {
+            return None;
+        }
+        let m = self.metrics();
+        chrome::resize_edge(x, y, m.width, m.height, (5.0 * m.scale).round())
     }
 
     fn tab(&self) -> &Tab {
@@ -481,6 +531,8 @@ impl State {
                 search_alpha: self.search_fade.value,
             };
             let c = ChromeView {
+                caption: self.caption(),
+                maximized: self.window.is_maximized(),
                 titles: self.tabs.iter().map(|t| t.label.as_str()).collect(),
                 active: self.active,
                 hover: self.hover,
@@ -728,13 +780,22 @@ impl State {
 
     /// What chrome element is under (x, y).
     fn chrome_hover(&self, cfg: &Config, x: f32, y: f32) -> Hover {
-        let m = self.metrics();
         if let Some(panel) = self.panel(cfg) {
             return panel.buttons.iter().position(|b| b.rect.contains(x, y)).map_or(Hover::None, Hover::PanelButton);
         }
-        let bar = chrome::tab_bar(&m, self.tabs.len());
+        let bar = self.tab_bar();
         if y >= bar.height {
             return Hover::None;
+        }
+        let over = |r: Option<ui::Rect>| r.is_some_and(|r| r.contains(x, y));
+        if over(bar.close) {
+            return Hover::CloseWindow;
+        }
+        if over(bar.maximize) {
+            return Hover::Maximize;
+        }
+        if over(bar.minimize) {
+            return Hover::Minimize;
         }
         if bar.menu.contains(x, y) {
             return Hover::MenuButton;
@@ -765,6 +826,16 @@ impl State {
                 self.window.request_redraw();
             }
             self.window.set_cursor(CursorIcon::Default);
+            return;
+        }
+        if matches!(self.overlay, Overlay::None)
+            && let Some(dir) = self.resize_edge(x, y)
+        {
+            self.window.set_cursor(CursorIcon::from(dir));
+            if self.hover != Hover::None {
+                self.hover = Hover::None;
+                self.window.request_redraw();
+            }
             return;
         }
         let hover = self.chrome_hover(cfg, x, y);
@@ -843,7 +914,7 @@ impl State {
             }
             let l = menu.layout(&m);
             let picked = menu.hit(&l, x, y).and_then(|i| menu.items[i].action);
-            let on_menu_button = chrome::tab_bar(&m, self.tabs.len()).menu.contains(x, y);
+            let on_menu_button = self.tab_bar().menu.contains(x, y);
             self.overlay = Overlay::None;
             self.window.request_redraw();
             if picked.is_none() && !on_menu_button && !l.rect.contains(x, y) && button == WinitButton::Right {
@@ -867,14 +938,41 @@ impl State {
             return None;
         }
 
+        // Window edges, when the app draws its own frame.
+        if pressed
+            && button == WinitButton::Left
+            && let Some(dir) = self.resize_edge(x, y)
+        {
+            if let Err(e) = self.window.drag_resize_window(dir) {
+                log::warn!("resize: {e}");
+            }
+            return None;
+        }
+
         // Tab bar.
         if y < self.top() {
             if !pressed {
                 return None;
             }
             match (self.chrome_hover(cfg, x, y), button) {
+                (Hover::Minimize, WinitButton::Left) => self.window.set_minimized(true),
+                (Hover::Maximize, WinitButton::Left) => self.window.set_maximized(!self.window.is_maximized()),
+                (Hover::CloseWindow, WinitButton::Left) => return Some(Action::Quit),
+                (Hover::None, WinitButton::Left) if self.custom_title_bar => {
+                    // Empty bar: drag the window; double-click maximizes.
+                    let now = Instant::now();
+                    if self.last_bar_click.is_some_and(|t| now - t < MULTI_CLICK) {
+                        self.last_bar_click = None;
+                        self.window.set_maximized(!self.window.is_maximized());
+                    } else {
+                        self.last_bar_click = Some(now);
+                        if let Err(e) = self.window.drag_window() {
+                            log::warn!("move window: {e}");
+                        }
+                    }
+                }
                 (Hover::MenuButton, WinitButton::Left) => {
-                    let bar = chrome::tab_bar(&m, self.tabs.len());
+                    let bar = self.tab_bar();
                     let theme = self.theme_mode;
                     let sel = self.has_selection();
                     self.overlay = Overlay::Menu(Menu::main(bar.menu.x + bar.menu.w, bar.height, theme, sel, self.tabs.len()));

@@ -51,34 +51,87 @@ pub struct TabSlot {
     pub close: Rect,
 }
 
+/// Window controls drawn in the tab bar instead of an OS title bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Caption {
+    /// Draw minimize / maximize / close at the right (Windows, Linux).
+    pub buttons: bool,
+    /// Space kept free at the left for macOS's traffic-light buttons.
+    pub left_inset: f32,
+}
+
+impl Caption {
+    /// The OS draws the title bar; the tab bar has no window controls.
+    pub const NONE: Self = Self { buttons: false, left_inset: 0.0 };
+}
+
 pub struct TabBar {
     pub height: f32,
     pub tabs: Vec<TabSlot>,
     pub plus: Rect,
     pub menu: Rect,
+    /// Window controls, when the app draws its own title bar.
+    pub minimize: Option<Rect>,
+    pub maximize: Option<Rect>,
+    pub close: Option<Rect>,
 }
 
 pub fn tab_bar_height(m: &Metrics) -> f32 {
     (m.ch + m.px(14.0)).round()
 }
 
-pub fn tab_bar(m: &Metrics, count: usize) -> TabBar {
+/// Width of one window-control button.
+fn caption_button_width(m: &Metrics) -> f32 {
+    m.px(46.0)
+}
+
+pub fn tab_bar(m: &Metrics, count: usize, caption: &Caption) -> TabBar {
     let h = tab_bar_height(m);
     let button = h;
-    let menu = Rect { x: m.width - button, y: 0.0, w: button, h };
+    let (mut right, mut minimize, mut maximize, mut close) = (m.width, None, None, None);
+    if caption.buttons {
+        let bw = caption_button_width(m);
+        close = Some(Rect { x: right - bw, y: 0.0, w: bw, h });
+        maximize = Some(Rect { x: right - 2.0 * bw, y: 0.0, w: bw, h });
+        minimize = Some(Rect { x: right - 3.0 * bw, y: 0.0, w: bw, h });
+        right -= 3.0 * bw;
+    }
+    let menu = Rect { x: right - button, y: 0.0, w: button, h };
     let gap = m.px(4.0);
-    let avail = (m.width - 2.0 * button - 2.0 * gap).max(0.0);
+    let left = caption.left_inset + gap;
+    // Keep a strip of empty bar after "+" so there is always somewhere to
+    // grab the window.
+    let grab = if caption.buttons || caption.left_inset > 0.0 { m.px(48.0) } else { 0.0 };
+    let avail = (menu.x - left - button - gap - grab).max(0.0);
     let tab_w = (avail / count.max(1) as f32).min(m.px(220.0)).floor();
     let tabs = (0..count)
         .map(|i| {
-            let rect = Rect { x: gap + i as f32 * tab_w, y: m.px(4.0), w: tab_w - m.px(2.0), h: h - m.px(4.0) };
+            let rect = Rect { x: left + i as f32 * tab_w, y: m.px(4.0), w: tab_w - m.px(2.0), h: h - m.px(4.0) };
             let cs = m.ch;
             let close = Rect { x: rect.x + rect.w - cs - m.px(6.0), y: rect.y + (rect.h - cs) / 2.0, w: cs, h: cs };
             TabSlot { rect, close }
         })
         .collect();
-    let plus = Rect { x: gap + count as f32 * tab_w, y: 0.0, w: button, h };
-    TabBar { height: h, tabs, plus, menu }
+    let plus = Rect { x: left + count as f32 * tab_w, y: 0.0, w: button, h };
+    TabBar { height: h, tabs, plus, menu, minimize, maximize, close }
+}
+
+/// Which window edge or corner (x, y) is on, for resizing a window without
+/// an OS frame. `border` is the grab width in pixels.
+pub fn resize_edge(x: f32, y: f32, width: f32, height: f32, border: f32) -> Option<winit::window::ResizeDirection> {
+    use winit::window::ResizeDirection as D;
+    let (l, r, t, b) = (x < border, x >= width - border, y < border, y >= height - border);
+    Some(match (l, r, t, b) {
+        (true, _, true, _) => D::NorthWest,
+        (_, true, true, _) => D::NorthEast,
+        (true, _, _, true) => D::SouthWest,
+        (_, true, _, true) => D::SouthEast,
+        (true, ..) => D::West,
+        (_, true, ..) => D::East,
+        (_, _, true, _) => D::North,
+        (_, _, _, true) => D::South,
+        _ => return None,
+    })
 }
 
 // -------------------------------------------------------------------- menus
@@ -418,7 +471,7 @@ mod tests {
 
     #[test]
     fn tab_bar_fits_window() {
-        let t = tab_bar(&m(), 30);
+        let t = tab_bar(&m(), 30, &Caption::NONE);
         let last = t.tabs.last().unwrap().rect;
         assert!(last.x + last.w <= t.menu.x);
         assert!(t.menu.x + t.menu.w <= 1000.0);
@@ -449,7 +502,7 @@ mod tests {
 
     #[test]
     fn tab_close_buttons_sit_inside_their_tabs() {
-        let t = tab_bar(&m(), 3);
+        let t = tab_bar(&m(), 3, &Caption::NONE);
         for slot in &t.tabs {
             let (r, c) = (slot.rect, slot.close);
             assert!(c.x >= r.x && c.x + c.w <= r.x + r.w && c.y >= r.y && c.y + c.h <= r.y + r.h);
@@ -459,6 +512,39 @@ mod tests {
         assert!(t.plus.x >= last.x + last.w);
         assert_eq!(t.menu.x + t.menu.w, 1000.0);
         assert_eq!(t.height, tab_bar_height(&m()));
+    }
+
+    #[test]
+    fn window_controls_sit_right_of_the_menu_button() {
+        let cap = Caption { buttons: true, left_inset: 0.0 };
+        let t = tab_bar(&m(), 4, &cap);
+        let (min, max, close) = (t.minimize.unwrap(), t.maximize.unwrap(), t.close.unwrap());
+        assert_eq!(close.x + close.w, 1000.0, "close at the right edge");
+        assert!(min.x + min.w <= max.x && max.x + max.w <= close.x);
+        assert!(t.menu.x + t.menu.w <= min.x, "⋮ before the window buttons");
+        assert!(t.plus.x + t.plus.w < t.menu.x, "free strip to drag the window");
+        assert!(tab_bar(&m(), 4, &Caption::NONE).close.is_none());
+    }
+
+    #[test]
+    fn macos_inset_moves_tabs_right() {
+        let cap = Caption { buttons: false, left_inset: 78.0 };
+        let t = tab_bar(&m(), 2, &cap);
+        assert!(t.tabs[0].rect.x >= 78.0);
+        assert!(t.close.is_none());
+    }
+
+    #[test]
+    fn resize_edges_and_corners() {
+        use winit::window::ResizeDirection as D;
+        let e = |x, y| resize_edge(x, y, 800.0, 600.0, 6.0);
+        assert_eq!(e(400.0, 300.0), None);
+        assert_eq!(e(2.0, 300.0), Some(D::West));
+        assert_eq!(e(798.0, 300.0), Some(D::East));
+        assert_eq!(e(400.0, 1.0), Some(D::North));
+        assert_eq!(e(400.0, 599.0), Some(D::South));
+        assert_eq!(e(1.0, 1.0), Some(D::NorthWest));
+        assert_eq!(e(799.0, 599.0), Some(D::SouthEast));
     }
 
     #[test]

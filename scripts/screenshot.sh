@@ -44,8 +44,11 @@ shot() { sleep 0.6; import -window "$WIN" "$OUT/$1.png"; echo "-> $OUT/$1.png"; 
 type_line() { xdotool type --delay 15 "$1"; xdotool key Return; }
 click() { xdotool mousemove --window "$WIN" "$1" "$2" click "${3:-1}"; }
 
-# Window size, for clicking the ⋮ button in the top-right corner.
+# Window size, for clicking the ⋮ button: it sits left of the three
+# 46 px window buttons (minimize, maximize, close) in the top-right corner.
 eval "$(xdotool getwindowgeometry --shell "$WIN")"
+MENU_X=$((WIDTH - 3 * 46 - 15))
+CLOSE_X=$((WIDTH - 23))
 
 type_line "cd $SAMPLES"
 type_line "cat hello.c"
@@ -57,8 +60,13 @@ xdotool key ctrl+shift+f
 xdotool type --delay 40 "greet"
 shot main
 
+# Pointer over the close button: red hover.
+xdotool mousemove --window "$WIN" "$CLOSE_X" 15
+shot titlebar
+xdotool mousemove --window "$WIN" 300 200
+
 xdotool key Escape
-click $((WIDTH - 15)) 15
+click $MENU_X 15
 shot menu
 xdotool key Escape
 
@@ -71,7 +79,7 @@ shot options
 xdotool key Escape
 
 # About through the menu, with the keyboard: Up twice lands on "About".
-click $((WIDTH - 15)) 15
+click $MENU_X 15
 xdotool key Up Up Return
 shot about
 xdotool key Escape

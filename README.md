@@ -24,6 +24,9 @@ Windows and macOS.
   colours itself is never touched.
 - **Tabs** labelled with the last program run in them (`Tab 1: vim`), each
   with its own shell, scrollback and search.
+- **One-line title bar**: minimize, maximize and close sit in the tab bar
+  next to ⋮ (on macOS the native buttons move into it). Drag the empty part
+  of the bar to move the window; double-click it to maximize.
 - **⋮ menu** for tabs, find, copy and paste, theme, Options and About, plus a
   right-click menu for copy, paste and select all.
 - **Options panel** with theme, font size and code highlighting switches and
@@ -112,6 +115,7 @@ code_highlight = true
 code_theme_dark = "base16-ocean.dark"
 code_theme_light = "InspiredGitHub"
 bold_is_bright = false
+custom_title_bar = true          # window buttons in the tab bar; false: OS title bar
 ```
 
 Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,

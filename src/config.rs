@@ -64,6 +64,10 @@ pub struct Config {
     pub code_theme_light: String,
     /// Render bold text in the bright variant of the 8 basic colours.
     pub bold_is_bright: bool,
+    /// Put the window buttons (minimize, maximize, close) in the tab bar
+    /// instead of an OS title bar. On macOS the native buttons move into
+    /// the tab bar; that part applies after a restart.
+    pub custom_title_bar: bool,
 }
 
 impl Default for Config {
@@ -82,6 +86,7 @@ impl Default for Config {
             code_theme_dark: "base16-ocean.dark".to_owned(),
             code_theme_light: "InspiredGitHub".to_owned(),
             bold_is_bright: false,
+            custom_title_bar: true,
         }
     }
 }

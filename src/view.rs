@@ -12,7 +12,7 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 
-use crate::chrome::{self, Menu, Metrics, Panel, TextStyle};
+use crate::chrome::{self, Caption, Menu, Metrics, Panel, TextStyle};
 use crate::highlight::{CodeHighlighter, Span};
 use crate::render::glyphs::GlyphStyle;
 use crate::render::{Layer, Painter};
@@ -43,9 +43,14 @@ pub enum Hover {
     Plus,
     MenuButton,
     PanelButton(usize),
+    Minimize,
+    Maximize,
+    CloseWindow,
 }
 
 pub struct ChromeView<'a> {
+    pub caption: Caption,
+    pub maximized: bool,
     pub titles: Vec<&'a str>,
     pub active: usize,
     pub hover: Hover,
@@ -118,7 +123,7 @@ pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>,
 }
 
 fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<'_>) {
-    let bar = chrome::tab_bar(m, c.titles.len());
+    let bar = chrome::tab_bar(m, c.titles.len(), &c.caption);
     let bar_bg = if pal.dark { pal.background.mix(Rgb::hex(0x000000), 0.25) } else { pal.ui_bg };
     p.rect(Layer::UiShapes, 0.0, 0.0, m.width, bar.height, bar_bg.rgba(1.0));
     let r = m.scale * 6.0;
@@ -173,6 +178,48 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
             p.text(Layer::UiText, "+", rect.x + (rect.w - m.cw) / 2.0, text_y(&rect), color.rgba(1.0));
         }
     }
+
+    draw_window_controls(p, pal, m, &bar, c);
+}
+
+/// Minimize, maximize/restore and close, for windows without an OS frame.
+fn draw_window_controls(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, bar: &chrome::TabBar, c: &ChromeView<'_>) {
+    let (Some(min), Some(max), Some(close)) = (bar.minimize, bar.maximize, bar.close) else { return };
+    let t = m.scale.round().max(1.0);
+    let s = (10.0 * m.scale).round();
+    let center = |r: &ui::Rect| ((r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round());
+    for (rect, hover) in [(min, Hover::Minimize), (max, Hover::Maximize), (close, Hover::CloseWindow)] {
+        if c.hover == hover {
+            let bg = if hover == Hover::CloseWindow { Rgb::hex(0xe81123).rgba(1.0) } else { pal.ui_dim.rgba(0.3) };
+            p.rect(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, bg);
+        }
+    }
+    let fg = |h: Hover| if c.hover == h && h == Hover::CloseWindow { Rgb::hex(0xffffff) } else { pal.foreground };
+
+    let (x, y) = center(&min);
+    p.rect(Layer::UiShapes, x, y + (s / 2.0).round(), s, t, fg(Hover::Minimize).rgba(1.0));
+
+    let (x, y) = center(&max);
+    let col = fg(Hover::Maximize).rgba(1.0);
+    let outline = |p: &mut Painter<'_>, x: f32, y: f32, w: f32| {
+        p.rect(Layer::UiShapes, x, y, w, t, col);
+        p.rect(Layer::UiShapes, x, y + w - t, w, t, col);
+        p.rect(Layer::UiShapes, x, y, t, w, col);
+        p.rect(Layer::UiShapes, x + w - t, y, t, w, col);
+    };
+    if c.maximized {
+        // Restore: two overlapping squares.
+        let o = (2.0 * m.scale).round();
+        let w = s - o;
+        p.rect(Layer::UiShapes, x + o, y, w, t, col);
+        p.rect(Layer::UiShapes, x + s - t, y, t, w, col);
+        outline(p, x, y + o, w);
+    } else {
+        outline(p, x, y, s);
+    }
+
+    let (cx, cy) = (close.x + (close.w - m.cw) / 2.0, (close.y + (close.h - m.ch) / 2.0).round());
+    p.text(Layer::UiText, "×", cx.round(), cy, fg(Hover::CloseWindow).rgba(1.0));
 }
 
 fn draw_menu(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, menu: &Menu) {
@@ -508,7 +555,16 @@ mod tests {
     }
 
     fn chrome<'a>(titles: Vec<&'a str>) -> ChromeView<'a> {
-        ChromeView { titles, active: 0, hover: Hover::None, menu_open: false, menu: None, panel: None }
+        ChromeView {
+            caption: Caption::NONE,
+            maximized: false,
+            titles,
+            active: 0,
+            hover: Hover::None,
+            menu_open: false,
+            menu: None,
+            panel: None,
+        }
     }
 
     fn glyph_colors(c: &Canvas) -> Vec<[f32; 4]> {
@@ -643,6 +699,29 @@ mod tests {
             assert!(c.layer(Layer::OverlayShapes).len() >= 3 + panel.buttons.len());
             assert!(c.glyph_count(Layer::OverlayText) > 20);
         }
+    }
+
+    #[test]
+    fn window_controls_are_drawn_only_with_a_custom_title_bar() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("");
+        let f = Fixture::new();
+        c.paint(800.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec!["Tab 1"])));
+        let plain = c.layer(Layer::UiShapes).len();
+
+        let mut ch = chrome(vec!["Tab 1"]);
+        ch.caption = Caption { buttons: true, left_inset: 0.0 };
+        ch.hover = Hover::CloseWindow;
+        c.paint(800.0, 300.0, |p| draw(p, &t, &f.view(), &ch));
+        let shapes = c.layer(Layer::UiShapes);
+        // minimize line + 4-sided maximize square + red close hover.
+        assert!(shapes.len() >= plain + 6);
+        assert!(shapes.iter().any(|i| i.color == Rgb::hex(0xe81123).rgba(1.0)));
+
+        ch.maximized = true;
+        c.paint(800.0, 300.0, |p| draw(p, &t, &f.view(), &ch));
+        // Restore icon: two squares, more strokes than the maximize square.
+        assert!(c.layer(Layer::UiShapes).len() > plain + 6);
     }
 
     #[test]
