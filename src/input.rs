@@ -270,6 +270,58 @@ mod tests {
     }
 
     #[test]
+    fn alt_prefixes_escape_except_on_macos() {
+        let r = enc(Key::Character("x".into()), Some("x"), ModifiersState::ALT);
+        let want: &[u8] = if cfg!(target_os = "macos") { b"x" } else { b"\x1bx" };
+        assert_eq!(r, want);
+    }
+
+    #[test]
+    fn special_control_keys() {
+        assert_eq!(enc(Key::Named(NamedKey::Space), None, ModifiersState::CONTROL), vec![0]);
+        assert_eq!(enc(Key::Named(NamedKey::Backspace), None, ModifiersState::CONTROL), vec![8]);
+        assert_eq!(enc(Key::Named(NamedKey::Backspace), None, ModifiersState::empty()), vec![0x7f]);
+        assert_eq!(enc(Key::Named(NamedKey::Escape), None, ModifiersState::empty()), vec![0x1b]);
+        assert_eq!(enc(Key::Character("?".into()), None, ModifiersState::CONTROL), vec![0x7f]);
+        // Ctrl with a key that has no control code falls back to the text.
+        assert_eq!(enc(Key::Character("é".into()), Some("é"), ModifiersState::CONTROL), "é".as_bytes());
+    }
+
+    #[test]
+    fn navigation_keys() {
+        let none = ModifiersState::empty();
+        assert_eq!(enc(Key::Named(NamedKey::Home), None, none), b"\x1b[H");
+        assert_eq!(encode_key(&Key::Named(NamedKey::End), None, none, TermMode::APP_CURSOR).unwrap().as_ref(), b"\x1bOF");
+        assert_eq!(enc(Key::Named(NamedKey::PageUp), None, none), b"\x1b[5~");
+        assert_eq!(enc(Key::Named(NamedKey::Insert), None, none), b"\x1b[2~");
+        assert_eq!(enc(Key::Named(NamedKey::F1), None, none), b"\x1bOP");
+        assert_eq!(enc(Key::Named(NamedKey::F1), None, ModifiersState::SHIFT), b"\x1b[1;2P");
+        assert_eq!(enc(Key::Named(NamedKey::F12), None, none), b"\x1b[24~");
+        assert_eq!(enc(Key::Named(NamedKey::ArrowLeft), None, ModifiersState::ALT | ModifiersState::SHIFT), b"\x1b[1;4D");
+    }
+
+    #[test]
+    fn keys_without_text_send_nothing() {
+        let r = encode_key(&Key::Named(NamedKey::Shift), None, ModifiersState::SHIFT, TermMode::empty());
+        assert!(r.is_none());
+        let r = encode_key(&Key::Character("a".into()), Some(""), ModifiersState::empty(), TermMode::empty());
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn mouse_wheel_motion_and_modifiers() {
+        let sgr = TermMode::SGR_MOUSE;
+        let up = encode_mouse(MouseButton::WheelUp, true, false, 0, 0, ModifiersState::empty(), sgr).unwrap();
+        assert_eq!(up, b"\x1b[<64;1;1M");
+        let drag = encode_mouse(MouseButton::Left, true, true, 2, 3, ModifiersState::CONTROL, sgr).unwrap();
+        assert_eq!(drag, b"\x1b[<48;3;4M");
+        // Legacy release reports button 3; far cells can't be encoded.
+        let rel = encode_mouse(MouseButton::Right, false, false, 0, 0, ModifiersState::empty(), TermMode::empty()).unwrap();
+        assert_eq!(rel[3], 32 + 3);
+        assert!(encode_mouse(MouseButton::Left, true, false, 300, 0, ModifiersState::empty(), TermMode::empty()).is_none());
+    }
+
+    #[test]
     fn bracketed_paste_strips_escapes() {
         let p = paste_bytes("ls\n\x1b[201~rm -rf /", TermMode::BRACKETED_PASTE);
         assert_eq!(p, b"\x1b[200~ls\r[201~rm -rf /\x1b[201~");

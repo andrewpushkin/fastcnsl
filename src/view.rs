@@ -460,3 +460,200 @@ fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>) {
     p.text(Layer::UiText, &status, status_x, ty, pal.ui_dim.rgba(a));
     p.text(Layer::UiText, "×", g.close.x + cw * 0.5, ty, pal.ui_dim.rgba(a));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chrome::{OptionsState, about_panel, options_panel};
+    use crate::config::ThemeMode;
+    use crate::render::testing::Canvas;
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::term::Config as TermConfig;
+    use alacritty_terminal::term::test::TermSize;
+    use alacritty_terminal::vte::ansi::Processor;
+
+    /// A 40×6 terminal that has parsed `bytes`, like the PTY thread does.
+    fn term(bytes: &str) -> Term<VoidListener> {
+        let mut t = Term::new(TermConfig::default(), &TermSize::new(40, 6), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut t, bytes.as_bytes());
+        t
+    }
+
+    struct Fixture {
+        palette: Palette,
+        search: Search,
+        code: CodeHighlighter,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self { palette: Palette::dark(), search: Search::new(), code: CodeHighlighter::new(true, "base16-ocean.dark") }
+        }
+
+        fn view(&self) -> View<'_> {
+            View {
+                palette: &self.palette,
+                search: &self.search,
+                code: &self.code,
+                focused: true,
+                bold_is_bright: false,
+                scale: 1.0,
+                padding: 0.0,
+                top: 30.0,
+                scrollbar_alpha: 1.0,
+                search_alpha: 1.0,
+            }
+        }
+    }
+
+    fn chrome<'a>(titles: Vec<&'a str>) -> ChromeView<'a> {
+        ChromeView { titles, active: 0, hover: Hover::None, menu_open: false, menu: None, panel: None }
+    }
+
+    fn glyph_colors(c: &Canvas) -> Vec<[f32; 4]> {
+        c.layer(Layer::Text).iter().filter(|i| i.kind != 0).map(|i| i.color).collect()
+    }
+
+    #[test]
+    fn named_and_indexed_colours() {
+        let p = Palette::dark();
+        let colors = Colors::default();
+        assert_eq!(resolve(Color::Named(NamedColor::Red), &colors, &p), p.ansi[1]);
+        assert_eq!(resolve(Color::Named(NamedColor::Foreground), &colors, &p), p.foreground);
+        assert_eq!(resolve(Color::Indexed(196), &colors, &p), Rgb::hex(0xff0000));
+        let spec = alacritty_terminal::vte::ansi::Rgb { r: 1, g: 2, b: 3 };
+        assert_eq!(resolve(Color::Spec(spec), &colors, &p), Rgb { r: 1, g: 2, b: 3 });
+        // Dim colours sit between the colour and the background.
+        let dim = named(NamedColor::DimRed, &p);
+        assert_ne!(dim, p.ansi[1]);
+        assert_ne!(dim, p.background);
+    }
+
+    #[test]
+    fn programs_can_override_palette_entries() {
+        let mut t = term("\x1b]4;1;rgb:12/34/56\x07");
+        let p = Palette::dark();
+        assert_eq!(color_for_index(&t, 1, &p), Rgb { r: 0x12, g: 0x34, b: 0x56 });
+        assert_eq!(color_for_index(&t, 2, &p), p.ansi[2]);
+        assert_eq!(color_for_index(&t, 256, &p), p.foreground);
+        assert_eq!(color_for_index(&t, 257, &p), p.background);
+        let _ = &mut t;
+    }
+
+    #[test]
+    fn span_lookup() {
+        let red = Rgb::hex(0xff0000);
+        let blue = Rgb::hex(0x0000ff);
+        let spans = [Span { start: 2, end: 4, color: red }, Span { start: 6, end: 7, color: blue }];
+        assert_eq!(span_at(&spans, 1), None);
+        assert_eq!(span_at(&spans, 2), Some(red));
+        assert_eq!(span_at(&spans, 3), Some(red));
+        assert_eq!(span_at(&spans, 4), None);
+        assert_eq!(span_at(&spans, 6), Some(blue));
+        assert_eq!(span_at(&[], 0), None);
+    }
+
+    #[test]
+    fn draws_one_glyph_per_visible_character_and_a_block_cursor() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("ab c\r\nxyz");
+        let f = Fixture::new();
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec!["Tab 1: sh"])));
+        assert_eq!(c.glyph_count(Layer::Text), 6);
+        // Block cursor after "xyz": one cursor-coloured cell background.
+        let cursor_bg = f.palette.cursor.rgba(1.0);
+        assert_eq!(c.layer(Layer::Background).iter().filter(|i| i.color == cursor_bg).count(), 1);
+        // Grid starts below the tab bar.
+        let first = c.layer(Layer::Text).iter().map(|i| i.pos[1]).fold(f32::MAX, f32::min);
+        assert!(first >= 30.0);
+    }
+
+    #[test]
+    fn sgr_colours_bold_and_underline() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("\x1b[31mR\x1b[0m \x1b[4mU\x1b[0m \x1b[7mI\x1b[0m");
+        let f = Fixture::new();
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec![])));
+        let colors = glyph_colors(&c);
+        assert!(colors.contains(&f.palette.ansi[1].rgba(1.0)), "red R");
+        // Underline is a thin rect in the text layer.
+        assert_eq!(c.layer(Layer::Text).iter().filter(|i| i.kind == 0).count(), 1);
+        // Inverse: background takes the foreground colour.
+        let inv_bg = f.palette.foreground.rgba(1.0);
+        assert!(c.layer(Layer::Background).iter().any(|i| i.color == inv_bg));
+    }
+
+    #[test]
+    fn search_matches_get_highlight_backgrounds() {
+        let Some(mut c) = Canvas::new() else { return };
+        let mut t = term("foo bar foo");
+        let mut f = Fixture::new();
+        f.search.open();
+        f.search.set_query("foo".into(), &mut t);
+        f.search.refresh(&t);
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec![])));
+        let bg = c.layer(Layer::Background);
+        let current = bg.iter().filter(|i| i.color == f.palette.current_match_bg.rgba(1.0)).count();
+        let other = bg.iter().filter(|i| i.color == f.palette.match_bg.rgba(1.0)).count();
+        assert_eq!((current, other), (3, 3), "one current and one other 3-letter match");
+        // The search bar is drawn too.
+        assert!(c.glyph_count(Layer::UiText) >= 3);
+    }
+
+    #[test]
+    fn printed_code_is_coloured() {
+        let Some(mut c) = Canvas::new() else { return };
+        crate::highlight::preload_blocking();
+        let mut t = term("$ cat a.c");
+        let mut f = Fixture::new();
+        let line = crate::highlight::command_line(t.grid());
+        f.code.on_enter(t.grid(), &line);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut t, b"\r\nint main(void) { return 0; }\r\n$ ");
+        f.code.update(t.grid());
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec![])));
+        let fg = f.palette.foreground.rgba(1.0);
+        let coloured = glyph_colors(&c).iter().filter(|col| **col != fg).count();
+        assert!(coloured >= 10, "keywords and literals coloured, got {coloured}");
+    }
+
+    #[test]
+    fn tab_bar_menu_and_panels_draw_on_their_layers() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("");
+        let f = Fixture::new();
+        let menu = Menu::main(400.0, 30.0, ThemeMode::Dark, false, 2);
+        let mut ch = chrome(vec!["Tab 1: vim", "Tab 2: cat"]);
+        ch.menu = Some(&menu);
+        ch.menu_open = true;
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &ch));
+        assert!(c.glyph_count(Layer::UiText) >= "Tab1:vim".len(), "tab titles");
+        assert!(!c.layer(Layer::OverlayShapes).is_empty());
+        assert!(c.glyph_count(Layer::OverlayText) > 20, "menu labels");
+
+        let m = Metrics { width: 900.0, height: 700.0, scale: 1.0, cw: 8.0, ch: 17.0 };
+        let opts = options_panel(&m, &OptionsState { theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true });
+        let about = about_panel(&m, "gpu", "/cfg");
+        for panel in [&opts, &about] {
+            let mut ch = chrome(vec!["Tab 1"]);
+            ch.panel = Some(panel);
+            c.paint(900.0, 700.0, |p| draw(p, &t, &f.view(), &ch));
+            // Dimmed backdrop + panel + border + buttons.
+            assert!(c.layer(Layer::OverlayShapes).len() >= 3 + panel.buttons.len());
+            assert!(c.glyph_count(Layer::OverlayText) > 20);
+        }
+    }
+
+    #[test]
+    fn scrollbar_appears_with_history() {
+        let Some(mut c) = Canvas::new() else { return };
+        let f = Fixture::new();
+        c.paint(400.0, 300.0, |p| draw(p, &term("x"), &f.view(), &chrome(vec![])));
+        assert!(c.layer(Layer::UiShapes).iter().all(|i| i.kind != 3 || i.pos[1] < 30.0), "no scrollbar without history");
+        let many: String = (0..20).map(|i| format!("line {i}\r\n")).collect();
+        c.paint(400.0, 300.0, |p| draw(p, &term(&many), &f.view(), &chrome(vec![])));
+        let x = 400.0 - crate::ui::scrollbar_width(1.0);
+        assert!(c.layer(Layer::UiShapes).iter().any(|i| i.kind == 3 && i.pos[0] >= x - 1.0), "scrollbar track/thumb");
+    }
+}

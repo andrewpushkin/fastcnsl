@@ -176,7 +176,10 @@ pub struct ConfigWatcher {
 
 impl ConfigWatcher {
     pub fn new() -> Self {
-        let path = Config::path();
+        Self::with_path(Config::path())
+    }
+
+    fn with_path(path: Option<PathBuf>) -> Self {
         let last = path.as_deref().and_then(mtime);
         Self { path, last }
     }
@@ -226,6 +229,64 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back, Config::default());
+    }
+
+    /// A fresh directory under the system temp dir for one test.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ragamuffin-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn written_file_loads_back_with_comments() {
+        let path = temp_dir("write").join("sub").join("config.toml");
+        let cfg = Config { font_size: 15.0, theme: ThemeMode::Light, ..Config::default() };
+        cfg.write_default(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# ragamuffin settings"));
+        assert_eq!(Config::load(&path).unwrap(), Some(cfg));
+    }
+
+    #[test]
+    fn missing_file_is_none_and_broken_file_is_an_error() {
+        let dir = temp_dir("load");
+        assert_eq!(Config::load(&dir.join("absent.toml")).unwrap(), None);
+        let bad = dir.join("bad.toml");
+        std::fs::write(&bad, "font_size = \"big\"").unwrap();
+        let err = Config::load(&bad).unwrap_err();
+        assert!(err.contains("bad.toml"), "{err}");
+    }
+
+    #[test]
+    fn watcher_reports_changes_once_and_skips_own_saves() {
+        let path = temp_dir("watch").join("config.toml");
+        let mut w = ConfigWatcher::with_path(Some(path.clone()));
+        assert_eq!(w.poll(), None, "no file, no change");
+
+        std::fs::write(&path, "font_size = 20.0").unwrap();
+        assert_eq!(w.poll().map(|c| c.font_size), Some(20.0));
+        assert_eq!(w.poll(), None, "reported once");
+
+        // A broken edit is reported in the log, not applied.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "font_size = [").unwrap();
+        assert_eq!(w.poll(), None);
+
+        // The app's own save is marked as seen.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "font_size = 9.0").unwrap();
+        w.mark_seen();
+        assert_eq!(w.poll(), None);
+    }
+
+    #[test]
+    fn theme_mode_cycles_through_all_three() {
+        let m = ThemeMode::System;
+        assert_eq!(m.next(), ThemeMode::Dark);
+        assert_eq!(m.next().next(), ThemeMode::Light);
+        assert_eq!(m.next().next().next(), ThemeMode::System);
     }
 
     #[test]

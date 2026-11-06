@@ -448,6 +448,67 @@ mod tests {
     }
 
     #[test]
+    fn tab_close_buttons_sit_inside_their_tabs() {
+        let t = tab_bar(&m(), 3);
+        for slot in &t.tabs {
+            let (r, c) = (slot.rect, slot.close);
+            assert!(c.x >= r.x && c.x + c.w <= r.x + r.w && c.y >= r.y && c.y + c.h <= r.y + r.h);
+        }
+        // + follows the last tab; the menu button is at the right edge.
+        let last = t.tabs[2].rect;
+        assert!(t.plus.x >= last.x + last.w);
+        assert_eq!(t.menu.x + t.menu.w, 1000.0);
+        assert_eq!(t.height, tab_bar_height(&m()));
+    }
+
+    #[test]
+    fn menus_open_inside_the_window() {
+        // Right-click near the bottom-right corner: shifted up and left.
+        let menu = Menu::context(995.0, 695.0, true);
+        let l = menu.layout(&m());
+        assert!(l.rect.x + l.rect.w <= 1000.0);
+        assert!(l.rect.y + l.rect.h <= 700.0);
+        // The ⋮ menu grows leftwards from its anchor.
+        let main = Menu::main(1000.0, 31.0, ThemeMode::Light, true, 1);
+        let l = main.layout(&m());
+        assert_eq!(l.rect.x + l.rect.w, 1000.0);
+        assert_eq!(l.rect.y, 31.0);
+        // Theme radio items: exactly the current one is checked.
+        let checked: Vec<_> = main.items.iter().filter(|i| i.checked).map(|i| i.action).collect();
+        assert_eq!(checked, vec![Some(Action::Theme(ThemeMode::Light))]);
+        assert!(l.hint_x > l.rect.x);
+    }
+
+    #[test]
+    fn copy_is_enabled_only_with_a_selection() {
+        for sel in [false, true] {
+            let menu = Menu::context(0.0, 0.0, sel);
+            let copy = menu.items.iter().find(|i| i.action == Some(Action::Copy)).unwrap();
+            assert_eq!(copy.enabled, sel);
+        }
+    }
+
+    #[test]
+    fn about_panel_shows_version_gpu_and_close() {
+        let p = about_panel(&m(), "Test GPU (Vulkan)", "/home/x/.config/ragamuffin/config.toml");
+        let text: Vec<&str> = p.lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(text.iter().any(|t| t.contains(env!("CARGO_PKG_VERSION"))));
+        assert!(text.contains(&"Test GPU (Vulkan)"));
+        assert!(p.buttons.iter().filter(|b| b.action == Action::ClosePanel).count() == 2, "× and Close");
+        assert!(p.rect.x >= 0.0 && p.rect.x + p.rect.w <= 1000.0);
+    }
+
+    #[test]
+    fn options_panel_fits_small_windows() {
+        let small = Metrics { width: 500.0, height: 300.0, ..m() };
+        let p = options_panel(&small, &OptionsState { theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false });
+        assert!(p.rect.w <= 500.0 && p.rect.h <= 300.0);
+        assert!(p.lines.iter().all(|l| l.y + small.ch <= p.rect.y + p.rect.h), "no text below the panel");
+        let off = p.buttons.iter().find(|b| b.action == Action::CodeHighlight(false)).unwrap();
+        assert!(off.active);
+    }
+
+    #[test]
     fn options_panel_has_theme_buttons_and_shortcuts() {
         let p = options_panel(&m(), &OptionsState { theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true });
         let dark = p.buttons.iter().find(|b| b.action == Action::Theme(ThemeMode::Dark)).unwrap();

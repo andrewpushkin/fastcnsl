@@ -130,9 +130,11 @@ pub fn program_name(line: &str) -> Option<String> {
 
 /// Lower-cased base name without directory or `.exe`.
 fn base_name(tok: &str) -> String {
-    let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
-    let base = base.strip_suffix(".exe").unwrap_or(base);
-    base.to_ascii_lowercase()
+    let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok).to_ascii_lowercase();
+    match base.strip_suffix(".exe") {
+        Some(b) => b.to_owned(),
+        None => base,
+    }
 }
 
 /// Whitespace split that keeps quoted strings together and splits off
@@ -324,6 +326,29 @@ mod tests {
         assert_eq!(prog("$ cd /tmp"), None);
         assert_eq!(prog("$ export FOO=1"), None);
         assert_eq!(prog("PS C:\\> Set-Location D:\\"), None);
+    }
+
+    #[test]
+    fn every_viewer_is_recognised() {
+        for v in ["cat", "bat", "batcat", "head", "tail", "tac", "type", "gc", "Get-Content", "more"] {
+            assert_eq!(command_hint(&format!("$ {v} x.rs")), file("x.rs"), "{v}");
+        }
+        assert_eq!(command_hint("$ git show HEAD"), Some(Hint::Diff));
+        assert_eq!(command_hint("$ git log"), None);
+        assert_eq!(command_hint("$ CAT.EXE a.py"), file("a.py"));
+    }
+
+    #[test]
+    fn more_sniffing() {
+        assert_eq!(sniff(&["<?xml version=\"1.0\"?>"]), Some("xml"));
+        assert_eq!(sniff(&["<!DOCTYPE html>", "<html>"]), Some("html"));
+        assert_eq!(sniff(&["diff --git a/x b/x"]), Some("diff"));
+        assert_eq!(sniff(&["package main", "", "func main() {", "  x := 1", "}"]), Some("go"));
+        assert_eq!(sniff(&["#!/usr/bin/env node"]), Some("js"));
+        assert_eq!(sniff(&["#!/usr/bin/ruby"]), Some("rb"));
+        assert_eq!(sniff(&["#!/usr/bin/whatever"]), None);
+        assert_eq!(sniff(&["", "   ", ""]), None);
+        assert_eq!(sniff(&[]), None);
     }
 
     #[test]

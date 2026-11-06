@@ -289,6 +289,34 @@ mod tests {
         assert_eq!(p.indexed(255), Rgb::hex(0xeeeeee));
     }
 
+    #[test]
+    fn mode_picks_the_palette() {
+        assert!(Palette::for_mode(ThemeMode::System, true).dark);
+        assert!(!Palette::for_mode(ThemeMode::System, false).dark);
+        assert!(Palette::for_mode(ThemeMode::Dark, false).dark);
+        assert!(!Palette::for_mode(ThemeMode::Light, true).dark);
+    }
+
+    #[test]
+    fn colour_helpers() {
+        assert_eq!(Rgb::hex(0x123456), Rgb { r: 0x12, g: 0x34, b: 0x56 });
+        assert_eq!(Rgb::hex(0xff0000).rgba(0.5), [1.0, 0.0, 0.0, 0.5]);
+        let (a, b) = (Rgb::hex(0x000000), Rgb::hex(0xffffff));
+        assert_eq!(a.mix(b, 0.0), a);
+        assert_eq!(a.mix(b, 1.0), b);
+        assert_eq!(a.mix(b, 0.5), Rgb::hex(0x808080));
+    }
+
+    #[test]
+    fn palettes_have_readable_contrast() {
+        // Text must differ clearly from the background in both themes.
+        for p in [Palette::dark(), Palette::light()] {
+            let lum = |c: Rgb| 0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32;
+            assert!((lum(p.foreground) - lum(p.background)).abs() > 120.0);
+            assert!((lum(p.current_match_fg) - lum(p.current_match_bg)).abs() > 60.0);
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn parses_os_theme_sources() {

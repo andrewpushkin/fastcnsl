@@ -58,3 +58,29 @@ pub fn all() -> Vec<(String, &'static str)> {
     }
     v
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ThemeMode;
+
+    #[test]
+    fn menu_hints_use_the_platform_modifier() {
+        for a in [Action::NewTab, Action::CloseTab, Action::Find, Action::Copy, Action::Paste, Action::Options] {
+            let h = hint(a);
+            assert!(h.starts_with(primary()), "{a:?}: {h}");
+        }
+        assert!(hint(Action::About).is_empty());
+        assert!(hint(Action::Theme(ThemeMode::Dark)).is_empty());
+    }
+
+    #[test]
+    fn every_menu_hint_is_listed_in_options() {
+        let keys: Vec<String> = all().into_iter().map(|(k, _)| k).collect();
+        for a in [Action::NewTab, Action::CloseTab, Action::Find, Action::Options] {
+            let h = hint(a);
+            assert!(keys.iter().any(|k| k.contains(&h)), "{h} missing from the Options list");
+        }
+        assert!(all().iter().all(|(k, what)| !k.is_empty() && !what.is_empty()));
+    }
+}

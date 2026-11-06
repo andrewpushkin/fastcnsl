@@ -30,7 +30,7 @@
 #   make build            release build for this machine -> dist/ragamuffin
 #   make run              build, then start it
 #   make debug            debug build
-#   make test             unit tests
+#   make tests            all unit tests (also: make test)
 #   make clippy           lints, warnings are errors
 #   make fmt              format the code
 #   make check-all        type-check every release target
@@ -51,6 +51,9 @@ TTY := $(shell [ -t 0 ] && [ -t 1 ] && echo -it)
 docker_run = mkdir -p $(CARGO_CACHE) && docker run --rm $(TTY) \
 	-u $(shell id -u):$(shell id -g) \
 	-e HOME=/tmp \
+	-e USER=$(shell id -un) \
+	-e SHELL=/bin/bash \
+	-e XDG_RUNTIME_DIR=/tmp \
 	-e CARGO_TARGET_DIR=/work/$(2) \
 	-v $(CURDIR):/work \
 	-v $(CARGO_CACHE):/cargo \
@@ -62,7 +65,7 @@ DEV_STAMP := target/.image-dev
 DEV_RUN    = $(call docker_run,$(DEV_IMAGE),target)
 
 .PHONY: all $(PLATFORMS) $(PACKAGES) \
-	build run debug test clippy fmt check-all screenshot shell clean distclean
+	build run debug tests test clippy fmt check-all screenshot shell clean distclean
 
 # ---------------------------------------------------------------- releases
 
@@ -126,8 +129,12 @@ run: build
 debug: $(DEV_STAMP)
 	$(DEV_RUN) cargo build
 
-test: $(DEV_STAMP)
+# Unit tests, including GPU drawing (headless Mesa Vulkan in the image) and
+# real shells on a PTY. Not run by GitHub Actions.
+tests: $(DEV_STAMP)
 	$(DEV_RUN) cargo test
+
+test: tests
 
 clippy: $(DEV_STAMP)
 	$(DEV_RUN) cargo clippy --all-targets -- -D warnings

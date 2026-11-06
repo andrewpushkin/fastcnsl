@@ -226,6 +226,84 @@ mod tests {
     }
 
     #[test]
+    fn empty_query_matches_nothing() {
+        let mut term = mock_term("abc");
+        let mut s = Search::new();
+        s.open();
+        s.set_query(String::new(), &mut term);
+        s.refresh(&term);
+        assert!(s.visible.is_empty());
+        assert_eq!((s.total, s.index, s.current.is_some()), (0, None, false));
+    }
+
+    #[test]
+    fn close_clears_matches_but_keeps_the_query() {
+        let mut term = mock_term("foo foo");
+        let mut s = Search::new();
+        s.open();
+        s.set_query("foo".into(), &mut term);
+        s.refresh(&term);
+        assert_eq!(s.visible.len(), 2);
+        s.close();
+        assert!(!s.open && !s.focused);
+        assert!(s.visible.is_empty() && s.current.is_none());
+        assert_eq!(s.query, "foo");
+    }
+
+    #[test]
+    fn new_output_triggers_a_recount_only_while_open() {
+        let mut term = mock_term("foo");
+        let mut s = Search::new();
+        s.set_query("foo".into(), &mut term);
+        s.content_changed();
+        assert!(!s.recount_pending(), "closed search ignores output");
+        s.open();
+        s.content_changed();
+        assert!(s.recount_pending());
+        s.refresh(&term);
+        assert!(s.recount_pending(), "throttled: set_query counted just now");
+        std::thread::sleep(RECOUNT_EVERY);
+        s.refresh(&term);
+        assert!(!s.recount_pending(), "recounted once the throttle window passed");
+    }
+
+    #[test]
+    fn index_follows_steps_in_both_directions() {
+        let mut term = mock_term("x x x x");
+        let mut s = Search::new();
+        s.set_query("x".into(), &mut term);
+        // Starts at the match nearest the bottom-right: the last one.
+        assert_eq!(s.index, Some(4));
+        s.step(&mut term, Direction::Left);
+        assert_eq!(s.index, Some(3));
+        s.step(&mut term, Direction::Right);
+        s.step(&mut term, Direction::Right);
+        assert_eq!(s.index, Some(1), "wraps around");
+    }
+
+    #[test]
+    fn matches_across_lines_and_wide_characters() {
+        let mut term = mock_term("日本 foo\r\nbar foo");
+        let mut s = Search::new();
+        s.open();
+        s.set_query("foo".into(), &mut term);
+        s.refresh(&term);
+        assert_eq!(s.visible.len(), 2);
+        assert_eq!(s.visible[0].start().column.0, 5, "after two double-width chars and a space");
+    }
+
+    #[test]
+    fn escaping_covers_every_regex_metacharacter() {
+        let mut term = mock_term("a+b (c) [d] {e} ^f$ g|h");
+        let mut s = Search::new();
+        for q in ["a+b", "(c)", "[d]", "{e}", "^f$", "g|h"] {
+            s.set_query(q.into(), &mut term);
+            assert_eq!(s.total, 1, "{q}");
+            assert!(!s.invalid);
+        }
+    }
+
+    #[test]
     fn invalid_regex_is_reported() {
         let mut term = mock_term("abc");
         let mut s = Search::new();

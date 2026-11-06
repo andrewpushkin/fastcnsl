@@ -44,7 +44,7 @@ pub enum Layer {
     OverlayText = 5,
 }
 
-const LAYERS: usize = 6;
+pub(crate) const LAYERS: usize = 6;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -80,7 +80,18 @@ pub struct Painter<'a> {
     pub height: f32,
 }
 
-impl Painter<'_> {
+impl<'a> Painter<'a> {
+    pub(crate) fn new(
+        layers: &'a mut [Vec<Instance>; LAYERS],
+        glyphs: &'a mut GlyphCache,
+        queue: &'a wgpu::Queue,
+        width: f32,
+        height: f32,
+    ) -> Self {
+        let cell = glyphs.metrics;
+        Self { layers, glyphs, queue, cell, width, height }
+    }
+
     pub fn rect(&mut self, layer: Layer, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
         self.layers[layer as usize].push(Instance {
             pos: [x, y],
@@ -333,15 +344,8 @@ impl Renderer {
             l.clear();
         }
         self.glyphs.overflowed = false;
-        let cell = self.glyphs.metrics;
-        let mut painter = Painter {
-            layers: &mut self.layers,
-            glyphs: &mut self.glyphs,
-            queue: &self.queue,
-            cell,
-            width: self.config.width as f32,
-            height: self.config.height as f32,
-        };
+        let (w, h) = (self.config.width as f32, self.config.height as f32);
+        let mut painter = Painter::new(&mut self.layers, &mut self.glyphs, &self.queue, w, h);
         build(&mut painter);
     }
 
@@ -407,5 +411,89 @@ impl Renderer {
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
+    }
+}
+
+/// Test support: a GPU device without a window, and a painter over it.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    /// A headless device, or None where no adapter exists (tests then skip).
+    pub fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+            ..Default::default()
+        }))
+        .ok()
+    }
+
+    /// Everything a test needs to paint a frame and inspect the quads.
+    pub struct Canvas {
+        /// Kept alive for the queue and atlas texture.
+        _device: wgpu::Device,
+        pub queue: wgpu::Queue,
+        pub glyphs: GlyphCache,
+        pub layers: [Vec<Instance>; LAYERS],
+    }
+
+    impl Canvas {
+        pub fn new() -> Option<Self> {
+            let Some((device, queue)) = device() else {
+                eprintln!("no GPU adapter: skipping GPU test");
+                return None;
+            };
+            let glyphs = GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2);
+            Some(Self { _device: device, queue, glyphs, layers: Default::default() })
+        }
+
+        pub fn paint(&mut self, width: f32, height: f32, f: impl FnOnce(&mut Painter<'_>)) {
+            for l in &mut self.layers {
+                l.clear();
+            }
+            let mut p = Painter::new(&mut self.layers, &mut self.glyphs, &self.queue, width, height);
+            f(&mut p);
+        }
+
+        pub fn layer(&self, l: Layer) -> &[Instance] {
+            &self.layers[l as usize]
+        }
+
+        pub fn glyph_count(&self, l: Layer) -> usize {
+            self.layer(l).iter().filter(|i| i.kind == KIND_MASK_GLYPH || i.kind == KIND_COLOR_GLYPH).count()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::Canvas;
+    use super::*;
+
+    #[test]
+    fn painter_writes_each_shape_to_its_layer() {
+        let Some(mut c) = Canvas::new() else { return };
+        c.paint(800.0, 600.0, |p| {
+            p.rect(Layer::Background, 1.0, 2.0, 3.0, 4.0, [1.0; 4]);
+            p.rounded(Layer::UiShapes, 0.0, 0.0, 10.0, 10.0, 3.0, [1.0; 4]);
+            let end = p.text(Layer::OverlayText, "ab c", 10.0, 0.0, [1.0; 4]);
+            assert_eq!(end, 10.0 + 4.0 * p.cell.width);
+        });
+        let bg = c.layer(Layer::Background);
+        assert_eq!(bg.len(), 1);
+        assert_eq!((bg[0].pos, bg[0].size, bg[0].kind), ([1.0, 2.0], [3.0, 4.0], KIND_RECT));
+        assert_eq!(c.layer(Layer::UiShapes)[0].kind, KIND_ROUNDED);
+        assert_eq!(c.layer(Layer::UiShapes)[0].radius, 3.0);
+        // Three visible glyphs; the space draws nothing.
+        assert_eq!(c.glyph_count(Layer::OverlayText), 3);
+        assert!(c.layer(Layer::Text).is_empty());
+    }
+
+    #[test]
+    fn instance_layout_matches_the_shader() {
+        // pos, size (2+2), uv (4), color (4), kind, radius = 14 × 4 bytes.
+        assert_eq!(std::mem::size_of::<Instance>(), 56);
     }
 }

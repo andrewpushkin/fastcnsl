@@ -292,3 +292,61 @@ fn resolve_family(fs: &mut FontSystem, wanted: &str) -> String {
     log::warn!("font '{wanted}' not found, using {any:?}");
     any.unwrap_or_else(|| wanted.to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::testing;
+
+    fn cache() -> Option<(GlyphCache, wgpu::Queue)> {
+        let (device, queue) = testing::device()?;
+        Some((GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2), queue))
+    }
+
+    #[test]
+    fn cell_metrics_are_sane() {
+        let Some((g, _)) = cache() else { return };
+        let m = g.metrics;
+        assert!(m.width >= 6.0 && m.width <= 14.0, "width {}", m.width);
+        assert_eq!(m.height, (16.0f32 * 1.2).round());
+        assert!(m.baseline > 0.0 && m.baseline < m.height);
+        assert_eq!(m.width.fract(), 0.0, "cell width is whole pixels");
+    }
+
+    #[test]
+    fn glyphs_are_cached_and_whitespace_is_empty() {
+        let Some((mut g, q)) = cache() else { return };
+        let a = g.get(&q, 'A', GlyphStyle::REGULAR).expect("A has a glyph");
+        assert!(a.uv[2] > 0.0 && a.uv[3] > 0.0);
+        assert!(!a.colored);
+        let again = g.get(&q, 'A', GlyphStyle::REGULAR).unwrap();
+        assert_eq!(a.uv, again.uv, "second lookup hits the cache");
+        assert!(g.get(&q, ' ', GlyphStyle::REGULAR).is_none());
+        assert!(g.get(&q, '\t', GlyphStyle::REGULAR).is_none());
+        // Styles and non-ASCII get their own atlas slots.
+        let bold = g.get(&q, 'A', GlyphStyle { bold: true, italic: false }).unwrap();
+        assert_ne!(bold.uv[..2], a.uv[..2]);
+        let cyr = g.get(&q, 'Ж', GlyphStyle::REGULAR).expect("fallback finds Cyrillic");
+        assert_ne!(cyr.uv[..2], a.uv[..2]);
+    }
+
+    #[test]
+    fn changing_font_size_changes_metrics_and_clears_the_atlas() {
+        let Some((mut g, q)) = cache() else { return };
+        let small = g.metrics;
+        g.get(&q, 'x', GlyphStyle::REGULAR);
+        g.set_font("DejaVu Sans Mono", 32.0, 1.2);
+        assert!(g.metrics.width > small.width);
+        assert!(g.metrics.height > small.height);
+        assert!(g.other.is_empty());
+        assert!(g.ascii.iter().all(|s| matches!(s, Slot::Unloaded)));
+    }
+
+    #[test]
+    fn unknown_family_falls_back_to_an_installed_monospace_font() {
+        let Some((device, _)) = testing::device() else { return };
+        let g = GlyphCache::new(&device, "No Such Font 12345", 16.0, 1.2);
+        assert_ne!(g.family, "No Such Font 12345");
+        assert!(g.metrics.width > 0.0);
+    }
+}

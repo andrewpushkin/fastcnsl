@@ -143,6 +143,53 @@ mod tests {
     }
 
     #[test]
+    fn rect_contains_is_half_open() {
+        let r = Rect { x: 10.0, y: 10.0, w: 5.0, h: 5.0 };
+        assert!(r.contains(10.0, 10.0));
+        assert!(r.contains(14.9, 14.9));
+        assert!(!r.contains(15.0, 12.0));
+        assert!(!r.contains(9.9, 12.0));
+    }
+
+    #[test]
+    fn scrollbar_sits_below_the_tab_bar_and_thumb_has_a_minimum() {
+        let g = scroll_geometry(800.0, 30.0, 600.0, 1.0, 1_000_000, 30, 0).unwrap();
+        assert!(g.track.y >= 30.0);
+        assert!(g.thumb.h >= 24.0, "huge history still leaves a grabbable thumb");
+        assert_eq!(g.track.x + g.track.w, 800.0);
+        // Dragging past either end clamps.
+        assert_eq!(offset_for_thumb(&g, -500.0, 1000), 1000);
+        assert_eq!(offset_for_thumb(&g, 5000.0, 1000), 0);
+    }
+
+    #[test]
+    fn search_bar_is_right_aligned_below_the_tab_bar() {
+        let g = search_geometry(1000.0, 30.0, 1.0, 8.0, 17.0);
+        assert!(g.bar.y >= 30.0);
+        assert!(g.bar.x + g.bar.w <= 1000.0 - scrollbar_width(1.0));
+        assert!(g.close.x >= g.bar.x && g.close.x + g.close.w <= g.bar.x + g.bar.w + 0.01);
+        // Narrow windows shrink the bar instead of overflowing.
+        let narrow = search_geometry(200.0, 0.0, 1.0, 8.0, 17.0);
+        assert!(narrow.bar.x >= 0.0);
+    }
+
+    #[test]
+    fn scrollbar_is_active_while_used() {
+        let mut s = Scrollbar::new(0.4);
+        assert!(!s.active());
+        s.hover = true;
+        assert!(s.active());
+        s.hover = false;
+        s.drag = Some(3.0);
+        assert!(s.active());
+        s.drag = None;
+        s.last_scroll = Some(Instant::now());
+        assert!(s.active());
+        s.last_scroll = Some(Instant::now() - SCROLL_ACTIVE_FOR - Duration::from_millis(1));
+        assert!(!s.active());
+    }
+
+    #[test]
     fn fade_reaches_target() {
         let mut f = Fade::new(0.0);
         std::thread::sleep(Duration::from_millis(110));

@@ -103,6 +103,13 @@ struct State {
     wake_at: Option<Instant>,
 }
 
+/// Writes "Tab N: app" into `buf`, reusing its allocation.
+fn write_label(buf: &mut String, index: usize, app: &str) {
+    use std::fmt::Write;
+    buf.clear();
+    let _ = write!(buf, "Tab {}: {}", index + 1, app);
+}
+
 fn shell_name(cfg: &Config) -> String {
     let shell = if cfg.shell.is_empty() { std::env::var("SHELL").unwrap_or_default() } else { cfg.shell.clone() };
     let name = shell.rsplit(['/', '\\']).next().unwrap_or("").trim_end_matches(".exe");
@@ -343,9 +350,7 @@ impl State {
     /// something new.
     fn relabel(&mut self) {
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            tab.label.clear();
-            use std::fmt::Write;
-            let _ = write!(tab.label, "Tab {}: {}", i + 1, tab.app);
+            write_label(&mut tab.label, i, &tab.app);
         }
         self.update_window_title();
     }
@@ -1231,5 +1236,34 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         el.set_control_flow(ControlFlow::WaitUntil(deadline));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_points_to_pixels() {
+        assert_eq!(font_px(12.0, 1.0), 16.0);
+        assert_eq!(font_px(12.0, 2.0), 32.0);
+        assert_eq!(font_px(9.0, 1.5), 18.0);
+    }
+
+    #[test]
+    fn tab_labels() {
+        let mut buf = String::from("old");
+        write_label(&mut buf, 0, "vim");
+        assert_eq!(buf, "Tab 1: vim");
+        write_label(&mut buf, 11, "cargo");
+        assert_eq!(buf, "Tab 12: cargo");
+    }
+
+    #[test]
+    fn shell_name_from_settings() {
+        let cfg = |shell: &str| Config { shell: shell.into(), ..Config::default() };
+        assert_eq!(shell_name(&cfg("/usr/bin/zsh")), "zsh");
+        assert_eq!(shell_name(&cfg("C:\\Windows\\System32\\cmd.exe")), "cmd");
+        assert_eq!(shell_name(&cfg("pwsh.exe")), "pwsh");
     }
 }

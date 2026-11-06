@@ -34,6 +34,15 @@ static ASSETS: OnceLock<Assets> = OnceLock::new();
 
 /// Loads syntax definitions on a background thread (~30 ms) so startup
 /// isn't delayed. Highlighting starts as soon as they're ready.
+/// Loads syntax definitions on the calling thread (tests).
+#[cfg(test)]
+pub fn preload_blocking() {
+    ASSETS.get_or_init(|| Assets {
+        syntaxes: SyntaxSet::load_defaults_nonewlines(),
+        themes: ThemeSet::load_defaults(),
+    });
+}
+
 pub fn preload() {
     std::thread::spawn(|| {
         ASSETS.get_or_init(|| Assets {
@@ -462,6 +471,150 @@ mod tests {
         hl.on_enter(term.grid(), &command_line(term.grid()));
         hl.update(term.grid());
         assert!(!hl.row(2).is_empty(), "python def line should be coloured");
+    }
+
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::term::test::TermSize;
+    use alacritty_terminal::term::{Config as TermConfig, Term};
+    use alacritty_terminal::vte::ansi::Processor;
+
+    /// A real terminal fed through the escape-sequence parser.
+    struct Tty {
+        term: Term<VoidListener>,
+        parser: Processor,
+    }
+
+    impl Tty {
+        fn new(cols: usize, lines: usize, history: usize) -> Self {
+            let cfg = TermConfig { scrolling_history: history, ..TermConfig::default() };
+            Self { term: Term::new(cfg, &TermSize::new(cols, lines), VoidListener), parser: Processor::new() }
+        }
+
+        fn feed(&mut self, s: &str) {
+            self.parser.advance(&mut self.term, s.as_bytes());
+        }
+
+        /// Types a command and presses Enter, as the app does.
+        fn run(&mut self, hl: &mut CodeHighlighter, cmd: &str) {
+            self.feed(cmd);
+            let line = command_line(self.term.grid());
+            hl.on_enter(self.term.grid(), &line);
+            self.feed("\r\n");
+        }
+
+        /// Absolute row of the first screen/history row starting with `prefix`.
+        fn find(&self, prefix: &str) -> i64 {
+            let g = self.term.grid();
+            let hist = g.history_size() as i64;
+            (g.topmost_line().0..=g.bottommost_line().0)
+                .find(|&l| {
+                    let mut t = String::new();
+                    append_row(&mut t, g, Line(l));
+                    t.starts_with(prefix)
+                })
+                .map(|l| hist + l as i64)
+                .unwrap_or_else(|| panic!("{prefix:?} not on screen"))
+        }
+    }
+
+    #[test]
+    fn colours_follow_their_rows_when_full_scrollback_drops_lines() {
+        ready();
+        let mut tty = Tty::new(40, 5, 10);
+        let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
+        for i in 0..12 {
+            tty.feed(&format!("filler {i}\r\n"));
+        }
+        tty.run(&mut hl, "$ cat a.rs");
+        tty.feed("fn main() {\r\n    let x = 1;\r\n}\r\n$ ");
+        hl.update(tty.term.grid());
+        let before = tty.find("fn main");
+        assert!(!hl.row(before).is_empty());
+
+        // Three more lines push three old ones out of the full history.
+        tty.feed("a\r\nb\r\nc\r\n");
+        hl.update(tty.term.grid());
+        let after = tty.find("fn main");
+        assert_eq!(after, before - 3, "rows shifted");
+        assert!(!hl.row(after).is_empty(), "colours moved with the code");
+        assert!(hl.row(tty.find("$ cat")).is_empty());
+    }
+
+    #[test]
+    fn blocks_drop_when_their_text_scrolls_away_or_is_cleared() {
+        ready();
+        let mut tty = Tty::new(40, 5, 10);
+        let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
+        tty.run(&mut hl, "$ cat a.c");
+        tty.feed("int x;\r\n$ ");
+        hl.update(tty.term.grid());
+        assert!(!hl.blocks.is_empty());
+        // Clear screen and scrollback, like `clear`.
+        tty.feed("\x1b[H\x1b[2J\x1b[3J");
+        hl.update(tty.term.grid());
+        assert!(hl.blocks.is_empty());
+    }
+
+    #[test]
+    fn wrapped_lines_are_highlighted_as_one_line() {
+        ready();
+        let mut tty = Tty::new(20, 6, 100);
+        let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
+        tty.run(&mut hl, "$ cat a.c");
+        // 30 characters: wraps onto a second row in the middle of a string.
+        tty.feed("char *s = \"abcdefghijklmnop\";\r\n$ ");
+        hl.update(tty.term.grid());
+        let first = tty.find("char");
+        let second = hl.row(first + 1);
+        assert!(!second.is_empty(), "continuation row is coloured");
+        // The continuation is inside the string, so it gets the string colour.
+        let string_color = hl.row(first).last().unwrap().color;
+        assert_eq!(second[0].color, string_color);
+    }
+
+    #[test]
+    fn command_line_joins_wrapped_rows() {
+        let mut tty = Tty::new(10, 4, 10);
+        tty.feed("$ cat some/long/path.rs");
+        assert_eq!(command_line(tty.term.grid()), "$ cat some/long/path.rs");
+    }
+
+    #[test]
+    fn theme_change_rehighlights_and_disabled_does_nothing() {
+        ready();
+        let mut tty = Tty::new(40, 6, 100);
+        let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
+        tty.run(&mut hl, "$ cat a.py");
+        tty.feed("def f(): return 1\r\n$ ");
+        hl.update(tty.term.grid());
+        let row = tty.find("def");
+        let dark = hl.row(row).to_vec();
+        hl.set_theme("InspiredGitHub");
+        assert!(hl.row(row).is_empty(), "old colours dropped");
+        hl.update(tty.term.grid());
+        assert!(!hl.row(row).is_empty());
+        assert_ne!(hl.row(row), dark.as_slice(), "new theme, new colours");
+
+        let mut off = CodeHighlighter::new(false, "base16-ocean.dark");
+        tty.run(&mut off, "$ cat b.py");
+        tty.feed("def g(): pass\r\n$ ");
+        off.update(tty.term.grid());
+        assert!(off.blocks.is_empty());
+    }
+
+    #[test]
+    fn output_still_streaming_waits_for_complete_lines() {
+        ready();
+        let mut tty = Tty::new(40, 6, 100);
+        let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
+        tty.run(&mut hl, "$ cat a.rs");
+        tty.feed("fn main() {}");
+        hl.update(tty.term.grid());
+        // The cursor is still on that line: not highlighted yet.
+        assert!(hl.row(tty.find("fn main")).is_empty());
+        tty.feed("\r\n");
+        hl.update(tty.term.grid());
+        assert!(!hl.row(tty.find("fn main")).is_empty());
     }
 
     #[test]
