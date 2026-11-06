@@ -2,20 +2,51 @@
 name = "ragamuffin"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91"
+description = "Fast GPU-accelerated terminal with Notepad++-style search highlighting and automatic code highlighting"
+license = "MIT OR Apache-2.0"
+authors = ["Andrei Pushkin <andrew.pushkin@gmail.com>"]
+categories = ["command-line-utilities"]
+keywords = ["terminal", "gpu", "wgpu", "terminal-emulator"]
 
 [dependencies]
 alacritty_terminal = "0.26.0"
 arboard = "3.7.0"
-bytemuck = "1.25.2"
+bytemuck = { version = "1.25.2", features = ["derive"] }
 cosmic-text = "0.19.0"
 dirs = "7.0.0"
 env_logger = "0.11.11"
 etagere = "0.3.0"
 log = "0.4.35"
 pollster = "1.0.1"
-serde = "1.0.229"
+serde = { version = "1.0.229", features = ["derive"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 toml = "1.2.1"
 unicode-width = "0.2.3"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[package.metadata.deb]
+name = "ragamuffin"
+maintainer = "Andrei Pushkin <andrew.pushkin@gmail.com>"
+section = "x11"
+priority = "optional"
+extended-description = """\
+GPU-accelerated terminal emulator (wgpu). Highlights every search match \
+like Notepad++, detects source code printed by cat/head/tail/bat and \
+colours it, follows the system light/dark theme, and hot-reloads its \
+settings file."""
+depends = "$auto, libxkbcommon0, libxkbcommon-x11-0, libvulkan1 | libegl1"
+recommends = "fonts-dejavu-core | fonts-jetbrains-mono"
+assets = [
+    ["target/release/ragamuffin", "usr/bin/", "755"],
+    ["packaging/linux/ragamuffin.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/ragamuffin-256.png", "usr/share/icons/hicolor/256x256/apps/ragamuffin.png", "644"],
+    ["packaging/icons/ragamuffin.svg", "usr/share/icons/hicolor/scalable/apps/ragamuffin.svg", "644"],
+]

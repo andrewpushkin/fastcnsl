@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Ragamuffin
+GenericName=Terminal
+Comment=Fast GPU-accelerated terminal with search and code highlighting
+Exec=ragamuffin
+Icon=ragamuffin
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;commandline;terminal;
+StartupWMClass=ragamuffin

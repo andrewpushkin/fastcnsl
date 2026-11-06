@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup component add clippy rustfmt \
-    && rustup target add x86_64-pc-windows-gnu x86_64-apple-darwin aarch64-apple-darwin
+    && rustup target add x86_64-pc-windows-gnu aarch64-pc-windows-gnullvm aarch64-apple-darwin
 
 # CARGO_HOME lives in a named volume (see Makefile) so the registry and
 # git checkouts survive container restarts. It must be writable by the
