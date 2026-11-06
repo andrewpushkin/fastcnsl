@@ -10,7 +10,14 @@ SAMPLE="$(pwd)/scripts/samples/hello.c"
 export DISPLAY=:99
 unset WAYLAND_DISPLAY
 export SHELL=/bin/bash USER=dev XDG_RUNTIME_DIR=/tmp
-export PS1='\u@box:\w\$ '
+export PS1='dev@ragamuffin:\w\$ '
+
+# Shell without rc files so the prompt below is used as-is.
+mkdir -p "$HOME/.config/ragamuffin"
+cat > "$HOME/.config/ragamuffin/config.toml" <<'TOML'
+shell = "/bin/bash"
+shell_args = ["--norc", "--noprofile"]
+TOML
 
 Xvfb :99 -screen 0 1100x700x24 >/dev/null 2>&1 &
 XVFB=$!
@@ -28,11 +35,14 @@ if [ -z "$WIN" ]; then
 fi
 xdotool windowfocus --sync "$WIN"
 sleep 2
-xdotool type --delay 20 "cat $SAMPLE"
+xdotool type --delay 20 "cd $(dirname "$SAMPLE")"
+xdotool key Return
+sleep 0.5
+xdotool type --delay 20 "cat hello.c"
 xdotool key Return
 sleep 1
 xdotool key ctrl+shift+f
 xdotool type --delay 40 "greet"
 sleep 1
-import -window root "$OUT"
+import -window "$WIN" "$OUT"
 echo "-> $OUT"
