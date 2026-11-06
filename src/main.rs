@@ -2,6 +2,7 @@
 
 mod config;
 mod detect;
+mod highlight;
 mod render;
 mod session;
 mod theme;
