@@ -20,7 +20,8 @@ Windows and macOS.
   coloured. The language comes from the file name, or from the content (`#!`
   lines, `#include`, `fn main`...) when there is no extension. Text a program
   colours itself is never touched.
-- **Tabs**, each with its own shell, scrollback and search.
+- **Tabs** labelled with the last program run in them (`Tab 1: vim`), each
+  with its own shell, scrollback and search.
 - **⋮ menu** for tabs, find, copy and paste, theme, Options and About, plus a
   right-click menu for copy, paste and select all.
 - **Options panel** with theme, font size and code highlighting switches and

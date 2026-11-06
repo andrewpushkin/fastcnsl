@@ -21,7 +21,8 @@ use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
 use crate::chrome::{self, Action, Menu, Metrics, OptionsState, Panel};
 use crate::config::{Config, ConfigWatcher, ThemeMode};
-use crate::highlight::CodeHighlighter;
+use crate::detect;
+use crate::highlight::{self, CodeHighlighter};
 use crate::input::{self, MouseButton};
 use crate::render::Renderer;
 use crate::search::Search;
@@ -56,7 +57,12 @@ struct Tab {
     session: Session,
     search: Search,
     code: CodeHighlighter,
-    title: String,
+    /// Last program started in this tab (the shell's name until then).
+    app: String,
+    /// "Tab N: app", rebuilt when `app` or the tab's position changes.
+    label: String,
+    /// Title the shell set with an escape sequence, used for the window.
+    shell_title: Option<String>,
 }
 
 enum Overlay {
@@ -97,7 +103,7 @@ struct State {
     wake_at: Option<Instant>,
 }
 
-fn default_tab_title(cfg: &Config) -> String {
+fn shell_name(cfg: &Config) -> String {
     let shell = if cfg.shell.is_empty() { std::env::var("SHELL").unwrap_or_default() } else { cfg.shell.clone() };
     let name = shell.rsplit(['/', '\\']).next().unwrap_or("").trim_end_matches(".exe");
     if name.is_empty() {
@@ -324,10 +330,30 @@ impl State {
             session,
             search: Search::new(),
             code: CodeHighlighter::new(cfg.code_highlight, code_theme),
-            title: default_tab_title(cfg),
+            app: shell_name(cfg),
+            label: String::new(),
+            shell_title: None,
         });
+        self.relabel();
         self.select_tab(self.tabs.len() - 1);
         Ok(())
+    }
+
+    /// Rebuilds the "Tab N: app" labels after tabs open, close or run
+    /// something new.
+    fn relabel(&mut self) {
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            tab.label.clear();
+            use std::fmt::Write;
+            let _ = write!(tab.label, "Tab {}: {}", i + 1, tab.app);
+        }
+        self.update_window_title();
+    }
+
+    fn update_window_title(&self) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.window.set_title(tab.shell_title.as_deref().unwrap_or(&tab.label));
+        }
     }
 
     /// Closes a tab; returns true when it was the last one.
@@ -342,6 +368,7 @@ impl State {
         if self.active > i || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
         }
+        self.relabel();
         self.select_tab(self.active);
         false
     }
@@ -350,7 +377,7 @@ impl State {
         self.active = i.min(self.tabs.len() - 1);
         self.selecting = false;
         self.reported_button = None;
-        self.window.set_title(&self.tabs[self.active].title);
+        self.update_window_title();
         self.window.request_redraw();
     }
 
@@ -449,7 +476,7 @@ impl State {
                 search_alpha: self.search_fade.value,
             };
             let c = ChromeView {
-                titles: self.tabs.iter().map(|t| t.title.as_str()).collect(),
+                titles: self.tabs.iter().map(|t| t.label.as_str()).collect(),
                 active: self.active,
                 hover: self.hover,
                 menu_open: matches!(self.overlay, Overlay::Menu(_)),
@@ -637,13 +664,21 @@ impl State {
         let mut term = tab.session.term.lock();
         let mode = *term.mode();
         let bytes = input::encode_key(&event.logical_key, event.text.as_deref(), m, mode)?;
+        let mut ran = None;
         if matches!(event.logical_key, Key::Named(NamedKey::Enter)) && !mode.contains(TermMode::ALT_SCREEN) {
-            tab.code.on_enter(term.grid());
+            let line = highlight::command_line(term.grid());
+            tab.code.on_enter(term.grid(), &line);
+            ran = detect::program_name(&line).filter(|name| *name != tab.app);
         }
         term.scroll_display(Scroll::Bottom);
         term.selection = None;
         drop(term);
         self.write(bytes);
+        if let Some(name) = ran {
+            self.tabs[self.active].app = name;
+            self.relabel();
+            self.window.request_redraw();
+        }
         None
     }
 
@@ -1008,15 +1043,16 @@ impl State {
                 }
             }
             TermEvent::Title(t) => {
-                self.tabs[i].title = t;
+                self.tabs[i].shell_title = Some(t);
                 if active {
-                    self.window.set_title(&self.tabs[i].title);
+                    self.update_window_title();
                 }
-                self.window.request_redraw();
             }
             TermEvent::ResetTitle => {
-                self.tabs[i].title = TITLE.to_owned();
-                self.window.request_redraw();
+                self.tabs[i].shell_title = None;
+                if active {
+                    self.update_window_title();
+                }
             }
             TermEvent::ClipboardStore(ClipboardType::Clipboard | ClipboardType::Selection, text) => {
                 if let Some(cb) = self.clipboard.as_mut() {

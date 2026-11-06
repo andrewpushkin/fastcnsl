@@ -117,26 +117,19 @@ impl CodeHighlighter {
         self.blocks.clear();
     }
 
-    /// Call when the user presses Enter, before the key reaches the shell.
-    pub fn on_enter(&mut self, grid: &Grid<Cell>) {
+    /// Call when the user presses Enter, before the key reaches the shell,
+    /// with the line from [`command_line`].
+    pub fn on_enter(&mut self, grid: &Grid<Cell>, line: &str) {
         if !self.enabled {
             return;
         }
         let hist = grid.history_size() as i64;
         let cursor = grid.cursor.point.line;
-        let mut first = cursor;
-        while first > grid.topmost_line() && row_wraps(grid, first - 1) {
-            first -= 1;
-        }
+        let first = logical_line_start(grid, cursor);
         if let Some(open) = self.blocks.last_mut().filter(|b| b.end.is_none()) {
             open.end = Some(hist + first.0 as i64);
         }
-
-        self.text.clear();
-        for l in first.0..=cursor.0 {
-            append_row(&mut self.text, grid, Line(l));
-        }
-        let Some(hint) = detect::command_hint(self.text.trim_end()) else { return };
+        let Some(hint) = detect::command_hint(line.trim_end()) else { return };
 
         let cmd_row = hist + cursor.0 as i64;
         let mut anchor = String::new();
@@ -320,6 +313,27 @@ fn decide_lang(assets: &'static Assets, b: &Block, grid: &Grid<Cell>, limit: i64
     }
 }
 
+/// Text of the (possibly wrapped) line the cursor is on, prompt included:
+/// the command line when the user presses Enter.
+pub fn command_line(grid: &Grid<Cell>) -> String {
+    let cursor = grid.cursor.point.line;
+    let mut text = String::new();
+    for l in logical_line_start(grid, cursor).0..cursor.0 {
+        // Wrapped rows are full; keep their trailing blanks (spaces at the wrap).
+        let row = &grid[Line(l)];
+        text.extend((0..grid.columns()).map(|c| &row[Column(c)]).filter(|c| !is_spacer(c)).map(|c| c.c));
+    }
+    append_row(&mut text, grid, cursor);
+    text
+}
+
+fn logical_line_start(grid: &Grid<Cell>, mut line: Line) -> Line {
+    while line > grid.topmost_line() && row_wraps(grid, line - 1) {
+        line -= 1;
+    }
+    line
+}
+
 fn abs_line(abs: i64, hist: i64) -> Line {
     Line((abs - hist) as i32)
 }
@@ -411,7 +425,7 @@ mod tests {
         let mut term = mock_term("$ cat hello.c\r\n#include <stdio.h>\r\nint main(void) {\r\n}\r\n$ ");
         let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
         term.grid_mut().cursor.point.line = Line(0);
-        hl.on_enter(term.grid());
+        hl.on_enter(term.grid(), &command_line(term.grid()));
         term.grid_mut().cursor.point.line = Line(4);
         hl.update(term.grid());
 
@@ -430,7 +444,7 @@ mod tests {
         let mut term = mock_term("$ ls\r\nhello.c\r\n$ ");
         let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
         term.grid_mut().cursor.point.line = Line(0);
-        hl.on_enter(term.grid());
+        hl.on_enter(term.grid(), &command_line(term.grid()));
         term.grid_mut().cursor.point.line = Line(2);
         hl.update(term.grid());
         assert!(hl.row(1).is_empty());
@@ -442,10 +456,10 @@ mod tests {
         let mut term = mock_term("$ cat script\r\n#!/usr/bin/env python3\r\ndef f(x):\r\n    return x\r\n$ ");
         let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
         term.grid_mut().cursor.point.line = Line(0);
-        hl.on_enter(term.grid());
+        hl.on_enter(term.grid(), &command_line(term.grid()));
         // Next command closes the block, which allows sniffing short output.
         term.grid_mut().cursor.point.line = Line(4);
-        hl.on_enter(term.grid());
+        hl.on_enter(term.grid(), &command_line(term.grid()));
         hl.update(term.grid());
         assert!(!hl.row(2).is_empty(), "python def line should be coloured");
     }

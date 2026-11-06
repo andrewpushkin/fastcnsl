@@ -1,6 +1,9 @@
-//! Works out whether a command line will print source code, and in which
-//! language: `cat hello.c` → C, `head -n 20 main.rs` → Rust, `git diff` → diff.
-//! When the file name doesn't say, the first lines of output are sniffed.
+//! Reads command lines the user enters:
+//!
+//! * which program they start, for tab labels (`Tab 1: vim`);
+//! * whether they print source code, and in which language: `cat hello.c` →
+//!   C, `head -n 20 main.rs` → Rust, `git diff` → diff. When the file name
+//!   doesn't say, the first lines of output are sniffed.
 
 /// What we learned about the language from the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +26,7 @@ const VIEWERS: &[&str] = &[
 pub fn command_hint(line: &str) -> Option<Hint> {
     let tokens = tokenize(line);
     for (i, tok) in tokens.iter().enumerate() {
-        let name = command_name(tok);
+        let name = base_name(tok);
         if VIEWERS.contains(&name.as_str()) {
             let file = tokens[i + 1..]
                 .iter()
@@ -58,8 +61,75 @@ fn is_separator(t: &str) -> bool {
     matches!(t, "|" | "||" | "&&" | ";" | ">" | ">>" | "2>" | "&")
 }
 
+/// Commands that run another program; the tab shows that program.
+const WRAPPERS: &[&str] = &[
+    "sudo", "doas", "time", "nohup", "env", "exec", "command", "builtin", "nice", "ionice", "stdbuf", "caffeinate", "noglob",
+];
+
+/// Shell builtins that change directory or environment rather than run an
+/// application; they leave the tab label alone.
+const NOT_APPS: &[&str] = &[
+    "cd", "pushd", "popd", "dirs", "export", "alias", "unalias", "unset", "set", "setopt", "source", ".",
+    "history", "exit", "logout", "z", "set-location", "sl", "chdir",
+];
+
+/// Prompt endings, for finding where the typed command starts.
+const PROMPT_ENDS: &[&str] = &["$ ", "# ", "% ", "> ", "❯ ", "λ ", "» "];
+
+/// Removes the shell prompt from the line the user pressed Enter on.
+fn strip_prompt(line: &str) -> &str {
+    // cmd.exe: "C:\Users\me>dir" has no space after '>'.
+    let b = line.as_bytes();
+    if b.len() > 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && b[2] == b'\\'
+        && let Some(i) = line.find('>')
+    {
+        return &line[i + 1..];
+    }
+    PROMPT_ENDS
+        .iter()
+        .filter_map(|e| line.find(e).map(|i| i + e.len()))
+        .min()
+        .map_or(line, |i| &line[i..])
+}
+
+/// The program a command line runs, for the tab label: `vim` for
+/// `user@host:~$ sudo vim /etc/hosts`. None for an empty line, a builtin
+/// like `cd`, or text that doesn't look like a shell command (e.g. typed
+/// into a REPL).
+pub fn program_name(line: &str) -> Option<String> {
+    let tokens = tokenize(strip_prompt(line.trim_end()));
+    let mut after_wrapper = false;
+    for (i, tok) in tokens.iter().enumerate() {
+        if is_separator(tok) {
+            return None;
+        }
+        // VAR=value prefixes, wrapper flags and numbers (nice -n 10).
+        let assignment = tok.find('=').is_some_and(|eq| eq > 0 && tok[..eq].chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        if assignment || (after_wrapper && (tok.starts_with('-') || tok.chars().all(|c| c.is_ascii_digit()))) {
+            continue;
+        }
+        let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
+        let name = base.strip_suffix(".exe").or_else(|| base.strip_suffix(".EXE")).unwrap_or(base);
+        if WRAPPERS.contains(&name.to_ascii_lowercase().as_str()) {
+            after_wrapper = true;
+            continue;
+        }
+        let looks_like_program = !name.is_empty()
+            && !name.starts_with('-')
+            && name.chars().all(|c| c.is_alphanumeric() || "._+-".contains(c));
+        let next = tokens.get(i + 1).map(String::as_str);
+        let repl_syntax = matches!(next, Some(n) if n == "=" || n.starts_with('(') || n.starts_with("+=") || n.starts_with("=="));
+        let builtin = NOT_APPS.contains(&name.to_ascii_lowercase().as_str());
+        return (looks_like_program && !repl_syntax && !builtin).then(|| name.to_owned());
+    }
+    None
+}
+
 /// Lower-cased base name without directory or `.exe`.
-fn command_name(tok: &str) -> String {
+fn base_name(tok: &str) -> String {
     let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
     let base = base.strip_suffix(".exe").unwrap_or(base);
     base.to_ascii_lowercase()
@@ -218,6 +288,42 @@ mod tests {
         assert_eq!(command_hint("$ ls -la"), None);
         assert_eq!(command_hint("cat@box:~$ make"), None);
         assert_eq!(command_hint("$ cat"), Some(Hint::Unknown));
+    }
+
+    fn prog(line: &str) -> Option<String> {
+        program_name(line)
+    }
+
+    #[test]
+    fn program_names_for_tab_labels() {
+        assert_eq!(prog("andrei@box:~/src$ cat hello.c").as_deref(), Some("cat"));
+        assert_eq!(prog("root@box:/# apt update").as_deref(), Some("apt"));
+        assert_eq!(prog("user@mac ~ % ls -la").as_deref(), Some("ls"));
+        assert_eq!(prog("~/src> git status").as_deref(), Some("git"));
+        assert_eq!(prog("❯ cargo build --release").as_deref(), Some("cargo"));
+        assert_eq!(prog("PS C:\\code> Get-ChildItem").as_deref(), Some("Get-ChildItem"));
+        assert_eq!(prog("C:\\Users\\me>notepad.exe file.txt").as_deref(), Some("notepad"));
+        assert_eq!(prog("$ /usr/bin/python3 script.py").as_deref(), Some("python3"));
+        assert_eq!(prog("$ ./build.sh").as_deref(), Some("build.sh"));
+    }
+
+    #[test]
+    fn wrappers_and_assignments_are_skipped() {
+        assert_eq!(prog("$ sudo vim /etc/hosts").as_deref(), Some("vim"));
+        assert_eq!(prog("$ RUST_LOG=debug cargo run").as_deref(), Some("cargo"));
+        assert_eq!(prog("$ nice -n 10 make -j8").as_deref(), Some("make"));
+        assert_eq!(prog("$ time env FOO=1 htop").as_deref(), Some("htop"));
+    }
+
+    #[test]
+    fn non_commands_give_no_name() {
+        assert_eq!(prog("dev@box:~$ "), None);
+        assert_eq!(prog(">>> x = 5"), None);
+        assert_eq!(prog(">>> print(1)"), None);
+        assert_eq!(prog("$ | grep x"), None);
+        assert_eq!(prog("$ cd /tmp"), None);
+        assert_eq!(prog("$ export FOO=1"), None);
+        assert_eq!(prog("PS C:\\> Set-Location D:\\"), None);
     }
 
     #[test]
