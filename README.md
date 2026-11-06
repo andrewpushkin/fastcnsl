@@ -37,26 +37,25 @@ Windows and macOS.
   fully visible while you use them.
 - **No `unsafe`** in ragamuffin's own code (`#![forbid(unsafe_code)]`).
 
+## Download
+
+| Platform | Nightly (latest `main`) | Latest release |
+|---|---|---|
+| Linux x86-64 (Debian, Ubuntu) | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-linux-x86_64.deb) | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.deb) |
+| Linux x86-64 (any distro) | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-linux-x86_64.AppImage) | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.AppImage) |
+| Windows x86-64 | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-windows-x86_64.zip) | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-x86_64.zip) |
+| Windows ARM64 | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-windows-arm64.zip) | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-arm64.zip) |
+| macOS Apple Silicon | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-macos-arm64.zip) | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-macos-arm64.zip) |
+
+- **Nightly** is rebuilt by GitHub Actions on every push to `main`.
+- **Latest release** is the newest version tag (`v0.2.0`, ...). Those links
+  start working once the first version is tagged.
+- All builds: [Releases](https://github.com/andrewpushkin/ragamuffin/releases).
+
 ## Install
 
-Download a package for your platform from
-[Releases](https://github.com/andrewpushkin/ragamuffin/releases):
-
-- **[Nightly](https://github.com/andrewpushkin/ragamuffin/releases/tag/nightly)**:
-  built automatically from every push to `main`.
-- **Versioned releases** (`v0.2.0`, ...): created when a version tag is pushed.
-
-
-| Platform                | File                                    |
-|-------------------------|-----------------------------------------|
-| Linux x86-64 (Debian, Ubuntu) | `ragamuffin_<ver>_amd64.deb`      |
-| Linux x86-64 (any distro)     | `Ragamuffin-<ver>-x86_64.AppImage`|
-| Windows x86-64          | `ragamuffin-<ver>-windows-x86_64.zip`   |
-| Windows ARM64           | `ragamuffin-<ver>-windows-arm64.zip`    |
-| macOS Apple Silicon     | `ragamuffin-<ver>-macos-arm64.zip`      |
-
-- `.deb`: `sudo apt install ./ragamuffin_<ver>_amd64.deb`
-- AppImage: `chmod +x Ragamuffin-*.AppImage && ./Ragamuffin-*.AppImage`
+- `.deb`: `sudo apt install ./ragamuffin-linux-x86_64.deb`
+- AppImage: `chmod +x ragamuffin-linux-x86_64.AppImage && ./ragamuffin-linux-x86_64.AppImage`
 - Windows: unzip and run `ragamuffin.exe` (Windows 10 1809 or newer).
 - macOS: unzip and move `Ragamuffin.app` to Applications. The app is ad-hoc
   signed, not notarized, so the first launch needs right-click → Open.
@@ -141,16 +140,16 @@ make macos-arm64-zip         # Ragamuffin.app in a zip
 
 make build            # quick build for this machine -> dist/ragamuffin
 make run              # build and start it
-make test             # unit tests
+make tests            # unit tests (not run by GitHub Actions)
 make clippy           # lints
 make check-all        # type-check every target platform
 make screenshot       # headless UI run -> dist/screenshots/*.png
 make clean
 ```
 
-GitHub Actions (`.github/workflows/build.yml`) runs the tests and builds
-every package on each pull request and push to `main`, using the same
-Makefile targets. macOS is built on GitHub's Apple Silicon runner with
+GitHub Actions (`.github/workflows/build.yml`) lints and builds every
+package on each pull request and push to `main`, using the same Makefile
+targets. It doesn't run the unit tests; run `make tests` before pushing. macOS is built on GitHub's Apple Silicon runner with
 Apple's own SDK. Pushes to `main` refresh the Nightly release; pushing a
 `v*` tag publishes a versioned release:
 
