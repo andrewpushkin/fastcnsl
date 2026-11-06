@@ -286,7 +286,10 @@ impl App {
                     el.exit();
                 }
             }
-            Action::Find => st.tab_mut().search.open(),
+            Action::Find => {
+                let tab = st.tab_mut();
+                tab.search.open_in(&mut tab.session.term.lock());
+            }
             Action::Copy => st.copy_selection(),
             Action::Paste => st.paste(),
             Action::SelectAll => {
@@ -857,9 +860,21 @@ impl State {
         let geo = ui::scroll_geometry(m.width, top, m.height, scale, hist, screen, offset);
 
         let over_bar = geo.as_ref().is_some_and(|g| g.track.contains(x, y));
-        let search_rect = ui::search_geometry(m.width, top, scale, m.cw, m.ch).bar;
-        let over_search = tab.search.open && search_rect.contains(x, y);
-        let redraw = over_bar != self.scrollbar.hover || over_search != self.search_hover;
+        let sg = ui::search_geometry(m.width, top, scale, m.cw, m.ch);
+        let over_search = tab.search.open && sg.bar.contains(x, y);
+        let search_button = if !over_search {
+            Hover::None
+        } else if sg.prev.contains(x, y) {
+            Hover::SearchPrev
+        } else if sg.next.contains(x, y) {
+            Hover::SearchNext
+        } else if sg.close.contains(x, y) {
+            Hover::SearchClose
+        } else {
+            Hover::None
+        };
+        let redraw = over_bar != self.scrollbar.hover || over_search != self.search_hover || search_button != self.hover;
+        self.hover = search_button;
         self.scrollbar.hover = over_bar;
         self.search_hover = over_search;
         self.window.set_cursor(if over_bar || over_search { CursorIcon::Default } else { CursorIcon::Text });
@@ -999,6 +1014,14 @@ impl State {
                     tab.search.close();
                     self.window.request_redraw();
                     return None;
+                }
+                for (rect, dir) in [(g.prev, Direction::Left), (g.next, Direction::Right)] {
+                    if rect.contains(x, y) {
+                        tab.search.focused = true;
+                        tab.search.step(&mut tab.session.term.lock(), dir);
+                        self.window.request_redraw();
+                        return None;
+                    }
                 }
                 if g.bar.contains(x, y) {
                     tab.search.focused = true;

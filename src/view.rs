@@ -43,6 +43,9 @@ pub enum Hover {
     Plus,
     MenuButton,
     PanelButton(usize),
+    SearchPrev,
+    SearchNext,
+    SearchClose,
     Minimize,
     Maximize,
     CloseWindow,
@@ -110,7 +113,7 @@ pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>,
     draw_grid(p, term, v);
     draw_scrollbar(p, term, v);
     if v.search.open {
-        draw_search_bar(p, v);
+        draw_search_bar(p, v, c.hover);
     }
     let m = Metrics { width: p.width, height: p.height, scale: v.scale, cw: p.cell.width, ch: p.cell.height };
     draw_tab_bar(p, v.palette, &m, c);
@@ -154,7 +157,7 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
             if c.hover == Hover::TabClose(i) {
                 p.rounded(Layer::UiShapes, cl.x, cl.y, cl.w, cl.h, m.scale * 3.0, pal.ui_dim.rgba(0.35));
             }
-            p.text(Layer::UiText, "×", cl.x + (cl.w - m.cw) / 2.0, text_y(&cl), pal.ui_dim.rgba(1.0));
+            p.icon(Layer::UiText, '×', cl.x + cl.w / 2.0, cl.y + cl.h / 2.0, pal.ui_dim.rgba(1.0));
         }
     }
 
@@ -175,7 +178,7 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
                 p.rounded(Layer::UiShapes, cx - d / 2.0, y - d / 2.0, d, d, d / 2.0, color.rgba(1.0));
             }
         } else {
-            p.text(Layer::UiText, "+", rect.x + (rect.w - m.cw) / 2.0, text_y(&rect), color.rgba(1.0));
+            p.icon(Layer::UiText, '+', rect.x + rect.w / 2.0, rect.y + rect.h / 2.0, color.rgba(1.0));
         }
     }
 
@@ -218,8 +221,7 @@ fn draw_window_controls(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, bar: &c
         outline(p, x, y, s);
     }
 
-    let (cx, cy) = (close.x + (close.w - m.cw) / 2.0, (close.y + (close.h - m.ch) / 2.0).round());
-    p.text(Layer::UiText, "×", cx.round(), cy, fg(Hover::CloseWindow).rgba(1.0));
+    p.icon(Layer::UiText, '×', close.x + close.w / 2.0, close.y + close.h / 2.0, fg(Hover::CloseWindow).rgba(1.0));
 }
 
 fn draw_menu(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, menu: &Menu) {
@@ -298,6 +300,10 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
             (pal.ui_dim.mix(pal.ui_bg, 0.75), pal.ui_fg)
         };
         p.rounded(Layer::OverlayShapes, br.x, br.y, br.w, br.h, m.scale * 5.0, bg.rgba(1.0));
+        if btn.label == "×" {
+            p.icon(Layer::OverlayText, '×', br.x + br.w / 2.0, br.y + br.h / 2.0, fg.rgba(1.0));
+            continue;
+        }
         let tw = btn.label.chars().count() as f32 * m.cw;
         let tx = (br.x + (br.w - tw) / 2.0).round();
         let ty = (br.y + (br.h - m.ch) / 2.0).round();
@@ -444,7 +450,7 @@ fn draw_scrollbar<T>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>) {
     p.rounded(Layer::UiShapes, g.thumb.x, g.thumb.y, g.thumb.w, g.thumb.h, g.thumb.w * 0.5, thumb);
 }
 
-fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>) {
+fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>, hover: Hover) {
     let pal = v.palette;
     let s = v.search;
     let a = v.search_alpha;
@@ -488,7 +494,7 @@ fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>) {
         }
     };
     let status_w = status.chars().count() as f32 * cw;
-    let status_x = g.close.x - status_w - cw;
+    let status_x = g.prev.x - status_w - cw;
 
     // Query, scrolled to keep its end visible.
     let room = ((status_x - x) / cw).floor().max(1.0) as usize - 1;
@@ -505,7 +511,26 @@ fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>) {
     }
 
     p.text(Layer::UiText, &status, status_x, ty, pal.ui_dim.rgba(a));
-    p.text(Layer::UiText, "×", g.close.x + cw * 0.5, ty, pal.ui_dim.rgba(a));
+
+    // ↑ previous, ↓ next (dimmed with nothing to jump to), × close.
+    let has_matches = s.total > 0;
+    for (rect, glyph, h, enabled) in [
+        (g.prev, '↑', Hover::SearchPrev, has_matches),
+        (g.next, '↓', Hover::SearchNext, has_matches),
+        (g.close, '×', Hover::SearchClose, true),
+    ] {
+        if hover == h && enabled {
+            p.rounded(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, (4.0 * v.scale).round(), pal.ui_dim.rgba(0.3 * a));
+        }
+        let color = if !enabled {
+            pal.ui_dim.mix(pal.ui_bg, 0.5)
+        } else if hover == h {
+            pal.foreground
+        } else {
+            pal.ui_dim
+        };
+        p.icon(Layer::UiText, glyph, rect.x + rect.w / 2.0, rect.y + rect.h / 2.0, color.rgba(a));
+    }
 }
 
 #[cfg(test)]
@@ -653,8 +678,11 @@ mod tests {
         let current = bg.iter().filter(|i| i.color == f.palette.current_match_bg.rgba(1.0)).count();
         let other = bg.iter().filter(|i| i.color == f.palette.match_bg.rgba(1.0)).count();
         assert_eq!((current, other), (3, 3), "one current and one other 3-letter match");
-        // The search bar is drawn too.
-        assert!(c.glyph_count(Layer::UiText) >= 3);
+        // The search bar is drawn with its ↑ ↓ × buttons.
+        assert!(c.glyph_count(Layer::UiText) >= "Aafoo3/3".len() + 3);
+        let hover_bg = f.palette.ui_dim.rgba(0.3);
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &ChromeView { hover: Hover::SearchNext, ..chrome(vec![]) }));
+        assert!(c.layer(Layer::UiShapes).iter().any(|i| i.color == hover_bg), "hovered ↓ is highlighted");
     }
 
     #[test]

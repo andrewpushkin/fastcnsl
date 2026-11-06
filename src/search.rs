@@ -57,6 +57,17 @@ impl Search {
         self.focused = true;
     }
 
+    /// Opens (or focuses) the search bar. A query kept from before is run
+    /// again, so the current match and the count are fresh.
+    pub fn open_in<T: EventListener>(&mut self, term: &mut Term<T>) {
+        let reopened = !self.open;
+        self.open();
+        if reopened && !self.query.is_empty() {
+            let q = std::mem::take(&mut self.query);
+            self.set_query(q, term);
+        }
+    }
+
     pub fn close(&mut self) {
         self.open = false;
         self.focused = false;
@@ -248,6 +259,23 @@ mod tests {
         assert!(!s.open && !s.focused);
         assert!(s.visible.is_empty() && s.current.is_none());
         assert_eq!(s.query, "foo");
+    }
+
+    #[test]
+    fn reopening_restores_the_current_match_and_count() {
+        let mut term = mock_term("foo foo foo");
+        let mut s = Search::new();
+        s.open_in(&mut term);
+        s.set_query("foo".into(), &mut term);
+        s.close();
+        assert!(s.current.is_none());
+        s.open_in(&mut term);
+        assert!(s.current.is_some(), "current match is back");
+        assert_eq!((s.total, s.index), (3, Some(3)));
+        // Focusing an already open bar keeps the position.
+        s.step(&mut term, Direction::Left);
+        s.open_in(&mut term);
+        assert_eq!(s.index, Some(2));
     }
 
     #[test]

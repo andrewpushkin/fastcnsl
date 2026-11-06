@@ -5,7 +5,9 @@
 Ultra fast GPU-accelerated terminal emulator, written in Rust, for Linux,
 Windows and macOS.
 
-![ragamuffin showing cat hello.c with C highlighting and a search for "greet"](docs/screenshot.png)
+| Dark | Light |
+|---|---|
+| ![ragamuffin in dark mode: cat hello.c with C highlighting and a search for "greet"](docs/screenshot.png) | ![ragamuffin in light mode: the same session](docs/light.png) |
 
 | ⋮ menu | Options |
 |---|---|

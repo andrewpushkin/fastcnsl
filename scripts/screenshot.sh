@@ -86,4 +86,5 @@ xdotool key Escape
 
 # Theme → Light via Ctrl+Shift+L (dark → light).
 xdotool key ctrl+shift+l
+xdotool key ctrl+shift+f
 shot light

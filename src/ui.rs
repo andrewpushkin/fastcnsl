@@ -105,6 +105,9 @@ pub fn offset_for_thumb(g: &ScrollGeometry, thumb_y: f32, history: usize) -> usi
 
 pub struct SearchGeometry {
     pub bar: Rect,
+    /// Previous (older, up) and next (newer, down) match buttons.
+    pub prev: Rect,
+    pub next: Rect,
     pub close: Rect,
 }
 
@@ -112,11 +115,14 @@ pub struct SearchGeometry {
 pub fn search_geometry(width: f32, top: f32, scale: f32, cell_w: f32, cell_h: f32) -> SearchGeometry {
     let margin = (8.0 * scale).round();
     let pad = (6.0 * scale).round();
-    let w = (cell_w * 44.0 + 2.0 * pad).min(width - 2.0 * margin - scrollbar_width(scale));
+    let w = (cell_w * 52.0 + 2.0 * pad).min(width - 2.0 * margin - scrollbar_width(scale));
     let h = cell_h + 2.0 * pad;
     let bar = Rect { x: width - w - margin - scrollbar_width(scale), y: top + margin, w, h };
-    let close = Rect { x: bar.x + bar.w - pad - cell_w * 2.0, y: bar.y, w: cell_w * 2.0 + pad, h };
-    SearchGeometry { bar, close }
+    // Three square-ish buttons at the right end: ↑ ↓ ×.
+    let inset = (3.0 * scale).round();
+    let bw = (cell_h + 2.0 * inset).round();
+    let button = |i: f32| Rect { x: bar.x + bar.w - inset - (3.0 - i) * bw, y: bar.y + inset, w: bw, h: h - 2.0 * inset };
+    SearchGeometry { bar, prev: button(0.0), next: button(1.0), close: button(2.0) }
 }
 
 #[cfg(test)]
@@ -167,7 +173,11 @@ mod tests {
         let g = search_geometry(1000.0, 30.0, 1.0, 8.0, 17.0);
         assert!(g.bar.y >= 30.0);
         assert!(g.bar.x + g.bar.w <= 1000.0 - scrollbar_width(1.0));
-        assert!(g.close.x >= g.bar.x && g.close.x + g.close.w <= g.bar.x + g.bar.w + 0.01);
+        for r in [g.prev, g.next, g.close] {
+            assert!(r.x >= g.bar.x && r.x + r.w <= g.bar.x + g.bar.w + 0.01);
+            assert!(r.y >= g.bar.y && r.y + r.h <= g.bar.y + g.bar.h + 0.01);
+        }
+        assert!(g.prev.x + g.prev.w <= g.next.x && g.next.x + g.next.w <= g.close.x, "↑ ↓ × in order");
         // Narrow windows shrink the bar instead of overflowing.
         let narrow = search_geometry(200.0, 0.0, 1.0, 8.0, 17.0);
         assert!(narrow.bar.x >= 0.0);

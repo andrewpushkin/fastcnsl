@@ -128,6 +128,21 @@ impl<'a> Painter<'a> {
         });
     }
 
+    /// Draws `c` with its ink centred on (cx, cy), for icons. Text glyphs
+    /// sit on a baseline, which puts symbols like × visibly low in a button.
+    pub fn icon(&mut self, layer: Layer, c: char, cx: f32, cy: f32, color: [f32; 4]) {
+        let Some(g) = self.glyphs.get(self.queue, c, GlyphStyle::REGULAR) else { return };
+        let (w, h) = (g.uv[2], g.uv[3]);
+        self.layers[layer as usize].push(Instance {
+            pos: [(cx - w / 2.0).round(), (cy - h / 2.0).round()],
+            size: [w, h],
+            uv: g.uv,
+            color,
+            kind: if g.colored { KIND_COLOR_GLYPH } else { KIND_MASK_GLYPH },
+            radius: 0.0,
+        });
+    }
+
     /// Draws a string on the cell grid starting at x; returns the end x.
     pub fn text(&mut self, layer: Layer, s: &str, x: f32, y: f32, color: [f32; 4]) -> f32 {
         let mut x = x;
@@ -489,6 +504,15 @@ mod tests {
         // Three visible glyphs; the space draws nothing.
         assert_eq!(c.glyph_count(Layer::OverlayText), 3);
         assert!(c.layer(Layer::Text).is_empty());
+    }
+
+    #[test]
+    fn icons_are_centred_on_their_ink() {
+        let Some(mut c) = Canvas::new() else { return };
+        c.paint(100.0, 100.0, |p| p.icon(Layer::UiText, '×', 50.0, 40.0, [1.0; 4]));
+        let i = c.layer(Layer::UiText)[0];
+        let (mx, my) = (i.pos[0] + i.size[0] / 2.0, i.pos[1] + i.size[1] / 2.0);
+        assert!((mx - 50.0).abs() <= 1.0 && (my - 40.0).abs() <= 1.0, "centre at ({mx}, {my})");
     }
 
     #[test]
