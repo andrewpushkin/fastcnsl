@@ -146,29 +146,133 @@ impl Palette {
     }
 }
 
-/// Best-effort OS dark-mode detection for platforms where the windowing
-/// system does not report it (X11, some Wayland compositors, WSLg).
-pub fn os_prefers_dark_fallback() -> Option<bool> {
+/// Reads the OS light/dark setting where the windowing system doesn't
+/// report it: Linux (X11, Wayland) and WSL. Windows and macOS report it
+/// through winit, including live changes.
+///
+/// Order: `GTK_THEME` override, WSL (the Windows setting, via reg.exe), the
+/// freedesktop appearance portal (GNOME, KDE, and others), gsettings, KDE's
+/// kdeglobals.
+pub fn detect_os_dark() -> Option<bool> {
     if let Ok(gtk) = std::env::var("GTK_THEME") {
         return Some(gtk.to_ascii_lowercase().contains("dark"));
     }
     #[cfg(target_os = "linux")]
     {
-        let out = std::process::Command::new("gsettings")
-            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
-            .output()
-            .ok()?;
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if s.contains("dark") {
-                return Some(true);
+        linux::detect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// On Linux, polls the OS setting every 2 s on a background thread and
+/// sends `UserEvent::OsTheme` when it changes. Elsewhere winit reports
+/// changes itself, so this does nothing.
+pub fn spawn_os_theme_watcher(proxy: winit::event_loop::EventLoopProxy<crate::session::UserEvent>, initial: Option<bool>) {
+    #[cfg(target_os = "linux")]
+    std::thread::Builder::new()
+        .name("os-theme".into())
+        .spawn(move || {
+            let mut last = initial;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let now = detect_os_dark();
+                if now.is_some() && now != last {
+                    last = now;
+                    if proxy.send_event(crate::session::UserEvent::OsTheme(now.unwrap_or(true))).is_err() {
+                        return;
+                    }
+                }
             }
-            if s.contains("light") || s.contains("default") {
-                return Some(false);
-            }
+        })
+        .ok();
+    #[cfg(not(target_os = "linux"))]
+    let _ = (proxy, initial);
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::process::Command;
+
+    pub fn detect() -> Option<bool> {
+        if is_wsl()
+            && let Some(d) = wsl_windows_dark()
+        {
+            return Some(d);
+        }
+        portal().or_else(gsettings).or_else(kde)
+    }
+
+    fn run(program: &str, args: &[&str]) -> Option<String> {
+        let out = Command::new(program).args(args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    fn is_wsl() -> bool {
+        std::env::var_os("WSL_DISTRO_NAME").is_some()
+            || std::fs::read_to_string("/proc/version").is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"))
+    }
+
+    /// Windows "app mode": AppsUseLightTheme is 0 for dark, 1 for light.
+    fn wsl_windows_dark() -> Option<bool> {
+        let out = run(
+            "/mnt/c/Windows/System32/reg.exe",
+            &["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "/v", "AppsUseLightTheme"],
+        )?;
+        parse_reg_light_theme(&out).map(|light| !light)
+    }
+
+    pub(super) fn parse_reg_light_theme(out: &str) -> Option<bool> {
+        let line = out.lines().find(|l| l.contains("AppsUseLightTheme"))?;
+        let value = line.split_whitespace().last()?;
+        let n = u32::from_str_radix(value.trim_start_matches("0x"), 16).ok()?;
+        Some(n != 0)
+    }
+
+    /// org.freedesktop.appearance color-scheme: 1 dark, 2 light, 0 none.
+    fn portal() -> Option<bool> {
+        let out = run(
+            "gdbus",
+            &[
+                "call", "--session", "--timeout", "1",
+                "--dest", "org.freedesktop.portal.Desktop",
+                "--object-path", "/org/freedesktop/portal/desktop",
+                "--method", "org.freedesktop.portal.Settings.Read",
+                "org.freedesktop.appearance", "color-scheme",
+            ],
+        )?;
+        parse_portal(&out)
+    }
+
+    pub(super) fn parse_portal(out: &str) -> Option<bool> {
+        let n: u32 = out.split("uint32").nth(1)?.trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
+        match n {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
         }
     }
-    None
+
+    fn gsettings() -> Option<bool> {
+        let scheme = run("gsettings", &["get", "org.gnome.desktop.interface", "color-scheme"])?;
+        if scheme.contains("prefer-dark") {
+            return Some(true);
+        }
+        if scheme.contains("prefer-light") {
+            return Some(false);
+        }
+        let theme = run("gsettings", &["get", "org.gnome.desktop.interface", "gtk-theme"])?;
+        Some(theme.to_ascii_lowercase().contains("dark"))
+    }
+
+    fn kde() -> Option<bool> {
+        let path = dirs::config_dir()?.join("kdeglobals");
+        let text = std::fs::read_to_string(path).ok()?;
+        let scheme = text.lines().find_map(|l| l.strip_prefix("ColorScheme="))?;
+        Some(scheme.to_ascii_lowercase().contains("dark"))
+    }
 }
 
 #[cfg(test)]
@@ -183,5 +287,16 @@ mod tests {
         assert_eq!(p.indexed(196), Rgb::hex(0xff0000));
         assert_eq!(p.indexed(232), Rgb::hex(0x080808));
         assert_eq!(p.indexed(255), Rgb::hex(0xeeeeee));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_os_theme_sources() {
+        assert_eq!(linux::parse_portal("(<<uint32 1>>,)\n"), Some(true));
+        assert_eq!(linux::parse_portal("(<uint32 2>,)"), Some(false));
+        assert_eq!(linux::parse_portal("(<<uint32 0>>,)"), None);
+        let reg = "\r\nHKEY_CURRENT_USER\\Software\\...\\Personalize\r\n    AppsUseLightTheme    REG_DWORD    0x0\r\n";
+        assert_eq!(linux::parse_reg_light_theme(reg), Some(false));
+        assert_eq!(linux::parse_reg_light_theme("AppsUseLightTheme REG_DWORD 0x1"), Some(true));
     }
 }

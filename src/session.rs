@@ -29,23 +29,29 @@ use crate::config::Config;
 /// Events delivered to the winit event loop from other threads.
 #[derive(Debug, Clone)]
 pub enum UserEvent {
-    Term(Event),
+    /// An event from the terminal of the tab with this id.
+    Term(u64, Event),
+    /// The operating system switched between dark (true) and light mode.
+    OsTheme(bool),
 }
 
-/// Forwards terminal events to the UI thread.
+/// Forwards one tab's terminal events to the UI thread.
 #[derive(Clone)]
-pub struct EventProxy(EventLoopProxy<UserEvent>);
+pub struct EventProxy {
+    proxy: EventLoopProxy<UserEvent>,
+    tab: u64,
+}
 
 impl EventProxy {
-    pub fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
-        Self(proxy)
+    pub fn new(proxy: EventLoopProxy<UserEvent>, tab: u64) -> Self {
+        Self { proxy, tab }
     }
 }
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
         // The loop is only closed while the app is exiting.
-        let _ = self.0.send_event(UserEvent::Term(event));
+        let _ = self.proxy.send_event(UserEvent::Term(self.tab, event));
     }
 }
 
@@ -58,7 +64,8 @@ pub struct Session {
 
 impl Session {
     pub fn spawn(cfg: &Config, size: WindowSize, proxy: EventProxy) -> std::io::Result<Self> {
-        tty::setup_env();
+        static ENV: std::sync::Once = std::sync::Once::new();
+        ENV.call_once(tty::setup_env);
 
         let term_cfg = term_config(cfg);
         let dims = TermSize::new(size.num_cols as usize, size.num_lines as usize);

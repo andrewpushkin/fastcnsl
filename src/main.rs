@@ -4,6 +4,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod chrome;
 mod config;
 mod detect;
 mod highlight;
@@ -11,6 +12,7 @@ mod input;
 mod render;
 mod search;
 mod session;
+mod shortcuts;
 mod theme;
 mod ui;
 mod view;

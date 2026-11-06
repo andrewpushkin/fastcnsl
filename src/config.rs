@@ -134,6 +134,15 @@ impl Config {
             .map_err(|e| format!("parsing {}: {e}", path.display()))
     }
 
+    /// Writes the settings file (used when settings change from the
+    /// Options panel).
+    pub fn save(&self) -> std::io::Result<()> {
+        match Self::path() {
+            Some(path) => self.write_default(&path),
+            None => Ok(()),
+        }
+    }
+
     fn write_default(&self, path: &Path) -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -170,6 +179,12 @@ impl ConfigWatcher {
         let path = Config::path();
         let last = path.as_deref().and_then(mtime);
         Self { path, last }
+    }
+
+    /// Records the file's current mtime, so a save made by the app itself
+    /// isn't reported as an outside change.
+    pub fn mark_seen(&mut self) {
+        self.last = self.path.as_deref().and_then(mtime);
     }
 
     /// Returns the new config if the file changed and parsed successfully.

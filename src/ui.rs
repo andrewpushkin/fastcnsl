@@ -77,14 +77,16 @@ pub fn scrollbar_width(scale: f32) -> f32 {
     (10.0 * scale).round()
 }
 
-/// Scrollbar geometry, or None when there is nothing to scroll.
-pub fn scroll_geometry(width: f32, height: f32, scale: f32, history: usize, screen: usize, offset: usize) -> Option<ScrollGeometry> {
+/// Scrollbar geometry for the terminal area starting at `top`, or None
+/// when there is nothing to scroll.
+#[allow(clippy::too_many_arguments)]
+pub fn scroll_geometry(width: f32, top: f32, height: f32, scale: f32, history: usize, screen: usize, offset: usize) -> Option<ScrollGeometry> {
     if history == 0 {
         return None;
     }
     let w = scrollbar_width(scale);
     let margin = (2.0 * scale).round();
-    let track = Rect { x: width - w, y: margin, w, h: height - 2.0 * margin };
+    let track = Rect { x: width - w, y: top + margin, w, h: height - top - 2.0 * margin };
     let total = (history + screen) as f32;
     let thumb_h = (track.h * screen as f32 / total).max(24.0 * scale).min(track.h);
     let frac = 1.0 - offset as f32 / history as f32;
@@ -106,13 +108,13 @@ pub struct SearchGeometry {
     pub close: Rect,
 }
 
-/// Search bar in the top-right corner, sized in cells.
-pub fn search_geometry(width: f32, scale: f32, cell_w: f32, cell_h: f32) -> SearchGeometry {
+/// Search bar in the top-right corner of the terminal area, sized in cells.
+pub fn search_geometry(width: f32, top: f32, scale: f32, cell_w: f32, cell_h: f32) -> SearchGeometry {
     let margin = (8.0 * scale).round();
     let pad = (6.0 * scale).round();
     let w = (cell_w * 44.0 + 2.0 * pad).min(width - 2.0 * margin - scrollbar_width(scale));
     let h = cell_h + 2.0 * pad;
-    let bar = Rect { x: width - w - margin - scrollbar_width(scale), y: margin, w, h };
+    let bar = Rect { x: width - w - margin - scrollbar_width(scale), y: top + margin, w, h };
     let close = Rect { x: bar.x + bar.w - pad - cell_w * 2.0, y: bar.y, w: cell_w * 2.0 + pad, h };
     SearchGeometry { bar, close }
 }
@@ -123,21 +125,21 @@ mod tests {
 
     #[test]
     fn thumb_at_bottom_when_not_scrolled_and_top_when_fully_scrolled() {
-        let g = scroll_geometry(800.0, 600.0, 1.0, 1000, 30, 0).unwrap();
+        let g = scroll_geometry(800.0, 0.0, 600.0, 1.0, 1000, 30, 0).unwrap();
         assert!((g.thumb.y + g.thumb.h - (g.track.y + g.track.h)).abs() < 0.01);
-        let g = scroll_geometry(800.0, 600.0, 1.0, 1000, 30, 1000).unwrap();
+        let g = scroll_geometry(800.0, 0.0, 600.0, 1.0, 1000, 30, 1000).unwrap();
         assert!((g.thumb.y - g.track.y).abs() < 0.01);
     }
 
     #[test]
     fn thumb_position_round_trips() {
-        let g = scroll_geometry(800.0, 600.0, 1.0, 1000, 30, 400).unwrap();
+        let g = scroll_geometry(800.0, 0.0, 600.0, 1.0, 1000, 30, 400).unwrap();
         assert_eq!(offset_for_thumb(&g, g.thumb.y, 1000), 400);
     }
 
     #[test]
     fn no_scrollbar_without_history() {
-        assert!(scroll_geometry(800.0, 600.0, 1.0, 0, 30, 0).is_none());
+        assert!(scroll_geometry(800.0, 0.0, 600.0, 1.0, 0, 30, 0).is_none());
     }
 
     #[test]

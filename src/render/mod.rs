@@ -1,5 +1,6 @@
-//! wgpu renderer. A frame is a list of instanced quads in four layers
-//! (cell backgrounds, text, UI shapes, UI text), drawn with one draw call.
+//! wgpu renderer. A frame is a list of instanced quads in six layers
+//! (cell backgrounds, text, UI shapes and text, overlay shapes and text),
+//! drawn in that order with one draw call.
 //!
 //! The layers are reusable `Vec`s that keep their capacity between frames,
 //! and each one is written into the GPU buffer straight from its slice, so
@@ -35,9 +36,15 @@ const KIND_ROUNDED: u32 = 3;
 pub enum Layer {
     Background = 0,
     Text = 1,
+    /// Tab bar, scrollbar, search bar.
     UiShapes = 2,
     UiText = 3,
+    /// Menus and panels, above everything else.
+    OverlayShapes = 4,
+    OverlayText = 5,
 }
+
+const LAYERS: usize = 6;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -56,14 +63,16 @@ pub struct Renderer {
     globals: wgpu::Buffer,
     instances: wgpu::Buffer,
     instance_capacity: usize,
-    layers: [Vec<Instance>; 4],
+    layers: [Vec<Instance>; LAYERS],
     pub glyphs: GlyphCache,
+    /// Adapter name and backend, for the About panel.
+    pub gpu: String,
 }
 
 /// Draws into the frame's layers. Borrowed from the renderer for the
 /// duration of one frame.
 pub struct Painter<'a> {
-    layers: &'a mut [Vec<Instance>; 4],
+    layers: &'a mut [Vec<Instance>; LAYERS],
     glyphs: &'a mut GlyphCache,
     queue: &'a wgpu::Queue,
     pub cell: CellMetrics,
@@ -136,7 +145,9 @@ impl Renderer {
             })
             .await
             .map_err(|e| format!("no GPU adapter: {e}"))?;
-        log::info!("GPU: {:?}", adapter.get_info());
+        let info = adapter.get_info();
+        log::info!("GPU: {info:?}");
+        let gpu = format!("{} ({:?})", info.name, info.backend);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("ragamuffin"),
@@ -278,6 +289,7 @@ impl Renderer {
             instance_capacity,
             layers: Default::default(),
             glyphs,
+            gpu,
         })
     }
 

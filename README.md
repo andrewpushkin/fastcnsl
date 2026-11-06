@@ -4,6 +4,10 @@ A fast, GPU-accelerated terminal written in Rust, for Linux, Windows and macOS.
 
 ![ragamuffin showing cat hello.c with C highlighting and a search for "greet"](docs/screenshot.png)
 
+| ⋮ menu | Options |
+|---|---|
+| ![menu](docs/menu.png) | ![options](docs/options.png) |
+
 - **GPU rendering** with [wgpu] (Vulkan, Metal, DirectX 12, OpenGL): one draw
   call per frame, glyphs cached in a texture atlas, redraws only when something
   changed.
@@ -15,7 +19,14 @@ A fast, GPU-accelerated terminal written in Rust, for Linux, Windows and macOS.
   coloured. The language comes from the file name, or from the content (`#!`
   lines, `#include`, `fn main`...) when there is no extension. Text a program
   colours itself is never touched.
-- **Light and dark themes** that follow the operating system, or a fixed choice.
+- **Tabs**, each with its own shell, scrollback and search.
+- **⋮ menu** for tabs, find, copy and paste, theme, Options and About, plus a
+  right-click menu for copy, paste and select all.
+- **Options panel** with theme, font size and code highlighting switches and
+  the full list of keyboard shortcuts. Changes are saved to the settings file.
+- **Light and dark themes** that follow the operating system automatically,
+  including on Linux desktops (GNOME, KDE and others) and under WSL, or a
+  fixed choice.
 - **Settings file**: font, size, theme, shell, opacity and more. Saved changes
   apply immediately.
 - **Quiet UI**: the scrollbar and search bar sit at 40 % opacity and become
@@ -45,10 +56,14 @@ Fedora 32 and anything newer.
 
 ## Shortcuts
 
-On macOS, use Cmd where the table says Ctrl+Shift.
+On macOS, use Cmd where the table says Ctrl+Shift. The Options panel (⋮ →
+Options…) shows the same list.
 
 | Keys                        | Action                                   |
 |-----------------------------|------------------------------------------|
+| Ctrl+Shift+T / Ctrl+Shift+W | new tab / close tab                      |
+| Ctrl+Tab, Ctrl+PgDn         | next tab (with Shift, or PgUp: previous) |
+| Ctrl+Shift+,                | Options                                  |
 | Ctrl+Shift+F                | open or focus search                     |
 | Enter / Shift+Enter, F3     | previous (older) / next match            |
 | ↑ / ↓ in search             | previous / next match                    |
@@ -57,11 +72,11 @@ On macOS, use Cmd where the table says Ctrl+Shift.
 | Ctrl+Shift+C / Ctrl+Shift+V | copy / paste                             |
 | Ctrl+= / Ctrl+- / Ctrl+0    | larger / smaller / default font          |
 | Ctrl+Shift+L                | cycle theme: system → dark → light       |
-| Ctrl+Shift+,                | open the settings file                   |
 | Shift+PgUp / PgDn / Home / End | scroll the scrollback                 |
 
-Mouse: drag to select, double-click selects a word, triple-click a line, and
-middle-click pastes. Drag the scrollbar, or click the track to page. Hold
+Mouse: drag to select, double-click selects a word, triple-click a line,
+right-click opens the copy/paste menu, and middle-click pastes. On the tab
+bar, middle-click closes a tab. Drag the scrollbar, or click the track to page. Hold
 Shift to select text in programs that capture the mouse (vim, htop).
 
 Search ignores case unless the query contains a capital letter.
@@ -104,20 +119,23 @@ make all              # every release package
 make linux-x86_64     # .deb + AppImage
 make windows-x86_64   # zip
 make windows-arm64    # zip
-make macos-arm64      # zip, needs a macOS SDK (see docker/macos-sdk/README.md)
+make macos-arm64      # zip (the image downloads the macOS SDK, see below)
 
 make build            # quick build for this machine -> dist/ragamuffin
 make run              # build and start it
 make test             # unit tests
 make clippy           # lints
 make check-all        # type-check every target platform
-make screenshot       # headless smoke test -> dist/screenshot.png
+make screenshot       # headless UI run -> dist/screenshots/*.png
 make clean
 ```
 
-Apple doesn't allow redistributing the macOS SDK, so `make all` skips macOS
-until you add one. You can also build natively on a Mac with
-`cargo build --release`.
+The macOS image downloads Apple's macOS SDK from a third-party mirror while
+it is built. Apple's SDK license only allows use on Apple hardware and
+forbids redistribution, so check that you may use it, and don't publish that
+image. `docker/macos-arm64.Dockerfile` explains how to point it at an SDK you
+packaged yourself. You can also build natively on a Mac with
+`scripts/package/macos-arm64.sh`.
 
 ## How it stays fast
 
@@ -148,7 +166,9 @@ PTY ──read──▶ I/O thread ──parse in place──▶ grid (shared, l
 
 | Path                | What it does                                      |
 |---------------------|---------------------------------------------------|
-| `src/app.rs`        | window, input, shortcuts, mouse, clipboard        |
+| `src/app.rs`        | window, tabs, input, mouse, clipboard, actions    |
+| `src/chrome.rs`     | tab bar, menus, Options and About panels          |
+| `src/shortcuts.rs`  | shortcut table shown in Options and menus         |
 | `src/session.rs`    | shell process, PTY and I/O thread                 |
 | `src/view.rs`       | terminal state → quads                            |
 | `src/render/`       | wgpu pipeline, glyph atlas, WGSL shader           |
@@ -157,7 +177,7 @@ PTY ──read──▶ I/O thread ──parse in place──▶ grid (shared, l
 | `src/detect.rs`     | command-line and content language detection       |
 | `src/input.rs`      | keyboard, mouse and paste encoding                |
 | `src/config.rs`     | settings file and hot reload                      |
-| `src/theme.rs`      | dark and light palettes                           |
+| `src/theme.rs`      | dark and light palettes, OS theme detection       |
 | `docker/`, `scripts/package/`, `packaging/` | release builds    |
 
 ## License

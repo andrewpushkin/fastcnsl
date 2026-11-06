@@ -7,13 +7,16 @@
 #
 # Release packages, one Docker image per platform (docker/<platform>.Dockerfile):
 #
-#   make all              every platform below (macOS only if its SDK is present)
+#   make all              every platform below
 #   make linux-x86_64     .deb + AppImage
 #   make deb              only the .deb
 #   make appimage         only the AppImage
 #   make windows-x86_64   ragamuffin-<ver>-windows-x86_64.zip
 #   make windows-arm64    ragamuffin-<ver>-windows-arm64.zip
-#   make macos-arm64      ragamuffin-<ver>-macos-arm64.zip (needs docker/macos-sdk/)
+#   make macos-arm64      ragamuffin-<ver>-macos-arm64.zip
+#
+# The macOS image downloads the macOS SDK while it is built. Read the
+# licensing note at the top of docker/macos-arm64.Dockerfile first.
 #
 # Development (Dockerfile.dev):
 #
@@ -24,7 +27,7 @@
 #   make clippy           lints, warnings are errors
 #   make fmt              format the code
 #   make check-all        type-check every release target
-#   make screenshot       run on a virtual display -> dist/screenshot.png
+#   make screenshot       run on a virtual display -> dist/screenshots/
 #   make shell            interactive shell in the dev container
 #
 #   make clean            remove build output
@@ -32,7 +35,8 @@
 
 CARGO_VOLUME := ragamuffin-cargo
 PLATFORMS    := linux-x86_64 windows-x86_64 windows-arm64 macos-arm64
-MACOS_SDK    := $(firstword $(wildcard docker/macos-sdk/MacOSX*.sdk.tar.*))
+# Optional overrides for the macOS SDK download (see docker/macos-arm64.Dockerfile).
+MACOS_SDK_ARGS := $(foreach v,MACOS_SDK_VERSION MACOS_SDK_URL MACOS_SDK_SHA256,$(if $($(v)),--build-arg $(v)=$($(v))))
 
 TTY := $(shell [ -t 0 ] && [ -t 1 ] && echo -it)
 # $(call docker_run,<image>,<cargo target dir>)
@@ -49,26 +53,24 @@ DEV_IMAGE := ragamuffin-dev
 DEV_STAMP := target/.image-dev
 DEV_RUN    = $(call docker_run,$(DEV_IMAGE),target)
 
-.PHONY: all $(PLATFORMS) deb appimage macos-sdk-missing \
+.PHONY: all $(PLATFORMS) deb appimage \
 	build run debug test clippy fmt check-all screenshot shell clean distclean
 
 # ---------------------------------------------------------------- releases
 
-all: linux-x86_64 windows-x86_64 windows-arm64 $(if $(MACOS_SDK),macos-arm64,macos-sdk-missing)
+all: $(PLATFORMS)
 	@echo
 	@echo "Packages in dist/:"
-	@ls -1 dist | grep -v -e '^ragamuffin$$' -e '^screenshot.png$$' | sed 's/^/  /'
+	@ls -1 dist | grep -v -e '^ragamuffin$$' -e '^screenshots$$' | sed 's/^/  /'
 
 # Image per platform, rebuilt when its Dockerfile changes.
 target/.image-%: docker/%.Dockerfile
 	docker build -f $< -t ragamuffin-$* docker
 	@mkdir -p $(dir $@) && touch $@
 
-# macOS: the SDK folder is the build context (see docker/macos-sdk/README.md).
-target/.image-macos-arm64: docker/macos-arm64.Dockerfile $(MACOS_SDK)
-	@if [ -z "$(MACOS_SDK)" ]; then \
-		echo "macOS SDK missing: put MacOSX<ver>.sdk.tar.xz in docker/macos-sdk/ (see README there)"; exit 1; fi
-	docker build -f $< -t ragamuffin-macos-arm64 docker/macos-sdk
+# macOS: same as the pattern rule, plus the optional SDK overrides.
+target/.image-macos-arm64: docker/macos-arm64.Dockerfile
+	docker build $(MACOS_SDK_ARGS) -f $< -t ragamuffin-macos-arm64 docker
 	@mkdir -p $(dir $@) && touch $@
 
 linux-x86_64: target/.image-linux-x86_64
@@ -88,9 +90,6 @@ windows-arm64: target/.image-windows-arm64
 
 macos-arm64: target/.image-macos-arm64
 	$(call docker_run,ragamuffin-macos-arm64,target/macos-arm64) scripts/package/macos-arm64.sh
-
-macos-sdk-missing:
-	@echo "SKIPPED macos-arm64: no macOS SDK in docker/macos-sdk/ (see docker/macos-sdk/README.md)"
 
 # ------------------------------------------------------------- development
 
@@ -126,7 +125,7 @@ check-all: $(DEV_STAMP)
 	$(DEV_RUN) cargo check --target aarch64-apple-darwin
 
 screenshot: build
-	$(DEV_RUN) scripts/screenshot.sh dist/screenshot.png
+	$(DEV_RUN) scripts/screenshot.sh dist/screenshots
 
 shell: $(DEV_STAMP)
 	$(DEV_RUN) bash

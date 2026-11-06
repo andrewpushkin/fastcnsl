@@ -1,5 +1,6 @@
 //! Turns terminal state into quads: cells, selection, search matches,
-//! code colours, cursor, scrollbar and search bar.
+//! code colours, cursor, scrollbar, search bar, and the window chrome
+//! (tab bar, menus, panels).
 //!
 //! Everything is read through borrows of the locked terminal: cells are
 //! never copied out of the grid.
@@ -11,6 +12,7 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 
+use crate::chrome::{self, Menu, Metrics, Panel, TextStyle};
 use crate::highlight::{CodeHighlighter, Span};
 use crate::render::glyphs::GlyphStyle;
 use crate::render::{Layer, Painter};
@@ -26,8 +28,30 @@ pub struct View<'a> {
     pub bold_is_bright: bool,
     pub scale: f32,
     pub padding: f32,
+    /// Height of the tab bar; the terminal is drawn below it.
+    pub top: f32,
     pub scrollbar_alpha: f32,
     pub search_alpha: f32,
+}
+
+/// What the pointer is over, for hover highlights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hover {
+    None,
+    Tab(usize),
+    TabClose(usize),
+    Plus,
+    MenuButton,
+    PanelButton(usize),
+}
+
+pub struct ChromeView<'a> {
+    pub titles: Vec<&'a str>,
+    pub active: usize,
+    pub hover: Hover,
+    pub menu_open: bool,
+    pub menu: Option<&'a Menu>,
+    pub panel: Option<&'a Panel>,
 }
 
 fn rgb(c: alacritty_terminal::vte::ansi::Rgb) -> Rgb {
@@ -77,11 +101,160 @@ fn span_at(spans: &[Span], col: u16) -> Option<Rgb> {
     spans.get(i).filter(|s| s.start <= col).map(|s| s.color)
 }
 
-pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>) {
+pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>, c: &ChromeView<'_>) {
     draw_grid(p, term, v);
     draw_scrollbar(p, term, v);
     if v.search.open {
         draw_search_bar(p, v);
+    }
+    let m = Metrics { width: p.width, height: p.height, scale: v.scale, cw: p.cell.width, ch: p.cell.height };
+    draw_tab_bar(p, v.palette, &m, c);
+    if let Some(panel) = c.panel {
+        draw_panel(p, v.palette, &m, panel, c.hover);
+    }
+    if let Some(menu) = c.menu {
+        draw_menu(p, v.palette, &m, menu);
+    }
+}
+
+fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<'_>) {
+    let bar = chrome::tab_bar(m, c.titles.len());
+    let bar_bg = if pal.dark { pal.background.mix(Rgb::hex(0x000000), 0.25) } else { pal.ui_bg };
+    p.rect(Layer::UiShapes, 0.0, 0.0, m.width, bar.height, bar_bg.rgba(1.0));
+    let r = m.scale * 6.0;
+    let text_y = |rect: &ui::Rect| (rect.y + (rect.h - m.ch) / 2.0).round();
+
+    for (i, (slot, title)) in bar.tabs.iter().zip(&c.titles).enumerate() {
+        let active = i == c.active;
+        let hovered = matches!(c.hover, Hover::Tab(h) | Hover::TabClose(h) if h == i);
+        let t = slot.rect;
+        if active {
+            // Active tab merges into the terminal below it.
+            p.rounded(Layer::UiShapes, t.x, t.y, t.w, t.h + r, r, pal.background.rgba(1.0));
+        } else if hovered {
+            p.rounded(Layer::UiShapes, t.x, t.y, t.w, t.h - m.scale * 3.0, r, pal.background.mix(bar_bg, 0.5).rgba(1.0));
+        }
+        // Title, cut to fit before the close button.
+        let room = ((slot.close.x - t.x - m.cw) / m.cw).floor().max(0.0) as usize;
+        let n = title.chars().count();
+        let shown: String = if n > room && room > 1 {
+            title.chars().take(room - 1).chain(std::iter::once('…')).collect()
+        } else {
+            title.chars().take(room).collect()
+        };
+        let color = if active { pal.foreground } else { pal.ui_dim };
+        p.text(Layer::UiText, &shown, t.x + m.cw, text_y(&t), color.rgba(1.0));
+        if active || hovered {
+            let cl = slot.close;
+            if c.hover == Hover::TabClose(i) {
+                p.rounded(Layer::UiShapes, cl.x, cl.y, cl.w, cl.h, m.scale * 3.0, pal.ui_dim.rgba(0.35));
+            }
+            p.text(Layer::UiText, "×", cl.x + (cl.w - m.cw) / 2.0, text_y(&cl), pal.ui_dim.rgba(1.0));
+        }
+    }
+
+    for (rect, hover, is_menu) in [(bar.plus, Hover::Plus, false), (bar.menu, Hover::MenuButton, true)] {
+        let lit = c.hover == hover || (is_menu && c.menu_open);
+        if lit {
+            let inset = m.scale * 5.0;
+            p.rounded(Layer::UiShapes, rect.x + inset, rect.y + inset, rect.w - 2.0 * inset, rect.h - 2.0 * inset, r, pal.ui_dim.rgba(0.3));
+        }
+        let color = if lit { pal.foreground } else { pal.ui_dim };
+        if is_menu {
+            // Vertical three dots.
+            let d = (m.scale * 3.5).round().max(2.0);
+            let cx = rect.x + rect.w / 2.0;
+            let cy = rect.y + rect.h / 2.0;
+            for k in [-1.0, 0.0, 1.0] {
+                let y = cy + k * d * 2.0;
+                p.rounded(Layer::UiShapes, cx - d / 2.0, y - d / 2.0, d, d, d / 2.0, color.rgba(1.0));
+            }
+        } else {
+            p.text(Layer::UiText, "+", rect.x + (rect.w - m.cw) / 2.0, text_y(&rect), color.rgba(1.0));
+        }
+    }
+}
+
+fn draw_menu(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, menu: &Menu) {
+    let l = menu.layout(m);
+    let r = m.scale * 6.0;
+    let b = m.scale.round().max(1.0);
+    let shadow = m.scale * 3.0;
+    p.rounded(Layer::OverlayShapes, l.rect.x + shadow, l.rect.y + shadow, l.rect.w, l.rect.h, r, [0.0, 0.0, 0.0, 0.25]);
+    p.rounded(Layer::OverlayShapes, l.rect.x - b, l.rect.y - b, l.rect.w + 2.0 * b, l.rect.h + 2.0 * b, r + b, pal.ui_dim.rgba(0.6));
+    p.rounded(Layer::OverlayShapes, l.rect.x, l.rect.y, l.rect.w, l.rect.h, r, pal.ui_bg.rgba(1.0));
+    for (i, (item, row)) in menu.items.iter().zip(&l.rows).enumerate() {
+        if item.action.is_none() {
+            let y = (row.y + row.h / 2.0).round();
+            p.rect(Layer::OverlayShapes, row.x + l.pad, y, row.w - 2.0 * l.pad, b, pal.ui_dim.rgba(0.4));
+            continue;
+        }
+        if menu.hover == Some(i) && item.enabled {
+            p.rounded(Layer::OverlayShapes, row.x, row.y, row.w, row.h, m.scale * 4.0, pal.ui_accent.rgba(0.85));
+        }
+        let fg = if !item.enabled {
+            pal.ui_dim.mix(pal.ui_bg, 0.3)
+        } else if menu.hover == Some(i) {
+            Rgb::hex(0xffffff)
+        } else {
+            pal.ui_fg
+        };
+        let y = (row.y + (row.h - m.ch) / 2.0).round();
+        let x = l.rect.x + l.pad;
+        if item.checked {
+            p.text(Layer::OverlayText, "✓", x, y, fg.rgba(1.0));
+        }
+        p.text(Layer::OverlayText, &item.label, x + 2.0 * m.cw, y, fg.rgba(1.0));
+        if !item.hint.is_empty() {
+            let hint_fg = if menu.hover == Some(i) { fg } else { pal.ui_dim };
+            p.text(Layer::OverlayText, &item.hint, l.hint_x, y, hint_fg.rgba(1.0));
+        }
+    }
+}
+
+fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, hover: Hover) {
+    p.rect(Layer::OverlayShapes, 0.0, 0.0, m.width, m.height, [0.0, 0.0, 0.0, 0.35]);
+    let rc = panel.rect;
+    let r = m.scale * 10.0;
+    let b = m.scale.round().max(1.0);
+    p.rounded(Layer::OverlayShapes, rc.x - b, rc.y - b, rc.w + 2.0 * b, rc.h + 2.0 * b, r + b, pal.ui_dim.rgba(0.6));
+    p.rounded(Layer::OverlayShapes, rc.x, rc.y, rc.w, rc.h, r, pal.ui_bg.rgba(1.0));
+
+    for line in &panel.lines {
+        let color = match line.style {
+            TextStyle::Title => pal.foreground,
+            TextStyle::Heading => pal.ui_accent,
+            TextStyle::Normal => pal.ui_fg,
+            TextStyle::Dim => pal.ui_dim,
+            TextStyle::Key => pal.ansi[3],
+        };
+        // Clip text that would run past the panel's right edge.
+        let room = ((rc.x + rc.w - line.x) / m.cw).floor().max(0.0) as usize;
+        let text: String = line.text.chars().take(room.saturating_sub(1)).collect();
+        p.text(Layer::OverlayText, &text, line.x, line.y, color.rgba(1.0));
+        if line.style == TextStyle::Title {
+            // Fake bold by drawing twice, one pixel apart.
+            p.text(Layer::OverlayText, &text, line.x + b, line.y, color.rgba(1.0));
+        }
+    }
+
+    for (i, btn) in panel.buttons.iter().enumerate() {
+        let br = btn.rect;
+        let hovered = hover == Hover::PanelButton(i);
+        let (bg, fg) = if btn.active {
+            (pal.ui_accent, Rgb::hex(0xffffff))
+        } else if hovered {
+            (pal.ui_dim.mix(pal.ui_bg, 0.5), pal.foreground)
+        } else if btn.label == "×" {
+            (pal.ui_bg, pal.ui_dim)
+        } else {
+            (pal.ui_dim.mix(pal.ui_bg, 0.75), pal.ui_fg)
+        };
+        p.rounded(Layer::OverlayShapes, br.x, br.y, br.w, br.h, m.scale * 5.0, bg.rgba(1.0));
+        let tw = btn.label.chars().count() as f32 * m.cw;
+        let tx = (br.x + (br.w - tw) / 2.0).round();
+        let ty = (br.y + (br.h - m.ch) / 2.0).round();
+        p.text(Layer::OverlayText, &btn.label, tx, ty, fg.rgba(1.0));
     }
 }
 
@@ -111,7 +284,7 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
         let point = indexed.point;
         let row = (point.line.0 + offset) as f32;
         let x = pad + point.column.0 as f32 * cw;
-        let y = pad + row * ch;
+        let y = v.top + pad + row * ch;
 
         let mut fg_color = cell.fg;
         if v.bold_is_bright && cell.flags.contains(Flags::BOLD)
@@ -210,7 +383,7 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
 
 fn draw_scrollbar<T>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>) {
     let grid = term.grid();
-    let Some(g) = ui::scroll_geometry(p.width, p.height, v.scale, grid.history_size(), grid.screen_lines(), grid.display_offset()) else {
+    let Some(g) = ui::scroll_geometry(p.width, v.top, p.height, v.scale, grid.history_size(), grid.screen_lines(), grid.display_offset()) else {
         return;
     };
     let a = v.scrollbar_alpha;
@@ -229,7 +402,7 @@ fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>) {
     let s = v.search;
     let a = v.search_alpha;
     let (cw, ch) = (p.cell.width, p.cell.height);
-    let g = ui::search_geometry(p.width, v.scale, cw, ch);
+    let g = ui::search_geometry(p.width, v.top, v.scale, cw, ch);
     let b = g.bar;
     let r = (6.0 * v.scale).round();
     let border = (1.0 * v.scale).round().max(1.0);
