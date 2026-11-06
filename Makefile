@@ -1,9 +1,10 @@
 # Every cargo command runs inside Docker. The project directory is mounted
-# into the containers, which run as your user, so all output lands on the
-# host with your ownership:
+# into the containers, which run as your user, so everything generated is a
+# normal file on the host, owned by you:
 #
 #   dist/                 release packages and the local build
 #   target/<platform>/    cargo output per platform image
+#   .cache/cargo/         downloaded crates (shared by all images)
 #
 # Release packages, one Docker image per platform (docker/<platform>.Dockerfile):
 #
@@ -30,22 +31,22 @@
 #   make screenshot       run on a virtual display -> dist/screenshots/
 #   make shell            interactive shell in the dev container
 #
-#   make clean            remove build output
-#   make distclean        also remove the Docker images and the cargo cache
+#   make clean            remove build output (target/, dist/), no Docker needed
+#   make distclean        also remove the crate cache and the Docker images
 
-CARGO_VOLUME := ragamuffin-cargo
+CARGO_CACHE  := $(CURDIR)/.cache/cargo
 PLATFORMS    := linux-x86_64 windows-x86_64 windows-arm64 macos-arm64
 # Optional overrides for the macOS SDK download (see docker/macos-arm64.Dockerfile).
 MACOS_SDK_ARGS := $(foreach v,MACOS_SDK_VERSION MACOS_SDK_URL MACOS_SDK_SHA256,$(if $($(v)),--build-arg $(v)=$($(v))))
 
 TTY := $(shell [ -t 0 ] && [ -t 1 ] && echo -it)
 # $(call docker_run,<image>,<cargo target dir>)
-docker_run = docker run --rm $(TTY) \
+docker_run = mkdir -p $(CARGO_CACHE) && docker run --rm $(TTY) \
 	-u $(shell id -u):$(shell id -g) \
 	-e HOME=/tmp \
 	-e CARGO_TARGET_DIR=/work/$(2) \
 	-v $(CURDIR):/work \
-	-v $(CARGO_VOLUME):/cargo \
+	-v $(CARGO_CACHE):/cargo \
 	-w /work \
 	$(1)
 
@@ -133,9 +134,8 @@ shell: $(DEV_STAMP)
 # ------------------------------------------------------------------ cleanup
 
 clean:
-	-docker run --rm -u $(shell id -u):$(shell id -g) -v $(CURDIR):/work -w /work $(DEV_IMAGE) rm -rf target dist
 	rm -rf target dist
 
 distclean: clean
+	rm -rf .cache
 	-docker image rm $(DEV_IMAGE) $(addprefix ragamuffin-,$(PLATFORMS))
-	-docker volume rm $(CARGO_VOLUME)

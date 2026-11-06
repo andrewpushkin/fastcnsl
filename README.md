@@ -113,8 +113,10 @@ Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
 ## Building
 
 Everything builds in Docker, so the only requirements are Docker and `make`.
-Each platform has its own image in `docker/`, and output goes to `dist/`,
-owned by your user.
+Each platform has its own image in `docker/`. All generated files are normal
+files in the project, owned by your user: packages in `dist/`, build output
+in `target/`, downloaded crates in `.cache/`. `make clean` is a plain
+`rm -rf target dist` and needs no Docker.
 
 ```sh
 make all              # every release package
