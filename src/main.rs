@@ -4,6 +4,7 @@ mod config;
 mod detect;
 mod highlight;
 mod render;
+mod search;
 mod session;
 mod theme;
 
