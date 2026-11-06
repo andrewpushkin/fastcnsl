@@ -4,10 +4,8 @@
 # and the std libraries for Windows and macOS targets so the cross-platform
 # code paths can be type-checked from Linux.
 #
-#   scripts/dev.sh build        # cargo build --release
-#   scripts/dev.sh test         # cargo test
-#   scripts/dev.sh check-all    # check linux + windows + macos targets
-#   scripts/dev.sh shell        # interactive shell in the container
+# Use it through the Makefile in the project root:
+#   make / make test / make clippy / make check-all / make shell / make clean
 
 FROM rust:1.91-bookworm
 
@@ -29,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN rustup component add clippy rustfmt \
     && rustup target add x86_64-pc-windows-gnu x86_64-apple-darwin aarch64-apple-darwin
 
-# CARGO_HOME lives in a named volume (see scripts/dev.sh) so the registry and
+# CARGO_HOME lives in a named volume (see Makefile) so the registry and
 # git checkouts survive container restarts. It must be writable by the
 # non-root user the container runs as.
 ENV CARGO_HOME=/cargo
