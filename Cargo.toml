@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.91"
 description = "Fast GPU-accelerated terminal with Notepad++-style search highlighting and automatic code highlighting"
 license = "MIT"
+repository = "https://github.com/andrewpushkin/ragamuffin"
 authors = ["Andrei Pushkin <andrew.pushkin@gmail.com>"]
 categories = ["command-line-utilities"]
 keywords = ["terminal", "gpu", "wgpu", "terminal-emulator"]

@@ -41,6 +41,8 @@
 #   make distclean        also remove the crate cache and the Docker images
 
 CARGO_CACHE  := $(CURDIR)/.cache/cargo
+# 0.1.<commits>; see scripts/version.sh. Override with make VERSION=...
+VERSION      ?= $(shell scripts/version.sh)
 PLATFORMS    := linux-x86_64 windows-x86_64 windows-arm64 macos-arm64
 PACKAGES     := linux-x86_64-deb linux-x86_64-appimage windows-x86_64-zip windows-arm64-zip macos-arm64-zip
 # Optional overrides for the macOS SDK download (see docker/macos-arm64.Dockerfile).
@@ -54,6 +56,7 @@ docker_run = mkdir -p $(CARGO_CACHE) && docker run --rm $(TTY) \
 	-e USER=$(shell id -un) \
 	-e SHELL=/bin/bash \
 	-e XDG_RUNTIME_DIR=/tmp \
+	-e RAGAMUFFIN_VERSION=$(VERSION) \
 	-e CARGO_TARGET_DIR=/work/$(2) \
 	-v $(CURDIR):/work \
 	-v $(CARGO_CACHE):/cargo \

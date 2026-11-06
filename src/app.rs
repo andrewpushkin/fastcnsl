@@ -314,6 +314,8 @@ impl App {
             Action::Options => st.overlay = Overlay::Options,
             Action::About => st.overlay = Overlay::About,
             Action::OpenSettingsFile => open_settings(),
+            Action::OpenProjectPage => open_in_os(crate::REPOSITORY),
+            Action::OpenReleases => open_in_os(format!("{}/releases", crate::REPOSITORY)),
             Action::ClosePanel => {}
             Action::Quit => el.exit(),
         }
@@ -1228,16 +1230,23 @@ impl State {
 }
 
 fn open_settings() {
-    let Some(path) = Config::path() else { return };
+    if let Some(path) = Config::path() {
+        open_in_os(path);
+    }
+}
+
+/// Opens a file or URL with the OS's default application.
+fn open_in_os(target: impl AsRef<std::ffi::OsStr>) {
+    let target = target.as_ref();
     let result = if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd").arg("/C").arg("start").arg("").arg(&path).spawn()
+        std::process::Command::new("cmd").arg("/C").arg("start").arg("").arg(target).spawn()
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-t").arg(&path).spawn()
+        std::process::Command::new("open").arg(target).spawn()
     } else {
-        std::process::Command::new("xdg-open").arg(&path).spawn()
+        std::process::Command::new("xdg-open").arg(target).spawn()
     };
     if let Err(e) = result {
-        log::warn!("could not open {}: {e}", path.display());
+        log::warn!("could not open {}: {e}", target.to_string_lossy());
     }
 }
 

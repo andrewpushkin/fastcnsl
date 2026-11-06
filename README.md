@@ -5,6 +5,20 @@
 Ultra fast GPU-accelerated terminal emulator, written in Rust, for Linux,
 Windows and macOS.
 
+## Download
+
+| Platform | Latest build |
+|---|---|
+| Windows x86-64 | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-x86_64.zip) |
+| Windows ARM64 | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-arm64.zip) |
+| macOS Apple Silicon | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-macos-arm64.zip) |
+| Linux x86-64: Debian, Ubuntu | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.deb) |
+| Linux x86-64: any distro | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.AppImage) |
+
+Every push to `main` is built by GitHub Actions and published as a
+release, numbered `0.1.<commits on main>`. Older builds:
+[all releases](https://github.com/andrewpushkin/ragamuffin/releases). Install notes are [below](#install).
+
 | Dark | Light |
 |---|---|
 | ![ragamuffin in dark mode: cat hello.c with C highlighting and a search for "greet"](docs/screenshot.png) | ![ragamuffin in light mode: the same session](docs/light.png) |
@@ -41,21 +55,6 @@ Windows and macOS.
 - **Quiet UI**: the scrollbar and search bar sit at 40 % opacity and become
   fully visible while you use them.
 - **No `unsafe`** in ragamuffin's own code (`#![forbid(unsafe_code)]`).
-
-## Download
-
-| Platform | Nightly (latest `main`) | Latest release |
-|---|---|---|
-| Linux x86-64 (Debian, Ubuntu) | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-linux-x86_64.deb) | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.deb) |
-| Linux x86-64 (any distro) | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-linux-x86_64.AppImage) | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.AppImage) |
-| Windows x86-64 | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-windows-x86_64.zip) | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-x86_64.zip) |
-| Windows ARM64 | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-windows-arm64.zip) | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-arm64.zip) |
-| macOS Apple Silicon | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/download/nightly/ragamuffin-macos-arm64.zip) | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-macos-arm64.zip) |
-
-- **Nightly** is rebuilt by GitHub Actions on every push to `main`.
-- **Latest release** is the newest version tag (`v0.2.0`, ...). Those links
-  start working once the first version is tagged.
-- All builds: [Releases](https://github.com/andrewpushkin/ragamuffin/releases).
 
 ## Install
 
@@ -155,13 +154,13 @@ make clean
 
 GitHub Actions (`.github/workflows/build.yml`) lints and builds every
 package on each pull request and push to `main`, using the same Makefile
-targets. It doesn't run the unit tests; run `make tests` before pushing. macOS is built on GitHub's Apple Silicon runner with
-Apple's own SDK. Pushes to `main` refresh the Nightly release; pushing a
-`v*` tag publishes a versioned release:
+targets. It doesn't run the unit tests; run `make tests` before pushing.
+macOS is built on GitHub's Apple Silicon runner with Apple's own SDK.
 
-```sh
-git tag v0.2.0 && git push origin v0.2.0
-```
+Every push to `main` becomes a release. The version is
+`<major>.<minor>.<commits on main>` (`scripts/version.sh`): `0.1` comes from
+`Cargo.toml`, so bump it there for a new minor version. Local builds use
+the same numbering, and `make VERSION=1.2.3 ...` overrides it.
 
 The macOS image downloads Apple's macOS SDK from a third-party mirror while
 it is built. Apple's SDK license only allows use on Apple hardware and

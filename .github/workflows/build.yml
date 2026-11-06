@@ -1,10 +1,10 @@
 # Builds ragamuffin for every platform. Unit tests are not run here; run
 # them locally with `make tests`.
 #
+# - Push to main: lints, all packages, then a GitHub release. Every run
+#   on main is a release: version 0.1.<commits on main> (scripts/version.sh),
+#   tag v0.1.<commits>, marked "latest".
 # - Pull requests: lints + all packages, uploaded as workflow artifacts.
-# - Push to main: the same, then the "nightly" pre-release on the Releases
-#   page is replaced with the new packages.
-# - Tag v*: a versioned release with the packages attached.
 #
 # Linux and Windows packages are built with the same Docker images and
 # Makefile targets as locally. macOS is built natively on GitHub's Apple
@@ -16,13 +16,14 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
+# A newer push to a pull request cancels its older run. Runs on main are
+# never cancelled: each one becomes a release.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -55,6 +56,8 @@ jobs:
             packages: windows-arm64-zip
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history: the version counts commits
       - uses: actions/cache@v4
         with:
           path: .cache/cargo
@@ -78,6 +81,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: |
           rustup toolchain install 1.91 --profile minimal --target aarch64-apple-darwin
           rustup default 1.91
@@ -100,39 +105,42 @@ jobs:
 
   release:
     name: Publish release
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [lint, docker-packages, macos-arm64]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Version
+        run: echo "VERSION=$(scripts/version.sh)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      # Fixed names (no version) so README download links never change.
+      # Fixed names (no version) so README links to releases/latest/download/
+      # always point at the newest build.
       - name: Name the files for download links
         run: |
           mkdir upload
-          cp dist/ragamuffin_*_amd64.deb         upload/ragamuffin-linux-x86_64.deb
-          cp dist/Ragamuffin-*-x86_64.AppImage   upload/ragamuffin-linux-x86_64.AppImage
+          cp dist/ragamuffin_*_amd64.deb          upload/ragamuffin-linux-x86_64.deb
+          cp dist/Ragamuffin-*-x86_64.AppImage    upload/ragamuffin-linux-x86_64.AppImage
           cp dist/ragamuffin-*-windows-x86_64.zip upload/ragamuffin-windows-x86_64.zip
           cp dist/ragamuffin-*-windows-arm64.zip  upload/ragamuffin-windows-arm64.zip
           cp dist/ragamuffin-*-macos-arm64.zip    upload/ragamuffin-macos-arm64.zip
           ls -l upload
-      - name: Create or replace the release
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            gh release create "$GITHUB_REF_NAME" upload/* \
-              --title "ragamuffin $GITHUB_REF_NAME" \
-              --generate-notes --verify-tag
-          else
-            gh release delete nightly --yes --cleanup-tag || true
-            gh release create nightly upload/* \
-              --prerelease --target "$GITHUB_SHA" \
-              --title "Nightly build" \
-              --notes "Latest build of \`main\` (${GITHUB_SHA::7}), replaced on every push. For stable versions, see the releases tagged v*."
-          fi
+          TAG="v$VERSION"
+          # A re-run of the same commit replaces its release.
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" upload/* \
+            --target "$GITHUB_SHA" \
+            --title "ragamuffin $VERSION" \
+            --notes "Build ${VERSION##*.} of \`main\` (${GITHUB_SHA::7}). Downloads: see the assets below." \
+            --latest

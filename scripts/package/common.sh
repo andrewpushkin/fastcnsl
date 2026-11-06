@@ -3,7 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 ROOT="$(pwd)"
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+# 0.1.<commits on main>, passed in by the Makefile or CI; computed here otherwise.
+VERSION="${RAGAMUFFIN_VERSION:-$(scripts/version.sh)}"
+export RAGAMUFFIN_VERSION="$VERSION"
 DIST="$ROOT/dist"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 mkdir -p "$DIST"

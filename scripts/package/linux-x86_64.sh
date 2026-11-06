@@ -17,7 +17,7 @@ deb)
     need_binary "$BIN" linux-x86_64
     say "packaging .deb"
     OUT="$DIST/ragamuffin_${VERSION}_amd64.deb"
-    cargo deb --no-build --output "$OUT"
+    cargo deb --no-build --deb-version "$VERSION" --output "$OUT"
     echo "-> ${OUT#$ROOT/}"
     ;;
 appimage)

@@ -19,6 +19,16 @@ mod view;
 
 use winit::event_loop::EventLoop;
 
+/// Version shown to users: 0.1.<commits on main>, set by the build
+/// (scripts/version.sh through the Makefile or CI), else Cargo's version.
+pub const VERSION: &str = match option_env!("RAGAMUFFIN_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
+/// The project's home page.
+pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
+
 /// Number of terminal columns a character occupies (1 or 2).
 pub fn grid_width(c: char) -> usize {
     unicode_width::UnicodeWidthChar::width(c).unwrap_or(1).max(1)

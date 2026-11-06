@@ -21,6 +21,9 @@ pub enum Action {
     Options,
     About,
     OpenSettingsFile,
+    /// Open the GitHub project page / its Releases page in the browser.
+    OpenProjectPage,
+    OpenReleases,
     FontBigger,
     FontSmaller,
     CodeHighlight(bool),
@@ -435,14 +438,18 @@ pub fn options_panel(m: &Metrics, s: &OptionsState) -> Panel {
 }
 
 pub fn about_panel(m: &Metrics, gpu: &str, config_path: &str) -> Panel {
-    let mut b = PanelBuilder::new(m, 64.0, 9.5);
+    let mut b = PanelBuilder::new(m, 66.0, 10.5);
     b.close_button();
     b.text(0.0, "Ragamuffin", TextStyle::Title);
     b.next();
-    b.text(0.0, format!("Version {}", env!("CARGO_PKG_VERSION")), TextStyle::Dim);
+    let build = crate::VERSION.rsplit('.').next().unwrap_or("0");
+    b.text(0.0, format!("Version {} (build {build})", crate::VERSION), TextStyle::Dim);
     b.next();
     b.gap();
     b.text(0.0, "Fast GPU-accelerated terminal with search and code highlighting.", TextStyle::Normal);
+    b.next();
+    b.text(0.0, "GitHub", TextStyle::Dim);
+    b.text(10.0, crate::REPOSITORY, TextStyle::Normal);
     b.next();
     b.text(0.0, "GPU", TextStyle::Dim);
     b.text(10.0, gpu, TextStyle::Normal);
@@ -457,7 +464,9 @@ pub fn about_panel(m: &Metrics, gpu: &str, config_path: &str) -> Panel {
     b.text(10.0, "wgpu, winit, alacritty_terminal, cosmic-text, syntect", TextStyle::Normal);
     b.next();
     b.gap();
-    b.button(0.0, "Close", Action::ClosePanel, false);
+    let c = b.button(0.0, "GitHub page", Action::OpenProjectPage, false);
+    let c = b.button(c, "Download updates", Action::OpenReleases, false);
+    b.button(c, "Close", Action::ClosePanel, false);
     b.finish()
 }
 
@@ -578,7 +587,10 @@ mod tests {
     fn about_panel_shows_version_gpu_and_close() {
         let p = about_panel(&m(), "Test GPU (Vulkan)", "/home/x/.config/ragamuffin/config.toml");
         let text: Vec<&str> = p.lines.iter().map(|l| l.text.as_str()).collect();
-        assert!(text.iter().any(|t| t.contains(env!("CARGO_PKG_VERSION"))));
+        assert!(text.iter().any(|t| t.contains(crate::VERSION) && t.contains("build")));
+        assert!(text.contains(&crate::REPOSITORY));
+        let actions: Vec<Action> = p.buttons.iter().map(|b| b.action).collect();
+        assert!(actions.contains(&Action::OpenProjectPage) && actions.contains(&Action::OpenReleases));
         assert!(text.contains(&"Test GPU (Vulkan)"));
         assert!(p.buttons.iter().filter(|b| b.action == Action::ClosePanel).count() == 2, "× and Close");
         assert!(p.rect.x >= 0.0 && p.rect.x + p.rect.w <= 1000.0);
