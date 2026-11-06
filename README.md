@@ -42,8 +42,7 @@ release, numbered `0.1.<commits on main>`. Older builds:
   with its own shell, scrollback and search.
 - **One-line title bar**: minimize, maximize and close sit in the tab bar
   next to ⋮ (on macOS the native buttons move into it). Drag the empty part
-  of the bar to move the window; double-click it to maximize. Under WSL the
-  OS title bar is kept (see [Settings](#settings)).
+  of the bar to move the window; double-click it to maximize.
 - **⋮ menu** for tabs, find, copy and paste, theme, Options and About, plus a
   right-click menu for copy, paste and select all.
 - **Options panel** with theme, font size and code highlighting switches and
@@ -117,13 +116,14 @@ code_highlight = true
 code_theme_dark = "base16-ocean.dark"
 code_theme_light = "InspiredGitHub"
 bold_is_bright = false
-title_bar = "auto"               # "auto" | "custom" (buttons in the tab bar) | "system" (OS title bar)
+title_bar = "custom"             # "custom" (buttons in the tab bar) | "system" (OS title bar)
 display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to apply)
 ```
 
-`title_bar = "auto"` puts the window buttons in the tab bar, except under
-WSL: WSLg hides the mouse cursor over windows without an OS title bar until
-they are clicked, so there ragamuffin keeps the OS title bar.
+**WSL note:** on WSLg (Linux GUI apps on Windows), the mouse cursor may stay
+hidden over a Linux window until you click it. That is WSLg behaviour and
+affects other Linux apps too (e.g. `xeyes`). On Windows, the native Windows
+build doesn't have this problem.
 
 Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
 `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)`.

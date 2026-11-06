@@ -59,25 +59,18 @@ impl DisplayBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TitleBar {
-    /// The OS title bar under WSL, the tab bar everywhere else. WSLg hides
-    /// the mouse cursor over windows without an OS frame until they are
-    /// clicked.
-    #[default]
-    Auto,
     /// Buttons in the tab bar (on macOS: the native buttons, moved there).
+    #[default]
     Custom,
-    /// The operating system's title bar, on its own line.
+    /// The operating system's title bar, on its own line. Under WSLg's
+    /// Wayland there is none, so the window then has no buttons.
     System,
 }
 
 impl TitleBar {
     /// True when the app draws its own title bar.
-    pub fn is_custom(self, wsl: bool) -> bool {
-        match self {
-            TitleBar::Auto => !wsl,
-            TitleBar::Custom => true,
-            TitleBar::System => false,
-        }
+    pub fn is_custom(self) -> bool {
+        self == TitleBar::Custom
     }
 }
 
@@ -113,8 +106,8 @@ pub struct Config {
     pub code_theme_light: String,
     /// Render bold text in the bright variant of the 8 basic colours.
     pub bold_is_bright: bool,
-    /// "auto", "custom" (window buttons in the tab bar) or "system" (the
-    /// OS title bar). On macOS a change applies after a restart.
+    /// "custom" (window buttons in the tab bar) or "system" (the OS title
+    /// bar). On macOS a change applies after a restart.
     pub title_bar: TitleBar,
     /// Linux only: "auto", "wayland" or "x11". Applies after a restart.
     pub display_backend: DisplayBackend,
@@ -136,7 +129,7 @@ impl Default for Config {
             code_theme_dark: "base16-ocean.dark".to_owned(),
             code_theme_light: "InspiredGitHub".to_owned(),
             bold_is_bright: false,
-            title_bar: TitleBar::Auto,
+            title_bar: TitleBar::Custom,
             display_backend: DisplayBackend::Auto,
         }
     }
@@ -348,16 +341,15 @@ mod tests {
     }
 
     #[test]
-    fn title_bar_uses_the_os_frame_under_wsl() {
-        assert!(!TitleBar::Auto.is_custom(true));
-        assert!(TitleBar::Auto.is_custom(false));
-        assert!(TitleBar::Custom.is_custom(true));
-        assert!(!TitleBar::System.is_custom(false));
-        // The old boolean key from earlier versions is ignored.
-        let cfg: Config = toml::from_str("custom_title_bar = true").unwrap();
-        assert_eq!(cfg.title_bar, TitleBar::Auto);
+    fn title_bar_setting() {
+        assert!(TitleBar::Custom.is_custom());
+        assert!(!TitleBar::System.is_custom());
+        assert_eq!(Config::default().title_bar, TitleBar::Custom);
         let cfg: Config = toml::from_str("title_bar = \"system\"").unwrap();
         assert_eq!(cfg.title_bar, TitleBar::System);
+        // The boolean key from earlier versions is ignored.
+        let cfg: Config = toml::from_str("custom_title_bar = false").unwrap();
+        assert_eq!(cfg.title_bar, TitleBar::Custom);
     }
 
     #[test]
