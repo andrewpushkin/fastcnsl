@@ -1994,6 +1994,7 @@ dependencies = [
  "serde",
  "syntect",
  "toml",
+ "unicode-width",
  "wgpu",
  "winit",
 ]
