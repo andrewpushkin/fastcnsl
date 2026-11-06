@@ -1,5 +1,7 @@
 # ragamuffin
 
+[![Build](https://github.com/andrewpushkin/ragamuffin/actions/workflows/build.yml/badge.svg)](https://github.com/andrewpushkin/ragamuffin/actions/workflows/build.yml)
+
 Ultra fast GPU-accelerated terminal emulator, written in Rust, for Linux,
 Windows and macOS.
 
@@ -37,7 +39,13 @@ Windows and macOS.
 
 ## Install
 
-Download a package for your platform from the releases page:
+Download a package for your platform from
+[Releases](https://github.com/andrewpushkin/ragamuffin/releases):
+
+- **[Nightly](https://github.com/andrewpushkin/ragamuffin/releases/tag/nightly)**:
+  built automatically from every push to `main`.
+- **Versioned releases** (`v0.2.0`, ...): created when a version tag is pushed.
+
 
 | Platform                | File                                    |
 |-------------------------|-----------------------------------------|
@@ -132,6 +140,16 @@ make clippy           # lints
 make check-all        # type-check every target platform
 make screenshot       # headless UI run -> dist/screenshots/*.png
 make clean
+```
+
+GitHub Actions (`.github/workflows/build.yml`) runs the tests and builds
+every package on each pull request and push to `main`, using the same
+Makefile targets. macOS is built on GitHub's Apple Silicon runner with
+Apple's own SDK. Pushes to `main` refresh the Nightly release; pushing a
+`v*` tag publishes a versioned release:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 The macOS image downloads Apple's macOS SDK from a third-party mirror while
