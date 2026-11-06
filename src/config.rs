@@ -1,0 +1,223 @@
+//! User settings, stored as TOML in the platform config directory:
+//!
+//! * Linux:   `~/.config/ragamuffin/config.toml`
+//! * macOS:   `~/Library/Application Support/ragamuffin/config.toml`
+//! * Windows: `%APPDATA%\ragamuffin\config.toml`
+//!
+//! The file is created with defaults on first start and re-read whenever it
+//! changes on disk, so edits apply without restarting.
+
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    /// Follow the operating system's light/dark setting.
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+impl ThemeMode {
+    pub fn next(self) -> Self {
+        match self {
+            ThemeMode::System => ThemeMode::Dark,
+            ThemeMode::Dark => ThemeMode::Light,
+            ThemeMode::Light => ThemeMode::System,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    /// Font family name. Any installed font works; monospace is expected.
+    pub font_family: String,
+    /// Font size in points (scaled by the window's DPI factor).
+    pub font_size: f32,
+    /// Line height as a multiple of the font size.
+    pub line_height: f32,
+    /// `system`, `dark` or `light`.
+    pub theme: ThemeMode,
+    /// Shell to start. Empty means the platform default ($SHELL, or
+    /// PowerShell/cmd on Windows).
+    pub shell: String,
+    /// Arguments passed to the shell.
+    pub shell_args: Vec<String>,
+    /// Lines of scrollback history.
+    pub scrollback: usize,
+    /// Opacity (0.0–1.0) of the scrollbar and search bar while they are idle.
+    /// They become fully opaque while hovered, dragged or typed into.
+    pub ui_idle_opacity: f32,
+    /// Inner padding around the terminal grid, in logical pixels.
+    pub padding: f32,
+    /// Detect source code printed by `cat`, `head`, `tail`, `bat`, `type`,
+    /// `Get-Content`, `git diff`... and colour it.
+    pub code_highlight: bool,
+    /// syntect theme used for code in dark mode.
+    pub code_theme_dark: String,
+    /// syntect theme used for code in light mode.
+    pub code_theme_light: String,
+    /// Render bold text in the bright variant of the 8 basic colours.
+    pub bold_is_bright: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            font_family: default_font().to_owned(),
+            font_size: 13.0,
+            line_height: 1.2,
+            theme: ThemeMode::System,
+            shell: String::new(),
+            shell_args: Vec::new(),
+            scrollback: 10_000,
+            ui_idle_opacity: 0.4,
+            padding: 6.0,
+            code_highlight: true,
+            code_theme_dark: "base16-ocean.dark".to_owned(),
+            code_theme_light: "InspiredGitHub".to_owned(),
+            bold_is_bright: false,
+        }
+    }
+}
+
+fn default_font() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Cascadia Mono"
+    } else if cfg!(target_os = "macos") {
+        "Menlo"
+    } else {
+        "DejaVu Sans Mono"
+    }
+}
+
+impl Config {
+    pub fn path() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("ragamuffin").join("config.toml"))
+    }
+
+    /// Loads the config file, writing a default one if none exists.
+    /// A broken file is reported and the defaults are used instead.
+    pub fn load_or_create() -> Self {
+        let Some(path) = Self::path() else {
+            return Self::default();
+        };
+        match Self::load(&path) {
+            Ok(Some(cfg)) => cfg,
+            Ok(None) => {
+                let cfg = Self::default();
+                if let Err(e) = cfg.write_default(&path) {
+                    log::warn!("could not write {}: {e}", path.display());
+                }
+                cfg
+            }
+            Err(e) => {
+                log::error!("{e}; using defaults");
+                Self::default()
+            }
+        }
+    }
+
+    pub fn load(path: &Path) -> Result<Option<Self>, String> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("reading {}: {e}", path.display())),
+        };
+        toml::from_str::<Config>(&text)
+            .map(|c| Some(c.sanitized()))
+            .map_err(|e| format!("parsing {}: {e}", path.display()))
+    }
+
+    fn write_default(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let body = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+        let text = format!(
+            "# ragamuffin settings. Saved changes apply immediately.\n\
+             # theme: \"system\" | \"dark\" | \"light\"\n\
+             # code themes: base16-ocean.dark, base16-eighties.dark, base16-mocha.dark,\n\
+             #   base16-ocean.light, InspiredGitHub, Solarized (dark), Solarized (light)\n\n{body}"
+        );
+        std::fs::write(path, text)
+    }
+
+    fn sanitized(mut self) -> Self {
+        self.font_size = self.font_size.clamp(4.0, 96.0);
+        self.line_height = self.line_height.clamp(0.8, 3.0);
+        self.ui_idle_opacity = self.ui_idle_opacity.clamp(0.0, 1.0);
+        self.padding = self.padding.clamp(0.0, 64.0);
+        self.scrollback = self.scrollback.min(1_000_000);
+        self
+    }
+}
+
+/// Polls the config file's modification time. Cheap enough to call about
+/// once a second from the UI thread; avoids a file-watcher dependency.
+pub struct ConfigWatcher {
+    path: Option<PathBuf>,
+    last: Option<SystemTime>,
+}
+
+impl ConfigWatcher {
+    pub fn new() -> Self {
+        let path = Config::path();
+        let last = path.as_deref().and_then(mtime);
+        Self { path, last }
+    }
+
+    /// Returns the new config if the file changed and parsed successfully.
+    pub fn poll(&mut self) -> Option<Config> {
+        let path = self.path.as_deref()?;
+        let now = mtime(path);
+        if now == self.last {
+            return None;
+        }
+        self.last = now;
+        match Config::load(path) {
+            Ok(cfg) => Some(cfg.unwrap_or_default()),
+            Err(e) => {
+                log::error!("{e}");
+                None
+            }
+        }
+    }
+}
+
+fn mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_file_uses_defaults_for_missing_keys() {
+        let cfg: Config = toml::from_str("font_size = 20.0\ntheme = \"light\"").unwrap();
+        assert_eq!(cfg.font_size, 20.0);
+        assert_eq!(cfg.theme, ThemeMode::Light);
+        assert_eq!(cfg.scrollback, Config::default().scrollback);
+    }
+
+    #[test]
+    fn default_round_trips() {
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back, Config::default());
+    }
+
+    #[test]
+    fn values_are_clamped() {
+        let cfg: Config = toml::from_str("font_size = 1000.0\nui_idle_opacity = 7.0").unwrap();
+        let cfg = cfg.sanitized();
+        assert_eq!(cfg.font_size, 96.0);
+        assert_eq!(cfg.ui_idle_opacity, 1.0);
+    }
+}
