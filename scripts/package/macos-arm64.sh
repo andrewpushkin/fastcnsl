@@ -17,18 +17,16 @@ sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.pl
 
 ICONSET="$STAGE/icons"
 mkdir -p "$ICONSET"
-if command -v png2icns >/dev/null; then
-    for s in 16 32 128 256 512; do
+if command -v convert >/dev/null; then
+    for s in 128 256 512; do
         convert -background none packaging/icons/ragamuffin.svg -resize ${s}x${s} "$ICONSET/icon_$s.png"
     done
-    png2icns "$APP/Contents/Resources/ragamuffin.icns" "$ICONSET"/icon_*.png >/dev/null
-elif command -v iconutil >/dev/null; then
-    mkdir -p "$ICONSET/r.iconset"
-    for s in 16 32 128 256 512; do
-        sips -s format png -z $s $s packaging/icons/ragamuffin-256.png --out "$ICONSET/r.iconset/icon_${s}x${s}.png" >/dev/null
+else  # native macOS
+    for s in 128 256 512; do
+        sips -s format png -z $s $s packaging/icons/ragamuffin-256.png --out "$ICONSET/icon_$s.png" >/dev/null
     done
-    iconutil -c icns "$ICONSET/r.iconset" -o "$APP/Contents/Resources/ragamuffin.icns"
 fi
+python3 scripts/package/make_icns.py "$APP/Contents/Resources/ragamuffin.icns" "$ICONSET"/icon_{128,256,512}.png
 
 # Apple Silicon only runs signed code; ad-hoc signing needs no certificate.
 if command -v rcodesign >/dev/null; then
