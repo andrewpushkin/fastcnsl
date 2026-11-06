@@ -1,0 +1,38 @@
+# Development image for ragamuffin.
+#
+# Contains the Rust toolchain, the system libraries winit/wgpu need on Linux,
+# and the std libraries for Windows and macOS targets so the cross-platform
+# code paths can be type-checked from Linux.
+#
+#   scripts/dev.sh build        # cargo build --release
+#   scripts/dev.sh test         # cargo test
+#   scripts/dev.sh check-all    # check linux + windows + macos targets
+#   scripts/dev.sh shell        # interactive shell in the container
+
+FROM rust:1.91-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pkg-config \
+        # winit: X11 + Wayland
+        libx11-dev libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxcb1-dev \
+        libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev \
+        # wgpu runtime: Vulkan + GL fallback (software lavapipe/llvmpipe)
+        libvulkan1 mesa-vulkan-drivers libegl1 libgl1 \
+        # fonts for tests and for running inside the container
+        fontconfig fonts-dejavu-core fonts-jetbrains-mono \
+        # Windows cross-compilation (x86_64-pc-windows-gnu)
+        mingw-w64 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup component add clippy rustfmt \
+    && rustup target add x86_64-pc-windows-gnu x86_64-apple-darwin aarch64-apple-darwin
+
+# CARGO_HOME lives in a named volume (see scripts/dev.sh) so the registry and
+# git checkouts survive container restarts. It must be writable by the
+# non-root user the container runs as.
+ENV CARGO_HOME=/cargo
+RUN mkdir -p /cargo && chmod 1777 /cargo
+
+WORKDIR /work
