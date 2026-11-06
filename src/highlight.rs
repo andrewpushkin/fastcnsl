@@ -384,12 +384,11 @@ fn collect_row(text: &mut String, map: &mut Vec<(usize, u16, u16)>, grid: &Grid<
 }
 
 fn push_span(spans: &mut Vec<Span>, col: u16, color: Rgb) {
-    if let Some(last) = spans.last_mut() {
-        if last.end == col && last.color == color {
+    if let Some(last) = spans.last_mut()
+        && last.end == col && last.color == color {
             last.end = col + 1;
             return;
         }
-    }
     spans.push(Span { start: col, end: col + 1, color });
 }
 

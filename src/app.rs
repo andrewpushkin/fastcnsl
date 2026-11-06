@@ -96,6 +96,11 @@ impl App {
         let attrs = Window::default_attributes()
             .with_title(TITLE)
             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 600.0));
+        // App id / WM_CLASS, matching StartupWMClass in the .desktop file.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "ragamuffin", "ragamuffin");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let attrs = winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "ragamuffin", "ragamuffin");
         let window = Arc::new(el.create_window(attrs).map_err(|e| e.to_string())?);
         window.set_ime_allowed(true);
         window.set_cursor(CursorIcon::Text);
@@ -283,11 +288,10 @@ impl State {
 
     fn copy_selection(&mut self) {
         let text = self.session.term.lock().selection_to_string();
-        if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut()) {
-            if let Err(e) = cb.set_text(text) {
+        if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut())
+            && let Err(e) = cb.set_text(text) {
                 log::warn!("copy failed: {e}");
             }
-        }
     }
 
     fn clipboard_text(&mut self) -> Option<String> {
@@ -420,7 +424,7 @@ impl State {
             Key::Character(c) if m.control_key() && c.eq_ignore_ascii_case("r") => self.search.toggle_regex(&mut term),
             Key::Character(c) if m.control_key() && c.eq_ignore_ascii_case("v") => {
                 drop(term);
-                return self.paste();
+                self.paste()
             }
             _ => {
                 if m.control_key() || m.super_key() {
@@ -507,8 +511,8 @@ impl State {
             let mut term = self.session.term.lock();
             let grid = term.grid();
             let (hist, screen, offset) = (grid.history_size(), grid.screen_lines(), grid.display_offset());
-            if let Some(g) = ui::scroll_geometry(w as f32, h as f32, scale, hist, screen, offset) {
-                if g.track.contains(x, y) {
+            if let Some(g) = ui::scroll_geometry(w as f32, h as f32, scale, hist, screen, offset)
+                && g.track.contains(x, y) {
                     if g.thumb.contains(x, y) {
                         self.scrollbar.drag = Some(y - g.thumb.y);
                     } else {
@@ -518,7 +522,6 @@ impl State {
                     self.scrolled();
                     return self.window.request_redraw();
                 }
-            }
         }
         if !pressed && button == WinitButton::Left && self.scrollbar.drag.take().is_some() {
             return self.window.request_redraw();
@@ -755,8 +758,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         let mut deadline = self.next_poll;
-        if let Some(st) = self.state.as_mut() {
-            if let Some(t) = st.wake_at {
+        if let Some(st) = self.state.as_mut()
+            && let Some(t) = st.wake_at {
                 if now >= t {
                     st.wake_at = None;
                     st.window.request_redraw();
@@ -764,7 +767,6 @@ impl ApplicationHandler<UserEvent> for App {
                     deadline = deadline.min(t);
                 }
             }
-        }
         el.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }

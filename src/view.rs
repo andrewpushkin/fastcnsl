@@ -114,13 +114,11 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
         let y = pad + row * ch;
 
         let mut fg_color = cell.fg;
-        if v.bold_is_bright && cell.flags.contains(Flags::BOLD) {
-            if let Color::Named(n) = fg_color {
-                if (n as usize) < 8 {
+        if v.bold_is_bright && cell.flags.contains(Flags::BOLD)
+            && let Color::Named(n) = fg_color
+                && (n as usize) < 8 {
                     fg_color = Color::Indexed(n as u8 + 8);
                 }
-            }
-        }
         let mut fg = resolve(fg_color, content.colors, pal);
         let mut bg = resolve(cell.bg, content.colors, pal);
 
