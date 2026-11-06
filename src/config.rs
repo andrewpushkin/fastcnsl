@@ -37,7 +37,7 @@ impl ThemeMode {
 pub struct Config {
     /// Font family name. Any installed font works; monospace is expected.
     pub font_family: String,
-    /// Font size in points (scaled by the window's DPI factor).
+    /// Font size in points (1pt = 4/3 px at 100% scaling).
     pub font_size: f32,
     /// Line height as a multiple of the font size.
     pub line_height: f32,
@@ -70,7 +70,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             font_family: default_font().to_owned(),
-            font_size: 13.0,
+            font_size: 11.0,
             line_height: 1.2,
             theme: ThemeMode::System,
             shell: String::new(),

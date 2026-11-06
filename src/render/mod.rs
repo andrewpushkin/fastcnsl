@@ -307,25 +307,34 @@ impl Renderer {
         self.glyphs.metrics
     }
 
-    /// Builds a frame with `build` and presents it.
-    pub fn render(&mut self, clear: Rgb, build: impl FnOnce(&mut Painter<'_>)) {
+    /// True if the glyph atlas overflowed while building the last frame,
+    /// in which case some glyphs were dropped and the frame should be rebuilt.
+    pub fn needs_rebuild(&self) -> bool {
+        self.glyphs.overflowed
+    }
+
+    /// Fills the frame's layers. Kept separate from [`present`](Self::present)
+    /// so callers can hold the terminal lock only while building: presenting
+    /// may block on vsync, and the PTY thread must not wait for that.
+    pub fn build(&mut self, build: impl FnOnce(&mut Painter<'_>)) {
         for l in &mut self.layers {
             l.clear();
         }
         self.glyphs.overflowed = false;
         let cell = self.glyphs.metrics;
-        {
-            let mut painter = Painter {
-                layers: &mut self.layers,
-                glyphs: &mut self.glyphs,
-                queue: &self.queue,
-                cell,
-                width: self.config.width as f32,
-                height: self.config.height as f32,
-            };
-            build(&mut painter);
-        }
+        let mut painter = Painter {
+            layers: &mut self.layers,
+            glyphs: &mut self.glyphs,
+            queue: &self.queue,
+            cell,
+            width: self.config.width as f32,
+            height: self.config.height as f32,
+        };
+        build(&mut painter);
+    }
 
+    /// Uploads the built layers and presents the frame.
+    pub fn present(&mut self, clear: Rgb) {
         let total: usize = self.layers.iter().map(Vec::len).sum();
         if total > self.instance_capacity {
             self.instance_capacity = total.next_power_of_two();
