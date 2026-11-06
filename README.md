@@ -1,6 +1,7 @@
 # ragamuffin
 
-A fast, GPU-accelerated terminal written in Rust, for Linux, Windows and macOS.
+Ultra fast GPU-accelerated terminal emulator, written in Rust, for Linux,
+Windows and macOS.
 
 ![ragamuffin showing cat hello.c with C highlighting and a search for "greet"](docs/screenshot.png)
 
@@ -182,7 +183,7 @@ PTY ──read──▶ I/O thread ──parse in place──▶ grid (shared, l
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0, at your option.
+MIT, see [LICENSE](LICENSE).
 
 [wgpu]: https://wgpu.rs
 [alacritty_terminal]: https://crates.io/crates/alacritty_terminal

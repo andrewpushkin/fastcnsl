@@ -17,6 +17,7 @@ STAGE="$TARGET_DIR/package-windows-$ARCH/ragamuffin"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
 cp "$EXE" "$STAGE/"
 cp README.md "$STAGE/" 2>/dev/null || true
+cp LICENSE "$STAGE/" 2>/dev/null || true
 
 # Ship any toolchain runtime DLL the exe imports (e.g. libunwind.dll from
 # llvm-mingw); everything else must be a Windows system DLL.

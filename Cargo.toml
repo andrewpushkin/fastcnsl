@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Fast GPU-accelerated terminal with Notepad++-style search highlighting and automatic code highlighting"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 authors = ["Andrei Pushkin <andrew.pushkin@gmail.com>"]
 categories = ["command-line-utilities"]
 keywords = ["terminal", "gpu", "wgpu", "terminal-emulator"]
@@ -35,6 +35,7 @@ panic = "abort"
 [package.metadata.deb]
 name = "ragamuffin"
 maintainer = "Andrei Pushkin <andrew.pushkin@gmail.com>"
+license-file = ["LICENSE", "0"]
 section = "x11"
 priority = "optional"
 extended-description = """\
