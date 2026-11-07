@@ -19,7 +19,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
-use crate::chrome::{self, Action, Caption, Menu, Metrics, OptionsState, Panel};
+use crate::chrome::{self, Action, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
 use crate::config::{Config, ConfigWatcher, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
@@ -116,6 +116,8 @@ struct State {
     cursor: CursorIcon,
     /// Time from launch to the first frame, for the About panel.
     startup: String,
+    /// The page the Options panel shows.
+    options_page: OptionsPage,
 }
 
 /// Writes "Tab N: app" into `buf`, reusing its allocation.
@@ -246,6 +248,7 @@ impl App {
             last_bar_click: None,
             cursor: CursorIcon::Text,
             startup: String::new(),
+            options_page: OptionsPage::General,
         };
         let (name, command) = self.first_tab.clone();
         st.new_tab_with(cfg, name, command)?;
@@ -305,7 +308,10 @@ impl App {
 
     fn perform(&mut self, el: &ActiveEventLoop, action: Action) {
         let Some(st) = self.state.as_mut() else { return };
-        if !matches!(action, Action::FontBigger | Action::FontSmaller | Action::CodeHighlight(_) | Action::Theme(_))
+        if !matches!(
+            action,
+            Action::FontBigger | Action::FontSmaller | Action::CodeHighlight(_) | Action::Theme(_) | Action::OptionsPage(_)
+        )
             || matches!(st.overlay, Overlay::Menu(_))
         {
             st.overlay = Overlay::None;
@@ -346,13 +352,17 @@ impl App {
                 self.change_config(|c| c.font_size = size);
             }
             Action::CodeHighlight(on) => self.change_config(|c| c.code_highlight = on),
-            Action::Options => st.overlay = Overlay::Options,
+            Action::Options => {
+                st.overlay = Overlay::Options;
+                st.options_page = OptionsPage::General;
+            }
             Action::About => st.overlay = Overlay::About,
             Action::OpenSettingsFile => open_settings(),
             Action::OpenProjectPage => open_in_os(crate::REPOSITORY),
             Action::OpenReleases => open_in_os(format!("{}/releases", crate::REPOSITORY)),
             Action::ClosePanel => {}
             Action::Quit => el.exit(),
+            Action::OptionsPage(page) => st.options_page = page,
         }
     }
 }
@@ -593,6 +603,7 @@ impl State {
             Overlay::Options => Some(chrome::options_panel(
                 &m,
                 &OptionsState {
+                    page: self.options_page,
                     theme: self.theme_mode,
                     font_size: cfg.font_size,
                     font_family: cfg.font_family.clone(),
@@ -1102,9 +1113,8 @@ impl State {
                 }
                 (Hover::MenuButton, WinitButton::Left) => {
                     let bar = self.tab_bar();
-                    let theme = self.theme_mode;
                     let sel = self.has_selection();
-                    self.overlay = Overlay::Menu(Menu::main(bar.menu.x + bar.menu.w, bar.height, theme, sel, self.tabs.len()));
+                    self.overlay = Overlay::Menu(Menu::main(bar.menu.x + bar.menu.w, bar.height, sel, self.tabs.len()));
                     self.window.request_redraw();
                 }
                 (Hover::Plus, WinitButton::Left) => return Some(Action::NewTab),

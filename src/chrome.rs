@@ -27,8 +27,18 @@ pub enum Action {
     FontBigger,
     FontSmaller,
     CodeHighlight(bool),
+    /// Switch the Options panel to this page.
+    OptionsPage(OptionsPage),
     ClosePanel,
     Quit,
+}
+
+/// The pages of the Options panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptionsPage {
+    #[default]
+    General,
+    Shortcuts,
 }
 
 /// Sizes shared by every layout.
@@ -145,25 +155,19 @@ pub struct MenuItem {
     /// None draws a separator.
     pub action: Option<Action>,
     pub enabled: bool,
-    pub checked: bool,
 }
 
 impl MenuItem {
     pub fn new(label: &str, action: Action) -> Self {
-        Self { label: label.to_owned(), hint: shortcuts::hint(action), action: Some(action), enabled: true, checked: false }
+        Self { label: label.to_owned(), hint: shortcuts::hint(action), action: Some(action), enabled: true }
     }
 
     pub fn separator() -> Self {
-        Self { label: String::new(), hint: String::new(), action: None, enabled: false, checked: false }
+        Self { label: String::new(), hint: String::new(), action: None, enabled: false }
     }
 
     pub fn enabled(mut self, on: bool) -> Self {
         self.enabled = on;
-        self
-    }
-
-    pub fn checked(mut self, on: bool) -> Self {
-        self.checked = on;
         self
     }
 }
@@ -188,7 +192,7 @@ pub struct MenuLayout {
 
 impl Menu {
     /// The ⋮ menu.
-    pub fn main(x: f32, y: f32, theme: ThemeMode, has_selection: bool, tabs: usize) -> Self {
+    pub fn main(x: f32, y: f32, has_selection: bool, tabs: usize) -> Self {
         let items = vec![
             MenuItem::new("New tab", Action::NewTab),
             MenuItem::new("Close tab", Action::CloseTab).enabled(tabs > 0),
@@ -197,14 +201,8 @@ impl Menu {
             MenuItem::new("Copy", Action::Copy).enabled(has_selection),
             MenuItem::new("Paste", Action::Paste),
             MenuItem::separator(),
-            MenuItem::new("System theme", Action::Theme(ThemeMode::System)).checked(theme == ThemeMode::System),
-            MenuItem::new("Dark theme", Action::Theme(ThemeMode::Dark)).checked(theme == ThemeMode::Dark),
-            MenuItem::new("Light theme", Action::Theme(ThemeMode::Light)).checked(theme == ThemeMode::Light),
-            MenuItem::separator(),
             MenuItem::new("Options…", Action::Options),
             MenuItem::new("About", Action::About),
-            MenuItem::separator(),
-            MenuItem::new("Quit", Action::Quit),
         ];
         Self { items, x, y, align_right: true, hover: None }
     }
@@ -227,7 +225,7 @@ impl Menu {
         let sep_h = m.px(9.0);
         let label = self.items.iter().map(|i| i.label.chars().count()).max().unwrap_or(0) as f32;
         let hint = self.items.iter().map(|i| i.hint.chars().count()).max().unwrap_or(0) as f32;
-        // [check] label   hint
+        // margin, label, hint, margin
         let w = (2.0 + label + if hint > 0.0 { 3.0 + hint } else { 1.0 }) * m.cw + 2.0 * pad;
         let h: f32 = self.items.iter().map(|i| if i.action.is_some() { row_h } else { sep_h }).sum::<f32>() + 2.0 * pad;
 
@@ -244,7 +242,7 @@ impl Menu {
             rows.push(Rect { x: x + pad / 2.0, y: ry, w: w - pad, h: rh });
             ry += rh;
         }
-        let hint_x = x + pad + (2.0 + label + 3.0) * m.cw;
+        let hint_x = x + pad + (1.0 + label + 3.0) * m.cw;
         MenuLayout { rect: Rect { x, y, w, h }, rows, pad, hint_x }
     }
 
@@ -275,7 +273,6 @@ impl Menu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextStyle {
     Title,
-    Heading,
     Normal,
     Dim,
     Key,
@@ -368,9 +365,17 @@ impl<'a> PanelBuilder<'a> {
     fn finish(self) -> Panel {
         Panel { rect: self.rect, buttons: self.buttons, lines: self.lines }
     }
+
+    /// Like `finish`, but ends the panel below its last row; the top stays
+    /// where the size given to `new` put it.
+    fn finish_fitted(mut self) -> Panel {
+        self.rect.h = self.rect.h.min(self.y - self.rect.y + self.pad);
+        self.finish()
+    }
 }
 
 pub struct OptionsState {
+    pub page: OptionsPage,
     pub theme: ThemeMode,
     pub font_size: f32,
     pub font_family: String,
@@ -386,55 +391,63 @@ pub fn options_panel(m: &Metrics, s: &OptionsState) -> Panel {
     let two_cols = (2.0 * entry_w + 4.0) * m.cw + m.px(36.0) <= m.width - m.px(16.0);
     let cols = if two_cols { 2.0 * entry_w + 4.0 } else { 62.0f32.max(entry_w) };
     let key_rows = if two_cols { keys.len().div_ceil(2) } else { keys.len() };
-    let mut b = PanelBuilder::new(m, cols, 8.0 + key_rows as f32);
+    // Placed for the taller page and cut to each page's length, so the
+    // page buttons stay put when switching.
+    const GENERAL_ROWS: usize = 4;
+    let mut b = PanelBuilder::new(m, cols, 4.0 + key_rows.max(GENERAL_ROWS) as f32);
     b.close_button();
 
     b.text(0.0, "Options", TextStyle::Title);
+    let c = b.button(12.0, "General", Action::OptionsPage(OptionsPage::General), s.page == OptionsPage::General);
+    b.button(c, "Keyboard shortcuts", Action::OptionsPage(OptionsPage::Shortcuts), s.page == OptionsPage::Shortcuts);
     b.next();
     b.gap();
 
-    let label_w = 20.0;
-    b.text(0.0, "Theme", TextStyle::Normal);
-    let mut c = label_w;
-    for (name, mode) in [("System", ThemeMode::System), ("Dark", ThemeMode::Dark), ("Light", ThemeMode::Light)] {
-        c = b.button(c, name, Action::Theme(mode), s.theme == mode);
-    }
-    b.next();
+    match s.page {
+        OptionsPage::General => {
+            let label_w = 20.0;
+            b.text(0.0, "Theme", TextStyle::Normal);
+            let mut c = label_w;
+            for (name, mode) in [("System", ThemeMode::System), ("Dark", ThemeMode::Dark), ("Light", ThemeMode::Light)] {
+                c = b.button(c, name, Action::Theme(mode), s.theme == mode);
+            }
+            b.next();
 
-    b.text(0.0, "Font size", TextStyle::Normal);
-    let c = b.button(label_w, "−", Action::FontSmaller, false);
-    b.text(c, format!("{:>4}", s.font_size), TextStyle::Normal);
-    let c = b.button(c + 5.0, "+", Action::FontBigger, false);
-    b.text(c, &s.font_family, TextStyle::Dim);
-    b.next();
+            b.text(0.0, "Font size", TextStyle::Normal);
+            let c = b.button(label_w, "−", Action::FontSmaller, false);
+            b.text(c, format!("{:>4}", s.font_size), TextStyle::Normal);
+            let c = b.button(c + 5.0, "+", Action::FontBigger, false);
+            b.text(c, &s.font_family, TextStyle::Dim);
+            b.next();
 
-    b.text(0.0, "Code highlighting", TextStyle::Normal);
-    let c = b.button(label_w, "On", Action::CodeHighlight(true), s.code_highlight);
-    b.button(c, "Off", Action::CodeHighlight(false), !s.code_highlight);
-    b.next();
+            b.text(0.0, "Code highlighting", TextStyle::Normal);
+            let c = b.button(label_w, "On", Action::CodeHighlight(true), s.code_highlight);
+            b.button(c, "Off", Action::CodeHighlight(false), !s.code_highlight);
+            b.next();
 
-    b.text(0.0, "Settings file", TextStyle::Normal);
-    b.button(label_w, "Open config.toml", Action::OpenSettingsFile, false);
-    b.next();
-    b.gap();
-
-    b.text(0.0, "Keyboard shortcuts", TextStyle::Heading);
-    b.next();
-    let rows: Vec<&[(String, &str)]> = if two_cols { keys.chunks(2).collect() } else { keys.chunks(1).collect() };
-    for (n, row) in rows.iter().enumerate() {
-        let last_fitting = !b.fits_rows(2) && n + 1 < rows.len();
-        if last_fitting {
-            b.text(0.0, "… more in the README", TextStyle::Dim);
-            break;
+            b.text(0.0, "Settings file", TextStyle::Normal);
+            b.button(label_w, "Open config.toml", Action::OpenSettingsFile, false);
+            b.next();
         }
-        for (i, (k, what)) in row.iter().enumerate() {
-            let x = i as f32 * (entry_w + 4.0);
-            b.text(x, k.as_str(), TextStyle::Key);
-            b.text(x + key_w + 2.0, *what, TextStyle::Normal);
+        OptionsPage::Shortcuts => {
+            let rows: Vec<&[(String, &str)]> = if two_cols { keys.chunks(2).collect() } else { keys.chunks(1).collect() };
+            for (n, row) in rows.iter().enumerate() {
+                let last_fitting = !b.fits_rows(2) && n + 1 < rows.len();
+                if last_fitting {
+                    b.text(0.0, "… more in the README", TextStyle::Dim);
+                    b.next();
+                    break;
+                }
+                for (i, (k, what)) in row.iter().enumerate() {
+                    let x = i as f32 * (entry_w + 4.0);
+                    b.text(x, k.as_str(), TextStyle::Key);
+                    b.text(x + key_w + 2.0, *what, TextStyle::Normal);
+                }
+                b.next();
+            }
         }
-        b.next();
     }
-    b.finish()
+    b.finish_fitted()
 }
 
 pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str) -> Panel {
@@ -491,7 +504,7 @@ mod tests {
 
     #[test]
     fn menu_stays_inside_window_and_hits_items() {
-        let menu = Menu::main(1000.0, 30.0, ThemeMode::System, false, 1);
+        let menu = Menu::main(1000.0, 30.0, false, 1);
         let l = menu.layout(&m());
         assert!(l.rect.x >= 0.0 && l.rect.x + l.rect.w <= 1000.0);
         let first = l.rows[0];
@@ -567,13 +580,12 @@ mod tests {
         assert!(l.rect.x + l.rect.w <= 1000.0);
         assert!(l.rect.y + l.rect.h <= 700.0);
         // The ⋮ menu grows leftwards from its anchor.
-        let main = Menu::main(1000.0, 31.0, ThemeMode::Light, true, 1);
+        let main = Menu::main(1000.0, 31.0, true, 1);
         let l = main.layout(&m());
         assert_eq!(l.rect.x + l.rect.w, 1000.0);
         assert_eq!(l.rect.y, 31.0);
-        // Theme radio items: exactly the current one is checked.
-        let checked: Vec<_> = main.items.iter().filter(|i| i.checked).map(|i| i.action).collect();
-        assert_eq!(checked, vec![Some(Action::Theme(ThemeMode::Light))]);
+        // No theme choices or Quit: those are in Options and the window's ×.
+        assert!(!main.items.iter().any(|i| matches!(i.action, Some(Action::Theme(_) | Action::Quit))));
         assert!(l.hint_x > l.rect.x);
     }
 
@@ -603,7 +615,7 @@ mod tests {
     #[test]
     fn options_panel_fits_small_windows() {
         let small = Metrics { width: 500.0, height: 300.0, ..m() };
-        let p = options_panel(&small, &OptionsState { theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false });
+        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false });
         assert!(p.rect.w <= 500.0 && p.rect.h <= 300.0);
         assert!(p.lines.iter().all(|l| l.y + small.ch <= p.rect.y + p.rect.h), "no text below the panel");
         let off = p.buttons.iter().find(|b| b.action == Action::CodeHighlight(false)).unwrap();
@@ -611,11 +623,26 @@ mod tests {
     }
 
     #[test]
-    fn options_panel_has_theme_buttons_and_shortcuts() {
-        let p = options_panel(&m(), &OptionsState { theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true });
+    fn options_panel_has_a_general_page_and_a_shortcuts_page() {
+        let mut s = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true };
+        let p = options_panel(&m(), &s);
         let dark = p.buttons.iter().find(|b| b.action == Action::Theme(ThemeMode::Dark)).unwrap();
         assert!(dark.active);
         assert_eq!(p.hit(dark.rect.x + 1.0, dark.rect.y + 1.0), Some(Action::Theme(ThemeMode::Dark)));
-        assert!(p.lines.iter().any(|l| l.text == "Keyboard shortcuts"));
+        let tab = p.buttons.iter().find(|b| b.action == Action::OptionsPage(OptionsPage::Shortcuts)).unwrap();
+        assert!(!tab.active);
+        assert!(!p.lines.iter().any(|l| l.text == "New tab"), "shortcuts are on their own page");
+
+        s.page = OptionsPage::Shortcuts;
+        // In a small window the list is cut, and says so inside the panel.
+        let small = Metrics { width: 600.0, height: 300.0, ..m() };
+        let cut = options_panel(&small, &s);
+        let more = cut.lines.iter().find(|l| l.text.starts_with("… more")).expect("cut list says so");
+        assert!(more.y + small.ch <= cut.rect.y + cut.rect.h, "the note is inside the panel");
+        let q = options_panel(&m(), &s);
+        assert!(q.lines.iter().any(|l| l.text == "New tab"));
+        assert!(!q.buttons.iter().any(|b| matches!(b.action, Action::Theme(_))));
+        assert_eq!((p.rect.x, p.rect.y, p.rect.w), (q.rect.x, q.rect.y, q.rect.w), "page buttons stay put");
+        assert!(p.rect.h < q.rect.h, "the short page isn't padded to the long one");
     }
 }

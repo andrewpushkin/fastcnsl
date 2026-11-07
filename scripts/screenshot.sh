@@ -76,11 +76,15 @@ xdotool key Escape
 
 xdotool key ctrl+shift+comma
 shot options
+# The "Keyboard shortcuts" page button, right of "General".
+click 455 40
+shot shortcuts
 xdotool key Escape
 
-# About through the menu, with the keyboard: Up twice lands on "About".
+# About through the menu, with the keyboard: Up from the bottom lands on
+# "About", the last item.
 click $MENU_X 15
-xdotool key Up Up Return
+xdotool key Up Return
 shot about
 xdotool key Escape
 

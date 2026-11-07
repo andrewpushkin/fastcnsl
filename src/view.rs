@@ -145,16 +145,17 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
         } else if hovered {
             p.rounded(Layer::UiShapes, t.x, t.y, t.w, t.h - m.scale * 3.0, r, pal.background.mix(bar_bg, 0.5).rgba(1.0));
         }
-        // Title, cut to fit before the close button.
+        // Title, shortened to fit before the close button.
         let room = ((slot.close.x - t.x - m.cw) / m.cw).floor().max(0.0) as usize;
-        let n = title.chars().count();
-        let shown: String = if n > room && room > 1 {
-            title.chars().take(room - 1).chain(std::iter::once('…')).collect()
-        } else {
-            title.chars().take(room).collect()
-        };
+        let shown = fit_tab_title(i, title, room);
         let color = if active { pal.foreground } else { pal.ui_dim };
-        p.text(Layer::UiText, &shown, t.x + m.cw, text_y(&t), color.rgba(1.0));
+        // A lone number is centred: the tab is too narrow for anything else.
+        let tx = if shown.chars().count() > room || room <= 3 {
+            (t.x + (t.w - shown.chars().count() as f32 * m.cw) / 2.0).round()
+        } else {
+            t.x + m.cw
+        };
+        p.text(Layer::UiText, &shown, tx, text_y(&t), color.rgba(1.0));
         if active || hovered {
             let cl = slot.close;
             if c.hover == Hover::TabClose(i) {
@@ -186,6 +187,26 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
     }
 
     draw_window_controls(p, pal, m, &bar, c);
+}
+
+/// A tab's title for `room` characters: "Tab 3: vim", then "3: vim" (cut
+/// with …), then just "3", so narrow tabs still tell each other apart.
+fn fit_tab_title(index: usize, title: &str, room: usize) -> String {
+    if title.chars().count() <= room {
+        return title.to_owned();
+    }
+    let number = (index + 1).to_string();
+    let name = title.strip_prefix(&format!("Tab {number}: ")).unwrap_or(title);
+    let short = format!("{number}: {name}");
+    let len = short.chars().count();
+    if len <= room {
+        return short;
+    }
+    // The number, ": ", at least one letter and "…".
+    if room >= number.len() + 4 {
+        return short.chars().take(room - 1).chain(std::iter::once('…')).collect();
+    }
+    number
 }
 
 /// Minimize, maximize/restore and close, for windows without an OS frame.
@@ -264,10 +285,7 @@ fn draw_menu(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, menu: &Menu) {
         };
         let y = (row.y + (row.h - m.ch) / 2.0).round();
         let x = l.rect.x + l.pad;
-        if item.checked {
-            p.text(Layer::OverlayText, "✓", x, y, fg.rgba(1.0));
-        }
-        p.text(Layer::OverlayText, &item.label, x + 2.0 * m.cw, y, fg.rgba(1.0));
+        p.text(Layer::OverlayText, &item.label, x + m.cw, y, fg.rgba(1.0));
         if !item.hint.is_empty() {
             let hint_fg = if menu.hover == Some(i) { fg } else { pal.ui_dim };
             p.text(Layer::OverlayText, &item.hint, l.hint_x, y, hint_fg.rgba(1.0));
@@ -286,7 +304,6 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
     for line in &panel.lines {
         let color = match line.style {
             TextStyle::Title => pal.foreground,
-            TextStyle::Heading => pal.ui_accent,
             TextStyle::Normal => pal.ui_fg,
             TextStyle::Dim => pal.ui_dim,
             TextStyle::Key => pal.ansi[3],
@@ -604,7 +621,7 @@ mod tests {
                 top: 30.0,
                 scrollbar_alpha: 1.0,
                 search_alpha: 1.0,
-                min_contrast: 3.0,
+                min_contrast: 4.5,
             }
         }
     }
@@ -696,6 +713,19 @@ mod tests {
     }
 
     #[test]
+    fn narrow_tabs_keep_their_numbers() {
+        assert_eq!(fit_tab_title(2, "Tab 3: powershell", 40), "Tab 3: powershell");
+        assert_eq!(fit_tab_title(2, "Tab 3: powershell", 13), "3: powershell");
+        assert_eq!(fit_tab_title(2, "Tab 3: powershell", 7), "3: pow…");
+        assert_eq!(fit_tab_title(2, "Tab 3: powershell", 5), "3: p…");
+        assert_eq!(fit_tab_title(2, "Tab 3: powershell", 4), "3");
+        assert_eq!(fit_tab_title(11, "Tab 12: vim", 2), "12");
+        assert_eq!(fit_tab_title(11, "Tab 12: vim", 0), "12", "the number shows even without room");
+        // A title set by `ragamuffin new-tab NAME` works the same way.
+        assert_eq!(fit_tab_title(0, "Tab 1: logs", 8), "1: logs");
+    }
+
+    #[test]
     fn text_on_a_clashing_background_is_made_readable() {
         let Some(mut c) = Canvas::new() else { return };
         // How `ls` shows world-writable directories (e.g. on /mnt/c).
@@ -705,7 +735,7 @@ mod tests {
         let green = f.palette.ansi[2];
         let fg = glyph_colors(&c)[0];
         let fg = crate::theme::Rgb { r: (fg[0] * 255.0).round() as u8, g: (fg[1] * 255.0).round() as u8, b: (fg[2] * 255.0).round() as u8 };
-        assert!(fg.contrast(green) >= 3.0, "contrast {}", fg.contrast(green));
+        assert!(fg.contrast(green) >= 4.5, "contrast {}", fg.contrast(green));
 
         // Turned off: the palette's blue as is.
         let mut v = f.view();
@@ -756,7 +786,7 @@ mod tests {
         let Some(mut c) = Canvas::new() else { return };
         let t = term("");
         let f = Fixture::new();
-        let menu = Menu::main(400.0, 30.0, ThemeMode::Dark, false, 2);
+        let menu = Menu::main(400.0, 30.0, false, 2);
         let mut ch = chrome(vec!["Tab 1: vim", "Tab 2: cat"]);
         ch.menu = Some(&menu);
         ch.menu_open = true;
@@ -766,7 +796,7 @@ mod tests {
         assert!(c.glyph_count(Layer::OverlayText) > 20, "menu labels");
 
         let m = Metrics { width: 900.0, height: 700.0, scale: 1.0, cw: 8.0, ch: 17.0 };
-        let opts = options_panel(&m, &OptionsState { theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true });
+        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true });
         let about = about_panel(&m, "gpu", "300 ms", "/cfg");
         for panel in [&opts, &about] {
             let mut ch = chrome(vec!["Tab 1"]);

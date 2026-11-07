@@ -39,14 +39,16 @@ release, numbered `0.1.<commits on main>`. Older builds:
   lines, `#include`, `fn main`...) when there is no extension. Text a program
   colours itself is never touched.
 - **Tabs** labelled with the last program run in them (`Tab 1: vim`), each
-  with its own shell, scrollback and search.
+  with its own shell, scrollback and search. With many tabs the labels
+  shorten to `1: vim`, then just the number.
 - **One-line title bar**: minimize, maximize and close sit in the tab bar
   next to ⋮ (on macOS the native buttons move into it). Drag the empty part
   of the bar to move the window; double-click it to maximize.
-- **⋮ menu** for tabs, find, copy and paste, theme, Options and About, plus a
+- **⋮ menu** for tabs, find, copy and paste, Options and About, plus a
   right-click menu for copy, paste and select all.
-- **Options panel** with theme, font size and code highlighting switches and
-  the full list of keyboard shortcuts. Changes are saved to the settings file.
+- **Options panel** with two pages: General (theme, font size, code
+  highlighting) and Keyboard shortcuts. Changes are saved to the settings
+  file.
 - **Light and dark themes** that follow the operating system automatically,
   including on Linux desktops (GNOME, KDE and others) and under WSL, or a
   fixed choice.
@@ -70,7 +72,7 @@ Fedora 32 and anything newer.
 ## Shortcuts
 
 On macOS, use Cmd where the table says Ctrl+Shift. The Options panel (⋮ →
-Options…) shows the same list.
+Options… → Keyboard shortcuts) shows the same list.
 
 | Keys                        | Action                                   |
 |-----------------------------|------------------------------------------|
@@ -121,7 +123,7 @@ bold_is_bright = false
 title_bar = "custom"             # "custom" (buttons in the tab bar) | "system" (OS title bar)
 display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to apply)
 antialiasing = "auto"            # "auto" | "subpixel" | "grayscale"
-minimum_contrast = 3.0           # text on coloured backgrounds: WCAG contrast ratio, 1 = off
+minimum_contrast = 4.5           # text on coloured backgrounds: WCAG contrast ratio, 1 = off
 ```
 
 **Text on Windows** is drawn by DirectWrite, like in other Windows apps.

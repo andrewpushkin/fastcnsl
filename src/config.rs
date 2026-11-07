@@ -166,7 +166,7 @@ impl Default for Config {
             title_bar: TitleBar::Custom,
             display_backend: DisplayBackend::Auto,
             antialiasing: Antialiasing::Auto,
-            minimum_contrast: 3.0,
+            minimum_contrast: 4.5,
         }
     }
 }
