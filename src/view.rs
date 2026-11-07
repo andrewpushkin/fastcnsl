@@ -12,7 +12,7 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 
-use crate::chrome::{self, Caption, Menu, Metrics, Panel, TextStyle};
+use crate::chrome::{self, ButtonStyle, Caption, Menu, Metrics, Panel, TextStyle};
 use crate::highlight::{CodeHighlighter, Span};
 use crate::render::glyphs::GlyphStyle;
 use crate::render::{Layer, Painter};
@@ -300,6 +300,9 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
     let b = m.scale.round().max(1.0);
     p.rounded(Layer::OverlayShapes, rc.x - b, rc.y - b, rc.w + 2.0 * b, rc.h + 2.0 * b, r + b, pal.ui_dim.rgba(0.6));
     p.rounded(Layer::OverlayShapes, rc.x, rc.y, rc.w, rc.h, r, pal.ui_bg.rgba(1.0));
+    for rule in &panel.rules {
+        p.rect(Layer::OverlayShapes, rule.x, rule.y, rule.w, rule.h, pal.ui_dim.rgba(0.35));
+    }
 
     for line in &panel.lines {
         let color = match line.style {
@@ -321,17 +324,29 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
     for (i, btn) in panel.buttons.iter().enumerate() {
         let br = btn.rect;
         let hovered = hover == Hover::PanelButton(i);
+        if btn.style == ButtonStyle::Tab {
+            // Text only; the active page is underlined in the accent colour.
+            let fg = if btn.active || hovered { pal.foreground } else { pal.ui_dim };
+            let tw = btn.label.chars().count() as f32 * m.cw;
+            let tx = (br.x + (br.w - tw) / 2.0).round();
+            p.text(Layer::OverlayText, &btn.label, tx, (br.y + (br.h - m.ch) / 2.0).round(), fg.rgba(1.0));
+            if btn.active {
+                let t = (2.0 * m.scale).round().max(2.0);
+                p.rounded(Layer::OverlayShapes, br.x + m.cw / 2.0, br.y + br.h - t, br.w - m.cw, t, t / 2.0, pal.ui_accent.rgba(1.0));
+            }
+            continue;
+        }
         let (bg, fg) = if btn.active {
             (pal.ui_accent, Rgb::hex(0xffffff))
         } else if hovered {
             (pal.ui_dim.mix(pal.ui_bg, 0.5), pal.foreground)
-        } else if btn.label == "×" {
+        } else if btn.style == ButtonStyle::Close {
             (pal.ui_bg, pal.ui_dim)
         } else {
             (pal.ui_dim.mix(pal.ui_bg, 0.75), pal.ui_fg)
         };
         p.rounded(Layer::OverlayShapes, br.x, br.y, br.w, br.h, m.scale * 5.0, bg.rgba(1.0));
-        if btn.label == "×" {
+        if btn.style == ButtonStyle::Close {
             p.icon(Layer::OverlayText, '×', br.x + br.w / 2.0, br.y + br.h / 2.0, fg.rgba(1.0));
             continue;
         }
@@ -796,8 +811,8 @@ mod tests {
         assert!(c.glyph_count(Layer::OverlayText) > 20, "menu labels");
 
         let m = Metrics { width: 900.0, height: 700.0, scale: 1.0, cw: 8.0, ch: 17.0 };
-        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: crate::config::GpuBackend::Auto, gpu_pending: false });
-        let about = about_panel(&m, "gpu", "300 ms", "/cfg");
+        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: crate::config::GpuBackend::Auto, gpu_pending: false }, (0.0, 0.0));
+        let about = about_panel(&m, "gpu", "300 ms", "/cfg", (0.0, 0.0));
         for panel in [&opts, &about] {
             let mut ch = chrome(vec!["Tab 1"]);
             ch.panel = Some(panel);

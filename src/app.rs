@@ -123,6 +123,11 @@ struct State {
     /// Graphics API asked for at startup (it changes only on a restart).
     gpu_started: GpuBackend,
     frames: FrameStats,
+    /// How far the open panel has been dragged from the centre.
+    panel_offset: (f32, f32),
+    /// While dragging a panel by its header: the pointer and offset at the
+    /// start of the drag.
+    panel_drag: Option<((f32, f32), (f32, f32))>,
     /// When the last frame finished, and how long it took to build and
     /// present: output redraws are paced by these.
     last_frame: Instant,
@@ -324,6 +329,8 @@ impl App {
             options_page: OptionsPage::General,
             gpu_started: self.gpu_override.unwrap_or(cfg.gpu),
             frames: FrameStats::new(),
+            panel_offset: (0.0, 0.0),
+            panel_drag: None,
             last_frame: Instant::now(),
             frame_cost: Duration::ZERO,
         };
@@ -438,8 +445,12 @@ impl App {
             Action::Options => {
                 st.overlay = Overlay::Options;
                 st.options_page = OptionsPage::General;
+                st.panel_offset = (0.0, 0.0);
             }
-            Action::About => st.overlay = Overlay::About,
+            Action::About => {
+                st.overlay = Overlay::About;
+                st.panel_offset = (0.0, 0.0);
+            }
             Action::OpenSettingsFile => open_settings(),
             Action::OpenProjectPage => open_in_os(crate::REPOSITORY),
             Action::OpenReleases => open_in_os(format!("{}/releases", crate::REPOSITORY)),
@@ -694,10 +705,11 @@ impl State {
                     gpu: cfg.gpu,
                     gpu_pending: cfg.gpu != self.gpu_started,
                 },
+                self.panel_offset,
             )),
             Overlay::About => {
                 let path = Config::path().map(|p| p.display().to_string()).unwrap_or_default();
-                Some(chrome::about_panel(&m, &self.renderer.gpu, &self.startup, &path))
+                Some(chrome::about_panel(&m, &self.renderer.gpu, &self.startup, &path, self.panel_offset))
             }
             _ => None,
         }
@@ -1032,6 +1044,19 @@ impl State {
         self.mouse = (x, y);
         let m = self.metrics();
 
+        if let Some(((sx, sy), (ox, oy))) = self.panel_drag {
+            self.panel_offset = (ox + x - sx, oy + y - sy);
+            // Keep the offset to where the panel can actually go, so
+            // dragging back from past an edge moves it at once.
+            if let Some(panel) = self.panel(cfg) {
+                let (cx, cy) = ((m.width - panel.rect.w) / 2.0, (m.height - panel.rect.h) / 2.0);
+                self.panel_offset = (panel.rect.x - cx, panel.rect.y - cy);
+            }
+            self.set_cursor(CursorIcon::Grabbing);
+            self.window.request_redraw();
+            return;
+        }
+
         if let Overlay::Menu(menu) = &mut self.overlay {
             let l = menu.layout(&m);
             let hover = menu.hit(&l, x, y);
@@ -1058,7 +1083,9 @@ impl State {
             self.window.request_redraw();
         }
         if !matches!(self.overlay, Overlay::None) || y < self.top() {
-            self.set_cursor(CursorIcon::Default);
+            // A panel's title strip can be dragged.
+            let grab = hover == Hover::None && self.panel(cfg).is_some_and(|p| p.header.contains(x, y));
+            self.set_cursor(if grab { CursorIcon::Grab } else { CursorIcon::Default });
             return;
         }
 
@@ -1157,9 +1184,16 @@ impl State {
         }
         // Panels are modal.
         if let Some(panel) = self.panel(cfg) {
+            if !pressed && button == WinitButton::Left && self.panel_drag.take().is_some() {
+                return None;
+            }
             if pressed && button == WinitButton::Left {
                 if let Some(a) = panel.hit(x, y) {
                     return Some(a);
+                }
+                if panel.header.contains(x, y) {
+                    self.panel_drag = Some(((x, y), self.panel_offset));
+                    return None;
                 }
                 if !panel.rect.contains(x, y) {
                     self.overlay = Overlay::None;

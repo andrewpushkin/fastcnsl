@@ -76,9 +76,14 @@ xdotool key Escape
 
 xdotool key ctrl+shift+comma
 shot options
-# The "Keyboard shortcuts" page button, right of "General".
-click 455 40
+# The "Keyboard shortcuts" tab, right of "General".
+click 350 81
 shot shortcuts
+# Drag the panel by its title strip.
+xdotool mousemove --window "$WIN" 400 40 mousedown 1
+xdotool mousemove --window "$WIN" 300 140
+xdotool mousemove --window "$WIN" 250 200 mouseup 1
+shot options_moved
 xdotool key Escape
 
 # About through the menu, with the keyboard: Up from the bottom lands on

@@ -292,10 +292,24 @@ pub struct Button {
     pub label: String,
     pub action: Action,
     pub active: bool,
+    pub style: ButtonStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonStyle {
+    Normal,
+    /// A page tab: text, underlined when active.
+    Tab,
+    /// The × in the header.
+    Close,
 }
 
 pub struct Panel {
     pub rect: Rect,
+    /// The title strip: dragging it moves the panel.
+    pub header: Rect,
+    /// Thin separator lines.
+    pub rules: Vec<Rect>,
     pub buttons: Vec<Button>,
     pub lines: Vec<TextLine>,
 }
@@ -313,18 +327,34 @@ struct PanelBuilder<'a> {
     pad: f32,
     y: f32,
     row_h: f32,
+    header: Rect,
+    rules: Vec<Rect>,
     buttons: Vec<Button>,
     lines: Vec<TextLine>,
 }
 
 impl<'a> PanelBuilder<'a> {
-    fn new(m: &'a Metrics, cols: f32, rows: f32) -> Self {
+    /// A panel `cols` characters wide and `rows` rows tall, centred and
+    /// then moved by `offset`, kept inside the window.
+    fn new(m: &'a Metrics, cols: f32, rows: f32, offset: (f32, f32)) -> Self {
         let pad = m.px(18.0);
         let row_h = m.ch + m.px(10.0);
         let w = (cols * m.cw + 2.0 * pad).min(m.width - m.px(16.0));
         let h = (rows * row_h + 2.0 * pad).min(m.height - m.px(16.0));
-        let rect = Rect { x: ((m.width - w) / 2.0).round(), y: ((m.height - h) / 2.0).round(), w, h };
-        Self { m, rect, pad, y: rect.y + pad, row_h, buttons: Vec::new(), lines: Vec::new() }
+        let x = ((m.width - w) / 2.0 + offset.0).clamp(0.0, (m.width - w).max(0.0)).round();
+        let y = ((m.height - h) / 2.0 + offset.1).clamp(0.0, (m.height - h).max(0.0)).round();
+        let rect = Rect { x, y, w, h };
+        Self {
+            m,
+            rect,
+            pad,
+            y: rect.y + pad,
+            row_h,
+            header: Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 },
+            rules: Vec::new(),
+            buttons: Vec::new(),
+            lines: Vec::new(),
+        }
     }
 
     fn left(&self) -> f32 {
@@ -342,18 +372,45 @@ impl<'a> PanelBuilder<'a> {
         self.lines.push(TextLine { x, y, text: text.into(), style });
     }
 
-    /// Adds a button at column `col`; returns the column after it.
-    fn button(&mut self, col: f32, label: &str, action: Action, active: bool) -> f32 {
+    fn add_button(&mut self, col: f32, label: &str, action: Action, active: bool, style: ButtonStyle) -> f32 {
         let w = (label.chars().count() as f32 + 2.0) * self.m.cw;
         let rect = Rect { x: self.left() + col * self.m.cw, y: self.y + self.m.px(2.0), w, h: self.row_h - self.m.px(4.0) };
-        self.buttons.push(Button { rect, label: label.to_owned(), action, active });
+        self.buttons.push(Button { rect, label: label.to_owned(), action, active, style });
         col + label.chars().count() as f32 + 3.0
     }
 
-    fn close_button(&mut self) {
+    /// Adds a button at column `col`; returns the column after it.
+    fn button(&mut self, col: f32, label: &str, action: Action, active: bool) -> f32 {
+        self.add_button(col, label, action, active, ButtonStyle::Normal)
+    }
+
+    /// A page tab; returns the column after it.
+    fn tab(&mut self, col: f32, label: &str, action: Action, active: bool) -> f32 {
+        self.add_button(col, label, action, active, ButtonStyle::Tab)
+    }
+
+    /// The title strip: `title`, the × and a rule under them. Dragging the
+    /// strip moves the panel.
+    fn header(&mut self, title: &str) {
+        self.text(0.0, title, TextStyle::Title);
         let s = self.m.ch + self.m.px(8.0);
-        let rect = Rect { x: self.rect.x + self.rect.w - s - self.m.px(8.0), y: self.rect.y + self.m.px(8.0), w: s, h: s };
-        self.buttons.push(Button { rect, label: "×".to_owned(), action: Action::ClosePanel, active: false });
+        let close = Rect {
+            x: self.rect.x + self.rect.w - s - self.m.px(10.0),
+            y: self.y + (self.row_h - s) / 2.0,
+            w: s,
+            h: s,
+        };
+        self.buttons.push(Button { rect: close, label: "×".to_owned(), action: Action::ClosePanel, active: false, style: ButtonStyle::Close });
+        self.next();
+        self.header = Rect { x: self.rect.x, y: self.rect.y, w: self.rect.w, h: self.y - self.rect.y + self.row_h / 4.0 };
+        self.rule();
+    }
+
+    /// A thin line across the panel, with half a row of space around it.
+    fn rule(&mut self) {
+        let y = (self.y + self.row_h / 4.0).round();
+        self.rules.push(Rect { x: self.rect.x + self.m.px(1.0), y, w: self.rect.w - self.m.px(2.0), h: self.m.scale.round().max(1.0) });
+        self.y += self.row_h / 2.0;
     }
 
     fn next(&mut self) {
@@ -365,14 +422,7 @@ impl<'a> PanelBuilder<'a> {
     }
 
     fn finish(self) -> Panel {
-        Panel { rect: self.rect, buttons: self.buttons, lines: self.lines }
-    }
-
-    /// Like `finish`, but ends the panel below its last row; the top stays
-    /// where the size given to `new` put it.
-    fn finish_fitted(mut self) -> Panel {
-        self.rect.h = self.rect.h.min(self.y - self.rect.y + self.pad);
-        self.finish()
+        Panel { rect: self.rect, header: self.header, rules: self.rules, buttons: self.buttons, lines: self.lines }
     }
 }
 
@@ -388,63 +438,81 @@ pub struct OptionsState {
     pub gpu_pending: bool,
 }
 
-pub fn options_panel(m: &Metrics, s: &OptionsState) -> Panel {
+/// The Options panel, moved by `offset` from the centre. Both pages have
+/// the same size, set by the longer one.
+pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel {
     let keys = shortcuts::all();
     let key_w = keys.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) as f32;
     let what_w = keys.iter().map(|(_, w)| w.chars().count()).max().unwrap_or(0) as f32;
     let entry_w = key_w + 2.0 + what_w;
     // Two columns of shortcuts when the window is wide enough.
     let two_cols = (2.0 * entry_w + 4.0) * m.cw + m.px(36.0) <= m.width - m.px(16.0);
-    let cols = if two_cols { 2.0 * entry_w + 4.0 } else { 62.0f32.max(entry_w) };
+    let cols = if two_cols { 2.0 * entry_w + 4.0 } else { 64.0f32.max(entry_w) };
     let key_rows = if two_cols { keys.len().div_ceil(2) } else { keys.len() };
-    // Placed for the taller page and cut to each page's length, so the
-    // page buttons stay put when switching.
-    const GENERAL_ROWS: usize = 6;
-    let mut b = PanelBuilder::new(m, cols, 4.0 + key_rows.max(GENERAL_ROWS) as f32);
-    b.close_button();
+    // Header, tabs and rules take 3 rows; General needs 9.
+    const GENERAL_ROWS: usize = 9;
+    let mut b = PanelBuilder::new(m, cols, 3.0 + key_rows.max(GENERAL_ROWS) as f32, offset);
+    b.header("Options");
 
-    b.text(0.0, "Options", TextStyle::Title);
-    let c = b.button(12.0, "General", Action::OptionsPage(OptionsPage::General), s.page == OptionsPage::General);
-    b.button(c, "Keyboard shortcuts", Action::OptionsPage(OptionsPage::Shortcuts), s.page == OptionsPage::Shortcuts);
+    let c = b.tab(0.0, "General", Action::OptionsPage(OptionsPage::General), s.page == OptionsPage::General);
+    b.tab(c, "Keyboard shortcuts", Action::OptionsPage(OptionsPage::Shortcuts), s.page == OptionsPage::Shortcuts);
     b.next();
-    b.gap();
+    b.rule();
 
     match s.page {
         OptionsPage::General => {
+            // In a small window: no section headings or spacing, and rows
+            // that still don't fit are left out rather than drawn outside.
+            let compact = !b.fits_rows(GENERAL_ROWS - 3);
             let label_w = 20.0;
-            b.text(0.0, "Theme", TextStyle::Normal);
-            let mut c = label_w;
-            for (name, mode) in [("System", ThemeMode::System), ("Dark", ThemeMode::Dark), ("Light", ThemeMode::Light)] {
-                c = b.button(c, name, Action::Theme(mode), s.theme == mode);
+            if !compact {
+                b.text(0.0, "APPEARANCE", TextStyle::Dim);
+                b.next();
             }
-            b.next();
-
-            b.text(0.0, "Font size", TextStyle::Normal);
-            let c = b.button(label_w, "−", Action::FontSmaller, false);
-            b.text(c, format!("{:>4}", s.font_size), TextStyle::Normal);
-            let c = b.button(c + 5.0, "+", Action::FontBigger, false);
-            b.text(c, &s.font_family, TextStyle::Dim);
-            b.next();
-
-            b.text(0.0, "Code highlighting", TextStyle::Normal);
-            let c = b.button(label_w, "On", Action::CodeHighlight(true), s.code_highlight);
-            b.button(c, "Off", Action::CodeHighlight(false), !s.code_highlight);
-            b.next();
-
-            b.text(0.0, "Graphics", TextStyle::Normal);
-            let mut c = label_w;
-            for &g in GpuBackend::choices() {
-                c = b.button(c, g.label(), Action::Gpu(g), s.gpu == g);
+            if b.fits_rows(1) {
+                b.text(0.0, "Theme", TextStyle::Normal);
+                let mut c = label_w;
+                for (name, mode) in [("System", ThemeMode::System), ("Dark", ThemeMode::Dark), ("Light", ThemeMode::Light)] {
+                    c = b.button(c, name, Action::Theme(mode), s.theme == mode);
+                }
+                b.next();
             }
-            b.next();
-            if s.gpu_pending {
+            if b.fits_rows(1) {
+                b.text(0.0, "Font size", TextStyle::Normal);
+                let c = b.button(label_w, "−", Action::FontSmaller, false);
+                b.text(c, format!("{:>4}", s.font_size), TextStyle::Normal);
+                let c = b.button(c + 5.0, "+", Action::FontBigger, false);
+                b.text(c, &s.font_family, TextStyle::Dim);
+                b.next();
+            }
+            if b.fits_rows(1) {
+                b.text(0.0, "Code highlighting", TextStyle::Normal);
+                let c = b.button(label_w, "On", Action::CodeHighlight(true), s.code_highlight);
+                b.button(c, "Off", Action::CodeHighlight(false), !s.code_highlight);
+                b.next();
+            }
+            if !compact {
+                b.gap();
+                b.text(0.0, "SYSTEM", TextStyle::Dim);
+                b.next();
+            }
+            if b.fits_rows(1) {
+                b.text(0.0, "Graphics", TextStyle::Normal);
+                let mut c = label_w;
+                for &g in GpuBackend::choices() {
+                    c = b.button(c, g.label(), Action::Gpu(g), s.gpu == g);
+                }
+                b.next();
+            }
+            if s.gpu_pending && b.fits_rows(1) {
                 b.text(label_w, "Takes effect when ragamuffin restarts", TextStyle::Dim);
                 b.next();
             }
-
-            b.text(0.0, "Settings file", TextStyle::Normal);
-            b.button(label_w, "Open config.toml", Action::OpenSettingsFile, false);
-            b.next();
+            if b.fits_rows(1) {
+                b.text(0.0, "Settings file", TextStyle::Normal);
+                b.button(label_w, "Open config.toml", Action::OpenSettingsFile, false);
+                b.next();
+            }
         }
         OptionsPage::Shortcuts => {
             let rows: Vec<&[(String, &str)]> = if two_cols { keys.chunks(2).collect() } else { keys.chunks(1).collect() };
@@ -464,14 +532,12 @@ pub fn options_panel(m: &Metrics, s: &OptionsState) -> Panel {
             }
         }
     }
-    b.finish_fitted()
+    b.finish()
 }
 
-pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str) -> Panel {
-    let mut b = PanelBuilder::new(m, 66.0, 11.5);
-    b.close_button();
-    b.text(0.0, "Ragamuffin", TextStyle::Title);
-    b.next();
+pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str, offset: (f32, f32)) -> Panel {
+    let mut b = PanelBuilder::new(m, 66.0, 12.0, offset);
+    b.header("Ragamuffin");
     let build = crate::VERSION.rsplit('.').next().unwrap_or("0");
     b.text(0.0, format!("Version {} (build {build})", crate::VERSION), TextStyle::Dim);
     b.next();
@@ -617,7 +683,7 @@ mod tests {
 
     #[test]
     fn about_panel_shows_version_gpu_and_close() {
-        let p = about_panel(&m(), "Test GPU (Vulkan)", "300 ms (GPU 100 ms, fonts 0 ms)", "/home/x/.config/ragamuffin/config.toml");
+        let p = about_panel(&m(), "Test GPU (Vulkan)", "300 ms (GPU 100 ms, fonts 0 ms)", "/home/x/.config/ragamuffin/config.toml", (0.0, 0.0));
         let text: Vec<&str> = p.lines.iter().map(|l| l.text.as_str()).collect();
         assert!(text.iter().any(|t| t.contains(crate::VERSION) && t.contains("build")));
         assert!(text.contains(&crate::REPOSITORY));
@@ -630,9 +696,24 @@ mod tests {
     }
 
     #[test]
+    fn panels_move_by_their_header_and_stay_in_the_window() {
+        let st = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false };
+        let centred = options_panel(&m(), &st, (0.0, 0.0));
+        let h = centred.header;
+        assert!(h.w == centred.rect.w && h.y == centred.rect.y && h.h > 0.0, "header across the top");
+        assert!(centred.buttons.iter().filter(|b| b.style == ButtonStyle::Normal).all(|b| b.rect.y > h.y + h.h), "controls below it");
+        let moved = options_panel(&m(), &st, (-50.0, 30.0));
+        assert_eq!((moved.rect.x, moved.rect.y), (centred.rect.x - 50.0, centred.rect.y + 30.0));
+        let close = |p: &Panel| p.buttons.iter().find(|b| b.style == ButtonStyle::Close).unwrap().rect;
+        assert_eq!(close(&moved).x - close(&centred).x, -50.0, "contents move with it");
+        let far = options_panel(&m(), &st, (5000.0, -5000.0));
+        assert!(far.rect.x + far.rect.w <= 1000.0 && far.rect.y >= 0.0, "kept inside the window");
+    }
+
+    #[test]
     fn options_panel_fits_small_windows() {
         let small = Metrics { width: 500.0, height: 300.0, ..m() };
-        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false, gpu: GpuBackend::Auto, gpu_pending: false });
+        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false, gpu: GpuBackend::Auto, gpu_pending: false }, (0.0, 0.0));
         assert!(p.rect.w <= 500.0 && p.rect.h <= 300.0);
         assert!(p.lines.iter().all(|l| l.y + small.ch <= p.rect.y + p.rect.h), "no text below the panel");
         let off = p.buttons.iter().find(|b| b.action == Action::CodeHighlight(false)).unwrap();
@@ -642,7 +723,7 @@ mod tests {
     #[test]
     fn options_panel_has_a_general_page_and_a_shortcuts_page() {
         let mut s = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false };
-        let p = options_panel(&m(), &s);
+        let p = options_panel(&m(), &s, (0.0, 0.0));
         let dark = p.buttons.iter().find(|b| b.action == Action::Theme(ThemeMode::Dark)).unwrap();
         assert!(dark.active);
         assert_eq!(p.hit(dark.rect.x + 1.0, dark.rect.y + 1.0), Some(Action::Theme(ThemeMode::Dark)));
@@ -656,19 +737,18 @@ mod tests {
         assert_eq!(gpus.len(), GpuBackend::choices().len());
         assert!(gpus.iter().any(|b| b.active && b.action == Action::Gpu(GpuBackend::Auto)));
         assert!(!p.lines.iter().any(|l| l.text.contains("restarts")));
-        let pending = options_panel(&m(), &OptionsState { gpu: GpuBackend::Software, gpu_pending: true, ..s.clone() });
+        let pending = options_panel(&m(), &OptionsState { gpu: GpuBackend::Software, gpu_pending: true, ..s.clone() }, (0.0, 0.0));
         assert!(pending.lines.iter().any(|l| l.text.contains("restarts")));
 
         s.page = OptionsPage::Shortcuts;
         // In a small window the list is cut, and says so inside the panel.
         let small = Metrics { width: 600.0, height: 300.0, ..m() };
-        let cut = options_panel(&small, &s);
+        let cut = options_panel(&small, &s, (0.0, 0.0));
         let more = cut.lines.iter().find(|l| l.text.starts_with("… more")).expect("cut list says so");
         assert!(more.y + small.ch <= cut.rect.y + cut.rect.h, "the note is inside the panel");
-        let q = options_panel(&m(), &s);
+        let q = options_panel(&m(), &s, (0.0, 0.0));
         assert!(q.lines.iter().any(|l| l.text == "New tab"));
         assert!(!q.buttons.iter().any(|b| matches!(b.action, Action::Theme(_))));
-        assert_eq!((p.rect.x, p.rect.y, p.rect.w), (q.rect.x, q.rect.y, q.rect.w), "page buttons stay put");
-        assert!(p.rect.h < q.rect.h, "the short page isn't padded to the long one");
+        assert_eq!(p.rect, q.rect, "every page has the same size");
     }
 }

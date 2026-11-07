@@ -47,8 +47,8 @@ release, numbered `0.1.<commits on main>`. Older builds:
 - **⋮ menu** for tabs, find, copy and paste, Options and About, plus a
   right-click menu for copy, paste and select all.
 - **Options panel** with two pages: General (theme, font size, code
-  highlighting) and Keyboard shortcuts. Changes are saved to the settings
-  file.
+  highlighting, graphics API) and Keyboard shortcuts. Drag its title to
+  move it. Changes are saved to the settings file.
 - **Light and dark themes** that follow the operating system automatically,
   including on Linux desktops (GNOME, KDE and others) and under WSL, or a
   fixed choice.
