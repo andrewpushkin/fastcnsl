@@ -72,8 +72,8 @@ release, numbered `0.1.<commits on main>`. Older builds:
 
 ## Install
 
-- Debian, Ubuntu: add the apt repository, then `apt upgrade` keeps
-  ragamuffin up to date:
+- Debian, Ubuntu: install from the apt repository, so ragamuffin updates
+  together with the rest of the system. Add the repository and install:
 
   ```sh
   curl -fsSL https://andrewpushkin.github.io/ragamuffin/apt/ragamuffin.gpg | sudo tee /usr/share/keyrings/ragamuffin.gpg >/dev/null
@@ -81,10 +81,10 @@ release, numbered `0.1.<commits on main>`. Older builds:
   sudo apt update && sudo apt install ragamuffin
   ```
 
-  Or the same as one line in `/etc/apt/sources.list.d/ragamuffin.list`:
-  `deb [arch=amd64 signed-by=/usr/share/keyrings/ragamuffin.gpg] https://andrewpushkin.github.io/ragamuffin/apt stable main`.
-  The repository has the latest build only.
-- `.deb` file: `sudo apt install ./ragamuffin-linux-x86_64.deb`
+  From now on `sudo apt update && sudo apt upgrade` installs new builds.
+
+  To remove: `sudo apt remove ragamuffin && sudo rm -f /etc/apt/sources.list.d/ragamuffin.sources /usr/share/keyrings/ragamuffin.gpg`.
+- `.deb` file without updates: `sudo apt install ./ragamuffin-linux-x86_64.deb`
 - AppImage: `chmod +x ragamuffin-linux-x86_64.AppImage && ./ragamuffin-linux-x86_64.AppImage`
 - Windows: unzip and run `ragamuffin.exe` (Windows 10 1809 or newer).
 - macOS: unzip and move `Ragamuffin.app` to Applications. The app is ad-hoc
