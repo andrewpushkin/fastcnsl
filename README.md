@@ -85,7 +85,35 @@ release, numbered `0.1.<commits on main>`. Older builds:
 
   To remove: `sudo apt remove ragamuffin && sudo rm -f /etc/apt/sources.list.d/ragamuffin.sources /usr/share/keyrings/ragamuffin.gpg`.
 - `.deb` file without updates: `sudo apt install ./ragamuffin-linux-x86_64.deb`
-- AppImage: `chmod +x ragamuffin-linux-x86_64.AppImage && ./ragamuffin-linux-x86_64.AppImage`
+- Fedora, RHEL and compatible: install from the rpm repository, so
+  `sudo dnf upgrade` installs new builds:
+
+  ```sh
+  sudo curl -fsSL -o /etc/yum.repos.d/ragamuffin.repo https://andrewpushkin.github.io/ragamuffin/rpm/ragamuffin.repo
+  sudo dnf install ragamuffin
+  ```
+
+  dnf asks once to import the repository's signing key; answer `y`.
+  To remove: `sudo dnf remove ragamuffin && sudo rm /etc/yum.repos.d/ragamuffin.repo`.
+- openSUSE: the same repository with zypper, so `sudo zypper update`
+  installs new builds:
+
+  ```sh
+  sudo zypper addrepo https://andrewpushkin.github.io/ragamuffin/rpm/ragamuffin.repo
+  sudo zypper refresh
+  sudo zypper install ragamuffin
+  ```
+
+  zypper asks once to trust the signing key; answer `a` (always).
+  To remove: `sudo zypper removerepo ragamuffin && sudo zypper remove ragamuffin`.
+- [`.rpm` file](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.rpm) without updates: `sudo dnf install ./ragamuffin-linux-x86_64.rpm`
+- AppImage: `chmod +x ragamuffin-linux-x86_64.AppImage && ./ragamuffin-linux-x86_64.AppImage`.
+  To update it in place from the latest GitHub release (only the changed
+  parts are downloaded), use an AppImage manager such as
+  [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever) or
+  [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher), or
+  [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) from
+  the command line: `appimageupdatetool ragamuffin-linux-x86_64.AppImage`.
 - Windows: unzip and run `ragamuffin.exe` (Windows 10 1809 or newer).
 - macOS: unzip and move `Ragamuffin.app` to Applications. The app is ad-hoc
   signed, not notarized, so the first launch needs right-click → Open.
