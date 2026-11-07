@@ -11,6 +11,7 @@ mod config;
 mod detect;
 mod highlight;
 mod input;
+mod remote;
 mod render;
 mod search;
 mod session;
@@ -75,8 +76,48 @@ fn x11_keyboard_library_installed() -> bool {
     dirs.iter().any(|d| d.join("libxkbcommon-x11.so.0").exists() || d.join("libxkbcommon-x11.so").exists())
 }
 
+/// Runs `ragamuffin new-tab/close-tab/quit` against a running window.
+/// Returns the first tab to open when there is no window to send a
+/// new-tab to, so that this process becomes the window.
+fn run_command(inv: remote::Invocation) -> (Option<String>, Vec<String>) {
+    match remote::send(inv.pid, &inv.command) {
+        Ok(Ok(msg)) => {
+            println!("{msg}");
+            std::process::exit(0);
+        }
+        Ok(Err(msg)) => {
+            eprintln!("ragamuffin: {msg}");
+            std::process::exit(1);
+        }
+        Err(remote::SendError::NoInstance) if inv.pid.is_none() => match inv.command {
+            remote::Command::NewTab { name, command } => (name, command),
+            _ => {
+                eprintln!("ragamuffin: no window is running");
+                std::process::exit(1);
+            }
+        },
+        Err(remote::SendError::NoInstance) => {
+            eprintln!("ragamuffin: no window with process id {}", inv.pid.unwrap_or_default());
+            std::process::exit(1);
+        }
+        Err(remote::SendError::Failed(e)) => {
+            eprintln!("ragamuffin: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     STARTED.get_or_init(std::time::Instant::now);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let first_tab = match remote::parse_args(&args) {
+        Ok(None) => (None, Vec::new()),
+        Ok(Some(inv)) => run_command(inv),
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
     render::glyphs::preload_fonts();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     highlight::preload();
@@ -118,7 +159,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let mut app = app::App::new(cfg, event_loop.create_proxy());
+    let mut app = app::App::new(cfg, event_loop.create_proxy(), first_tab);
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("ragamuffin: {e}");
         std::process::exit(1);

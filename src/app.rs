@@ -24,6 +24,7 @@ use crate::config::{Config, ConfigWatcher, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
 use crate::input::{self, MouseButton};
+use crate::remote;
 use crate::render::Renderer;
 use crate::search::Search;
 use crate::session::{EventProxy, Session, UserEvent};
@@ -49,6 +50,10 @@ pub struct App {
     state: Option<State>,
     next_poll: Instant,
     pub error: Option<String>,
+    /// Name and command of the first tab (from `ragamuffin new-tab`).
+    first_tab: (Option<String>, Vec<String>),
+    /// Listens for `ragamuffin new-tab/close-tab/quit`.
+    _remote: Option<remote::Server>,
 }
 
 /// One shell with its own scrollback, search and code highlighting.
@@ -59,6 +64,8 @@ struct Tab {
     code: CodeHighlighter,
     /// Last program started in this tab (the shell's name until then).
     app: String,
+    /// Name given with `ragamuffin new-tab NAME`; shown instead of `app`.
+    name: Option<String>,
     /// "Tab N: app", rebuilt when `app` or the tab's position changes.
     label: String,
     /// Title the shell set with an escape sequence, used for the window.
@@ -129,8 +136,18 @@ fn shell_name(cfg: &Config) -> String {
 }
 
 impl App {
-    pub fn new(cfg: Config, proxy: EventLoopProxy<UserEvent>) -> Self {
-        Self { cfg, watcher: ConfigWatcher::new(), proxy, state: None, next_poll: Instant::now() + CONFIG_POLL, error: None }
+    pub fn new(cfg: Config, proxy: EventLoopProxy<UserEvent>, first_tab: (Option<String>, Vec<String>)) -> Self {
+        let remote = remote::serve(proxy.clone());
+        Self {
+            cfg,
+            watcher: ConfigWatcher::new(),
+            proxy,
+            state: None,
+            next_poll: Instant::now() + CONFIG_POLL,
+            error: None,
+            first_tab,
+            _remote: remote,
+        }
     }
 
     fn create(&mut self, el: &ActiveEventLoop) -> Result<State, String> {
@@ -229,7 +246,8 @@ impl App {
             cursor: CursorIcon::Text,
             startup: String::new(),
         };
-        st.new_tab(cfg)?;
+        let (name, command) = self.first_tab.clone();
+        st.new_tab_with(cfg, name, command)?;
         Ok(st)
     }
 
@@ -409,9 +427,24 @@ impl State {
     }
 
     fn new_tab(&mut self, cfg: &Config) -> Result<(), String> {
+        self.new_tab_with(cfg, None, Vec::new())
+    }
+
+    /// Opens a tab named `name` running `command` (program and
+    /// arguments), or the configured shell if `command` is empty.
+    fn new_tab_with(&mut self, cfg: &Config, name: Option<String>, command: Vec<String>) -> Result<(), String> {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        let session = Session::spawn(cfg, self.grid, EventProxy::new(self.proxy.clone(), id)).map_err(|e| format!("starting shell: {e}"))?;
+        let run;
+        let cfg = match command.split_first() {
+            Some((program, args)) => {
+                run = Config { shell: program.clone(), shell_args: args.to_vec(), ..cfg.clone() };
+                &run
+            }
+            None => cfg,
+        };
+        let session = Session::spawn(cfg, self.grid, EventProxy::new(self.proxy.clone(), id))
+            .map_err(|e| format!("starting {}: {e}", if cfg.shell.is_empty() { "shell" } else { &cfg.shell }))?;
         let code_theme = if self.palette.dark { &cfg.code_theme_dark } else { &cfg.code_theme_light };
         self.tabs.push(Tab {
             id,
@@ -419,6 +452,7 @@ impl State {
             search: Search::new(),
             code: CodeHighlighter::new(cfg.code_highlight, code_theme),
             app: shell_name(cfg),
+            name,
             label: String::new(),
             shell_title: None,
         });
@@ -431,7 +465,7 @@ impl State {
     /// something new.
     fn relabel(&mut self) {
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            write_label(&mut tab.label, i, &tab.app);
+            write_label(&mut tab.label, i, tab.name.as_deref().unwrap_or(&tab.app));
         }
         self.update_window_title();
     }
@@ -439,6 +473,41 @@ impl State {
     fn update_window_title(&self) {
         if let Some(tab) = self.tabs.get(self.active) {
             self.window.set_title(tab.shell_title.as_deref().unwrap_or(&tab.label));
+        }
+    }
+
+    /// Index of the tab `which` names: its 1-based number or its name
+    /// (the active tab if None).
+    fn find_tab(&self, which: Option<&str>) -> Result<usize, String> {
+        let Some(w) = which else { return Ok(self.active) };
+        if let Ok(n) = w.parse::<usize>() {
+            return (1..=self.tabs.len()).contains(&n).then(|| n - 1).ok_or_else(|| format!("no tab {n}; there are {}", self.tabs.len()));
+        }
+        self.tabs
+            .iter()
+            .position(|t| t.name.as_deref() == Some(w))
+            .or_else(|| self.tabs.iter().position(|t| t.app == w))
+            .ok_or_else(|| format!("no tab named {w}"))
+    }
+
+    /// Carries out a command from `ragamuffin new-tab/close-tab/quit`.
+    /// Returns the reply and whether the app should exit.
+    fn on_remote(&mut self, cfg: &Config, command: remote::Command) -> (remote::Reply, bool) {
+        self.window.request_redraw();
+        match command {
+            remote::Command::NewTab { name, command } => {
+                let r = self.new_tab_with(cfg, name, command).map(|()| format!("opened tab {}", self.tabs.len()));
+                (r, false)
+            }
+            remote::Command::CloseTab(which) => match self.find_tab(which.as_deref()) {
+                Ok(i) => {
+                    let label = self.tabs[i].label.clone();
+                    let last = self.close_tab(i);
+                    (Ok(format!("closed {label}")), last)
+                }
+                Err(e) => (Err(e), false),
+            },
+            remote::Command::Quit => (Ok("quitting".to_owned()), true),
         }
     }
 
@@ -1293,6 +1362,13 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Term(id, event) => {
                 if st.on_term_event(id, event) {
+                    el.exit();
+                }
+            }
+            UserEvent::Remote(command, reply) => {
+                let (r, exit) = st.on_remote(cfg, command);
+                let _ = reply.send(r);
+                if exit {
                     el.exit();
                 }
             }

@@ -31,6 +31,9 @@ use crate::config::Config;
 pub enum UserEvent {
     /// An event from the terminal of the tab with this id.
     Term(u64, Event),
+    /// A command from `ragamuffin new-tab/close-tab/quit`, and where to
+    /// send the answer.
+    Remote(crate::remote::Command, std::sync::mpsc::Sender<crate::remote::Reply>),
     /// The operating system switched between dark (true) and light mode.
     /// Only sent on Linux; elsewhere winit reports theme changes itself.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

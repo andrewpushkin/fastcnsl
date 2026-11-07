@@ -130,6 +130,23 @@ build doesn't have this problem.
 Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
 `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)`.
 
+## Command line
+
+A running window can be controlled from a shell:
+
+```sh
+ragamuffin new-tab                          # a tab with the shell
+ragamuffin new-tab logs -- tail -f app.log  # a tab named "logs" running a command
+ragamuffin close-tab logs                   # by name, or by number: close-tab 2
+ragamuffin close-tab                        # the active tab
+ragamuffin quit
+```
+
+Commands go to the most recently started window; `--pid N` picks
+another (`ragamuffin --pid 1234 quit`). `new-tab` with no window running
+opens one. The Windows build has no console of its own, so its replies
+show up when it is run from WSL.
+
 ## Building
 
 Everything builds in Docker, so the only requirements are Docker and `make`.
@@ -217,6 +234,7 @@ PTY ──read──▶ I/O thread ──parse in place──▶ grid (shared, l
 | `src/detect.rs`     | command-line and content language detection       |
 | `src/input.rs`      | keyboard, mouse and paste encoding                |
 | `src/config.rs`     | settings file and hot reload                      |
+| `src/remote.rs`     | `ragamuffin new-tab/close-tab/quit` control       |
 | `src/theme.rs`      | dark and light palettes, OS theme detection       |
 | `docker/`, `scripts/package/`, `packaging/` | release builds    |
 
