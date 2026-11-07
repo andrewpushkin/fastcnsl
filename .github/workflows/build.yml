@@ -132,6 +132,15 @@ jobs:
           cp dist/ragamuffin-*-windows-arm64.zip  upload/ragamuffin-windows-arm64.zip
           cp dist/ragamuffin-*-macos-arm64.zip    upload/ragamuffin-macos-arm64.zip
           ls -l upload
+      # The AppImage's update information points at this file in the latest
+      # release (scripts/package/linux-x86_64.sh), so updaters download only
+      # the changed blocks.
+      - name: AppImage update file
+        run: |
+          sudo apt-get install -y --no-install-recommends zsync
+          cd upload
+          zsyncmake -u ragamuffin-linux-x86_64.AppImage \
+            -o ragamuffin-linux-x86_64.AppImage.zsync ragamuffin-linux-x86_64.AppImage
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}

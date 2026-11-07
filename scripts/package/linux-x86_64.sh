@@ -34,7 +34,13 @@ appimage)
     desktop-file-validate "$APPDIR/ragamuffin.desktop"
 
     OUT="$DIST/Ragamuffin-${VERSION}-x86_64.AppImage"
-    ARCH=x86_64 appimagetool --no-appstream --runtime-file /opt/appimage-runtime-x86_64 "$APPDIR" "$OUT"
+    # Update information for AppImageUpdate, Gear Lever and AppImageLauncher:
+    # the latest GitHub release's ragamuffin-linux-x86_64.AppImage.zsync,
+    # which CI makes for the fixed-name copy it uploads.
+    UPDATE_INFO="${APPIMAGE_UPDATE_INFO-gh-releases-zsync|andrewpushkin|ragamuffin|latest|ragamuffin-linux-x86_64.AppImage.zsync}"
+    ARCH=x86_64 appimagetool --no-appstream --runtime-file /opt/appimage-runtime-x86_64 \
+        ${UPDATE_INFO:+--updateinformation "$UPDATE_INFO"} "$APPDIR" "$OUT"
+    rm -f "$OUT.zsync" # names the versioned file; CI makes one for the release name
     echo "-> ${OUT#$ROOT/}"
     ;;
 *)
