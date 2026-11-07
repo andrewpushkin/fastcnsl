@@ -3,7 +3,7 @@
 ## alacritty_terminal 0.26.0
 
 The crates.io release (Apache-2.0, see `alacritty_terminal/LICENSE-APACHE`),
-without its test recordings, plus two changes (marked "ragamuffin patch").
+without its test recordings, plus three changes (marked "ragamuffin patch").
 
 ### Dropped-line counters (`src/grid/mod.rs`, `src/grid/resize.rs`)
 
@@ -26,3 +26,13 @@ the commit message. The fix posts the event again after a read that leaves
 data behind.
 
 Drop this fix when alacritty_terminal ships one.
+
+### Prefetching reused rows (`src/grid/mod.rs`)
+
+Once the scrollback is full, every line scrolled up reuses the oldest row,
+last touched a whole scrollback ago: with 10 000 lines of 120 columns that
+is 29 MB back, long out of the CPU cache, and the rows are separate
+allocations the hardware prefetcher can't follow. `scroll_up` now asks
+for the row it will reuse four lines later (x86-64 only). Parsing a 36 MB
+`cat` (vendored or crates.io code alike): 0.33 s before, 0.29 s after; with
+3 000 lines of scrollback, which fit in the cache, it takes 0.22 s.

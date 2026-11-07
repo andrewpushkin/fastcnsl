@@ -146,6 +146,10 @@ pub struct Grid<T> {
     lines_dropped: u64,
 }
 
+/// ragamuffin patch: how many rows ahead `prefetch_recycled_rows` asks for.
+#[cfg(target_arch = "x86_64")]
+const PREFETCH_ROWS: usize = 4;
+
 impl<T: GridCell + Default + PartialEq> Grid<T> {
     pub fn new(lines: usize, columns: usize, max_scroll_limit: usize) -> Grid<T> {
         Grid {
@@ -320,6 +324,32 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         // Ensure all new lines are fully cleared.
         for i in (region.end.0 - positions as i32..region.end.0).map(Line::from) {
             self.raw[i].reset(&self.cursor.template);
+        }
+
+        if region.start == 0 {
+            self.prefetch_recycled_rows();
+        }
+    }
+
+    /// ragamuffin patch: once the history is full, each line scrolled up
+    /// reuses the oldest row, which was last touched a whole scrollback ago
+    /// and is far out of the CPU cache (10 000 rows of 120 cells are 29 MB).
+    /// The rows are separate allocations, so the hardware can't predict the
+    /// next one: waiting for it made parsing a 36 MB `cat` 1.5x slower with
+    /// 10 000 lines of scrollback than with 3 000. Ask for the next rows to
+    /// be reused while this one is written.
+    #[inline]
+    fn prefetch_recycled_rows(&self) {
+        #[cfg(target_arch = "x86_64")]
+        if self.history_size() == self.max_scroll_limit && self.max_scroll_limit > PREFETCH_ROWS {
+            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+            let row = &self.raw[self.topmost_line() + PREFETCH_ROWS];
+            let start = (&row[Column(0)] as *const T).cast::<i8>();
+            let bytes = row.len() * std::mem::size_of::<T>();
+            for offset in (0..bytes).step_by(64) {
+                // SAFETY: a prefetch is only a hint; the address is inside the row.
+                unsafe { _mm_prefetch::<_MM_HINT_T0>(start.add(offset)) };
+            }
         }
     }
 
