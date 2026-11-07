@@ -14,6 +14,7 @@
 #
 #   make linux-x86_64             compile -> target/linux-x86_64/release/
 #   make linux-x86_64-deb         -> dist/ragamuffin_<ver>_amd64.deb
+#   make linux-x86_64-rpm         -> dist/ragamuffin-<ver>-1.x86_64.rpm
 #   make linux-x86_64-appimage    -> dist/Ragamuffin-<ver>-x86_64.AppImage
 #   make windows-x86_64           compile -> target/windows-x86_64/.../ragamuffin.exe
 #   make windows-x86_64-zip       -> dist/ragamuffin-<ver>-windows-x86_64.zip
@@ -44,7 +45,7 @@ CARGO_CACHE  := $(CURDIR)/.cache/cargo
 # 0.1.<commits>; see scripts/version.sh. Override with make VERSION=...
 VERSION      ?= $(shell scripts/version.sh)
 PLATFORMS    := linux-x86_64 windows-x86_64 windows-arm64 macos-arm64
-PACKAGES     := linux-x86_64-deb linux-x86_64-appimage windows-x86_64-zip windows-arm64-zip macos-arm64-zip
+PACKAGES     := linux-x86_64-deb linux-x86_64-rpm linux-x86_64-appimage windows-x86_64-zip windows-arm64-zip macos-arm64-zip
 # Optional overrides for the macOS SDK download (see docker/macos-arm64.Dockerfile).
 MACOS_SDK_ARGS := $(foreach v,MACOS_SDK_VERSION MACOS_SDK_URL MACOS_SDK_SHA256,$(if $($(v)),--build-arg $(v)=$($(v))))
 
@@ -105,6 +106,8 @@ macos-arm64: target/.image-macos-arm64
 # Package (compiles first).
 linux-x86_64-deb: linux-x86_64
 	$(LINUX) deb
+linux-x86_64-rpm: linux-x86_64
+	$(LINUX) rpm
 linux-x86_64-appimage: linux-x86_64
 	$(LINUX) appimage
 windows-x86_64-zip: windows-x86_64

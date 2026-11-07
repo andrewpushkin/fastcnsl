@@ -1,4 +1,4 @@
-# Linux x86-64 release image: builds the .deb and the AppImage.
+# Linux x86-64 release image: builds the .deb, the .rpm and the AppImage.
 #
 # Debian bullseye (glibc 2.31) so the binary runs on older distributions
 # too (Ubuntu 20.04+, Debian 11+, Fedora 32+). winit, wgpu and the
@@ -13,7 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         file squashfs-tools desktop-file-utils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-deb --version 3.8.0 --locked
+RUN cargo install cargo-deb --version 3.8.0 --locked \
+    && cargo install cargo-generate-rpm --version 0.21.1 --locked
 
 # appimagetool is itself an AppImage; FUSE isn't available in containers,
 # so it is extracted once here. The runtime is pinned and passed with

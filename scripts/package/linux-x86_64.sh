@@ -2,9 +2,10 @@
 # Linux x86-64 steps. Runs in docker/linux-x86_64.Dockerfile.
 #   linux-x86_64.sh build      compile target/linux-x86_64/release/ragamuffin
 #   linux-x86_64.sh deb        package the compiled binary as a .deb
+#   linux-x86_64.sh rpm        package the compiled binary as an .rpm
 #   linux-x86_64.sh appimage   package the compiled binary as an AppImage
 source "$(dirname "$0")/common.sh"
-STEP="${1:?usage: linux-x86_64.sh build|deb|appimage}"
+STEP="${1:?usage: linux-x86_64.sh build|deb|rpm|appimage}"
 BIN="$TARGET_DIR/release/ragamuffin"
 
 case "$STEP" in
@@ -18,6 +19,14 @@ deb)
     say "packaging .deb"
     OUT="$DIST/ragamuffin_${VERSION}_amd64.deb"
     cargo deb --no-build --deb-version "$VERSION" --output "$OUT"
+    echo "-> ${OUT#$ROOT/}"
+    ;;
+rpm)
+    need_binary "$BIN" linux-x86_64
+    say "packaging .rpm"
+    OUT="$DIST/ragamuffin-${VERSION}-1.x86_64.rpm"
+    # gzip payload: older rpm versions (openSUSE Leap) may lack zstd.
+    cargo generate-rpm --payload-compress gzip --set-metadata "version = \"$VERSION\"" --output "$OUT"
     echo "-> ${OUT#$ROOT/}"
     ;;
 appimage)
