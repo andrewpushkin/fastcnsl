@@ -35,6 +35,8 @@ const KIND_MASK_GLYPH: u32 = 1;
 const KIND_COLOR_GLYPH: u32 = 2;
 const KIND_ROUNDED: u32 = 3;
 const KIND_CROSS: u32 = 4;
+/// Text with ClearType coverage per colour channel.
+const KIND_SUBPIXEL_GLYPH: u32 = 5;
 /// Quarter-circle stroke; + 1 if the circle's centre is at the quad's
 /// right edge, + 2 if at its bottom edge.
 const KIND_ARC: u32 = 8;
@@ -76,6 +78,62 @@ pub struct Renderer {
     pub gpu: String,
     /// Time spent on GPU setup and waiting for fonts, for the About panel.
     pub startup: String,
+    /// The GPU blends with two sources, so ClearType text is possible.
+    dual: bool,
+}
+
+/// out = colour * weights + destination * (1 - weights), per channel.
+const DUAL_BLENDING: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Src1,
+        dst_factor: wgpu::BlendFactor::OneMinusSrc1,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Src1Alpha,
+        dst_factor: wgpu::BlendFactor::OneMinusSrc1Alpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
+/// shader.wgsl plus the fragment entry point for the blending in use.
+fn shader_source(dual: bool) -> String {
+    let base = include_str!("shader.wgsl");
+    if dual {
+        format!(
+            "enable dual_source_blending;\n{base}
+struct FsOut {{
+    @location(0) @blend_src(0) color: vec4<f32>,
+    @location(0) @blend_src(1) weights: vec4<f32>,
+}};
+
+@fragment
+fn fs(v: VOut) -> FsOut {{
+    let s = shade(v);
+    return FsOut(vec4<f32>(s.color, 1.0), s.weights);
+}}
+"
+        )
+    } else {
+        format!(
+            "{base}
+@fragment
+fn fs(v: VOut) -> @location(0) vec4<f32> {{
+    let s = shade(v);
+    return vec4<f32>(s.color, s.weights.a);
+}}
+"
+        )
+    }
+}
+
+/// Whether the operating system draws text with sub-pixel smoothing
+/// (ClearType). Only Windows is asked; its text is drawn by DirectWrite.
+pub fn system_subpixel() -> bool {
+    #[cfg(windows)]
+    return dwrite::system_cleartype().is_some();
+    #[cfg(not(windows))]
+    false
 }
 
 /// GPU backends tried first.
@@ -164,12 +222,14 @@ impl<'a> Painter<'a> {
             return;
         }
         let Some(g) = self.glyphs.get(self.queue, c, style) else { return };
+        // Whole pixels: the atlas is sampled texel for pixel, and a glyph
+        // half a pixel off would land each pixel between two texels.
         self.layers[layer as usize].push(Instance {
-            pos: [x + g.left, y + self.cell.baseline - g.top],
+            pos: [(x + g.left).round(), (y + self.cell.baseline - g.top).round()],
             size: [g.uv[2], g.uv[3]],
             uv: g.uv,
             color,
-            kind: if g.colored { KIND_COLOR_GLYPH } else { KIND_MASK_GLYPH },
+            kind: g.kind(),
             radius: 0.0,
         });
     }
@@ -184,7 +244,7 @@ impl<'a> Painter<'a> {
             size: [w, h],
             uv: g.uv,
             color,
-            kind: if g.colored { KIND_COLOR_GLYPH } else { KIND_MASK_GLYPH },
+            kind: g.kind(),
             radius: 0.0,
         });
     }
@@ -204,7 +264,7 @@ impl Renderer {
     pub async fn new(
         window: Arc<Window>,
         display: winit::event_loop::OwnedDisplayHandle,
-        font_family: &str, font_px: f32, line_height: f32) -> Result<Self, String> {
+        font_family: &str, font_px: f32, line_height: f32, subpixel: bool) -> Result<Self, String> {
         let start = std::time::Instant::now();
         let size = window.inner_size();
         // On Windows only DX12 is started: also bringing up Vulkan and
@@ -221,9 +281,13 @@ impl Renderer {
         let info = adapter.get_info();
         log::info!("GPU: {info:?}");
         let gpu = format!("{} ({:?})", info.name, info.backend);
+        // Dual-source blending blends each colour channel with its own
+        // weight, which ClearType text needs.
+        let dual = adapter.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("ragamuffin"),
+                required_features: if dual { wgpu::Features::DUAL_SOURCE_BLENDING } else { wgpu::Features::empty() },
                 required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
                 ..Default::default()
             })
@@ -247,11 +311,11 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let gpu_time = start.elapsed();
-        let glyphs = GlyphCache::new(&device, font_family, font_px, line_height);
+        let glyphs = GlyphCache::new(&device, font_family, font_px, line_height, subpixel && dual);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source(dual).into()),
         });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -334,7 +398,7 @@ impl Renderer {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(if dual { DUAL_BLENDING } else { wgpu::BlendState::ALPHA_BLENDING }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -365,7 +429,14 @@ impl Renderer {
             startup: format!("GPU {} ms, fonts {} ms", gpu_time.as_millis(), glyphs.font_wait.as_millis()),
             glyphs,
             gpu,
+            dual,
         })
+    }
+
+    /// Switches between ClearType (where the GPU can blend it) and
+    /// grayscale text. Clears the glyph atlas when it changes.
+    pub fn set_subpixel(&mut self, subpixel: bool) {
+        self.glyphs.set_subpixel(subpixel && self.dual);
     }
 
     /// Creates an instance with `backends`, a surface for the window and
@@ -532,7 +603,7 @@ pub(crate) mod testing {
                 eprintln!("no GPU adapter: skipping GPU test");
                 return None;
             };
-            let glyphs = GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2);
+            let glyphs = GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2, false);
             Some(Self { _device: device, queue, glyphs, layers: Default::default() })
         }
 
@@ -549,7 +620,7 @@ pub(crate) mod testing {
         }
 
         pub fn glyph_count(&self, l: Layer) -> usize {
-            self.layer(l).iter().filter(|i| i.kind == KIND_MASK_GLYPH || i.kind == KIND_COLOR_GLYPH).count()
+            self.layer(l).iter().filter(|i| matches!(i.kind, KIND_MASK_GLYPH | KIND_COLOR_GLYPH | KIND_SUBPIXEL_GLYPH)).count()
         }
     }
 }

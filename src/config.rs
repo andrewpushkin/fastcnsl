@@ -115,6 +115,32 @@ pub struct Config {
     pub title_bar: TitleBar,
     /// Linux only: "auto", "wayland" or "x11". Applies after a restart.
     pub display_backend: DisplayBackend,
+    /// Text smoothing: "auto" (ClearType where Windows uses it, else
+    /// grayscale), "subpixel" or "grayscale". Sub-pixel (ClearType) text
+    /// is drawn on Windows only.
+    pub antialiasing: Antialiasing,
+}
+
+/// How glyph edges are smoothed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Antialiasing {
+    #[default]
+    Auto,
+    /// ClearType: each colour sub-pixel gets its own coverage.
+    Subpixel,
+    Grayscale,
+}
+
+impl Antialiasing {
+    /// Whether to draw sub-pixel text, given whether the system does.
+    pub fn subpixel(self, system: bool) -> bool {
+        match self {
+            Antialiasing::Auto => system,
+            Antialiasing::Subpixel => true,
+            Antialiasing::Grayscale => false,
+        }
+    }
 }
 
 impl Default for Config {
@@ -135,6 +161,7 @@ impl Default for Config {
             bold_is_bright: false,
             title_bar: TitleBar::Custom,
             display_backend: DisplayBackend::Auto,
+            antialiasing: Antialiasing::Auto,
         }
     }
 }
@@ -376,6 +403,10 @@ mod tests {
 
     #[test]
     fn values_are_clamped() {
+        let cfg: Config = toml::from_str("antialiasing = \"grayscale\"").unwrap();
+        assert!(!cfg.antialiasing.subpixel(true));
+        assert!(Antialiasing::Auto.subpixel(true) && !Antialiasing::Auto.subpixel(false));
+        assert!(Antialiasing::Subpixel.subpixel(false));
         let cfg: Config = toml::from_str("title_bar = \"auto\"").unwrap();
         assert_eq!(cfg.title_bar, TitleBar::Custom, "older configs say auto");
         // A whole file written by that version.

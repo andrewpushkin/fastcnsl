@@ -187,11 +187,12 @@ impl App {
             &cfg.font_family,
             font_px(cfg.font_size, scale),
             cfg.line_height,
+            cfg.antialiasing.subpixel(crate::render::system_subpixel()),
         ))?;
 
         // Size the window to a comfortable grid now that the cell is known.
         let cell = renderer.cell();
-        let pad = cfg.padding * scale as f32;
+        let pad = padding_px(cfg, scale as f32);
         let sb = ui::scrollbar_width(scale as f32);
         let bar = chrome::tab_bar_height(&Metrics { width: 0.0, height: 0.0, scale: scale as f32, cw: cell.width, ch: cell.height });
         let want = PhysicalSize::new(
@@ -259,6 +260,9 @@ impl App {
         if old.font_family != cfg.font_family || old.font_size != cfg.font_size || old.line_height != cfg.line_height {
             st.font_pt = cfg.font_size;
             st.reload_font(cfg);
+        }
+        if old.antialiasing != cfg.antialiasing {
+            st.renderer.set_subpixel(cfg.antialiasing.subpixel(crate::render::system_subpixel()));
         }
         if old.padding != cfg.padding {
             st.resize_grid(cfg);
@@ -353,10 +357,17 @@ impl App {
     }
 }
 
+/// The padding around the grid in whole pixels: at fractional scales
+/// (125%: 6 -> 7.5) the grid would otherwise sit between pixels, and so
+/// would every cell background and glyph.
+fn padding_px(cfg: &Config, scale: f32) -> f32 {
+    (cfg.padding * scale).round()
+}
+
 fn grid_size(r: &Renderer, cfg: &Config, scale: f64) -> WindowSize {
     let (w, h) = r.size();
     let cell = r.cell();
-    let pad = cfg.padding * scale as f32;
+    let pad = padding_px(cfg, scale as f32);
     let sb = ui::scrollbar_width(scale as f32);
     let bar = chrome::tab_bar_height(&Metrics { width: w as f32, height: h as f32, scale: scale as f32, cw: cell.width, ch: cell.height });
     let cols = ((w as f32 - 2.0 * pad - sb) / cell.width).floor().max(2.0);
@@ -625,7 +636,7 @@ impl State {
                 focused: self.focused && matches!(self.overlay, Overlay::None),
                 bold_is_bright: cfg.bold_is_bright,
                 scale,
-                padding: cfg.padding * scale,
+                padding: padding_px(cfg, scale),
                 top,
                 scrollbar_alpha: self.scrollbar.fade.value,
                 search_alpha: self.search_fade.value,
@@ -656,7 +667,7 @@ impl State {
     /// Viewport cell under the pointer: (grid point, side, col, row).
     fn mouse_cell(&self, cfg: &Config, display_offset: usize) -> (Point, Side, usize, usize) {
         let cell = self.renderer.cell();
-        let pad = cfg.padding * self.scale();
+        let pad = padding_px(cfg, self.scale());
         let x = (self.mouse.0 - pad).max(0.0);
         let y = (self.mouse.1 - self.top() - pad).max(0.0);
         let col = ((x / cell.width) as usize).min(self.grid.num_cols as usize - 1);

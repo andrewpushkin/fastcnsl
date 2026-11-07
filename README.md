@@ -120,7 +120,15 @@ code_theme_light = "InspiredGitHub"
 bold_is_bright = false
 title_bar = "custom"             # "custom" (buttons in the tab bar) | "system" (OS title bar)
 display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to apply)
+antialiasing = "auto"            # "auto" | "subpixel" | "grayscale"
 ```
+
+**Text on Windows** is drawn by DirectWrite, like in other Windows apps.
+With `antialiasing = "auto"` it follows the system setting: ClearType
+(sub-pixel) when "Adjust ClearType text" is on, as in Explorer and
+Notepad; grayscale otherwise, as in Windows Terminal's default.
+Box-drawing and block characters are drawn to fill the cell, so borders
+and bars join between lines.
 
 **WSL note:** on WSLg (Linux GUI apps on Windows), the mouse cursor may stay
 hidden over a Linux window until you click it. That is WSLg behaviour and

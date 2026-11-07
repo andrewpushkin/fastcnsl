@@ -33,6 +33,7 @@ const KIND_MASK_GLYPH: u32 = 1u;
 const KIND_COLOR_GLYPH: u32 = 2u;
 const KIND_ROUNDED: u32 = 3u;
 const KIND_CROSS: u32 = 4u;
+const KIND_SUBPIXEL_GLYPH: u32 = 5u;
 // 8-11: quarter circle; bit 0: centre at the right edge, bit 1: at the bottom.
 const KIND_ARC: u32 = 8u;
 
@@ -66,8 +67,36 @@ fn text_coverage(a: f32, rgb: vec3<f32>) -> f32 {
     return clamp(c + c * (1.0 - c) * ((g.x * f + g.y) * c + (g.z * f + g.w)), 0.0, 1.0);
 }
 
-@fragment
-fn fs(v: VOut) -> @location(0) vec4<f32> {
+// ClearType: DirectWrite's correction per sub-pixel, each channel weighted
+// by the text colour's own channel. Fitted to native Windows ClearType
+// (DirectWrite drawing into a GDI bitmap with the system settings) at
+// gamma 1.8: light text needs enhanced contrast 0.6, dark text none;
+// colours in between are interpolated by brightness. Both then match the
+// native pixels to within 0.01 on average.
+fn cleartype_coverage(t: vec3<f32>, rgb: vec3<f32>) -> vec3<f32> {
+    let luma = dot(rgb, vec3<f32>(0.30, 0.59, 0.11));
+    let k = 0.6 * clamp((luma - 0.15) / 0.7, 0.0, 1.0);
+    let c = t * (k + 1.0) / (t * k + 1.0);
+    let g = vec4<f32>(0.1469, -0.8911, 1.4644, -0.3234) / 4.0;
+    return clamp(c + c * (1.0 - c) * ((g.x * rgb + g.y) * c + (g.z * rgb + g.w)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// What a fragment contributes: its colour, and how much of it covers the
+// pixel, per channel. Grayscale shapes cover all channels alike; ClearType
+// text covers the red, green and blue sub-pixels separately. The entry
+// point that hands this to the blender is appended by the renderer: with
+// dual-source blending the weights blend each channel on its own,
+// otherwise their alpha is used.
+struct Shaded {
+    color: vec3<f32>,
+    weights: vec4<f32>,
+};
+
+fn plain(rgb: vec3<f32>, a: f32) -> Shaded {
+    return Shaded(rgb, vec4<f32>(a, a, a, a));
+}
+
+fn shade(v: VOut) -> Shaded {
     if v.kind >= KIND_ARC {
         // `radius` is the line width; the circle touches the quad's far
         // edges with a 1px margin for anti-aliasing.
@@ -76,16 +105,21 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
         let r = v.size.x - v.radius * 0.5 - 1.0;
         let d = abs(length(v.local - centre) - r);
         let a = clamp(v.radius * 0.5 + 0.5 - d, 0.0, 1.0);
-        return vec4<f32>(v.color.rgb, v.color.a * a);
+        return plain(v.color.rgb, v.color.a * a);
     }
     switch v.kind {
         case KIND_MASK_GLYPH: {
             let a = textureSampleLevel(atlas_tex, atlas_smp, v.uv, 0.0).a;
-            return vec4<f32>(v.color.rgb, v.color.a * text_coverage(a, v.color.rgb));
+            return plain(v.color.rgb, v.color.a * text_coverage(a, v.color.rgb));
+        }
+        case KIND_SUBPIXEL_GLYPH: {
+            let t = textureSampleLevel(atlas_tex, atlas_smp, v.uv, 0.0);
+            let w = cleartype_coverage(t.rgb, v.color.rgb) * v.color.a;
+            return Shaded(v.color.rgb, vec4<f32>(w, max(w.r, max(w.g, w.b))));
         }
         case KIND_COLOR_GLYPH: {
             let t = textureSampleLevel(atlas_tex, atlas_smp, v.uv, 0.0);
-            return vec4<f32>(t.rgb, t.a * v.color.a);
+            return plain(t.rgb, t.a * v.color.a);
         }
         case KIND_ROUNDED: {
             // Signed distance to a rounded rectangle, 1px anti-aliased edge.
@@ -94,17 +128,17 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
             let q = abs(v.local - half) - (half - vec2<f32>(r, r));
             let d = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
             let a = clamp(0.5 - d, 0.0, 1.0);
-            return vec4<f32>(v.color.rgb, v.color.a * a);
+            return plain(v.color.rgb, v.color.a * a);
         }
         case KIND_CROSS: {
             // Both diagonals of the square; `radius` is the line width.
             let s = v.size.x;
             let d = min(abs(v.local.x - v.local.y), abs(v.local.x + v.local.y - s)) * 0.70710678;
             let a = clamp(v.radius * 0.5 + 0.5 - d, 0.0, 1.0);
-            return vec4<f32>(v.color.rgb, v.color.a * a);
+            return plain(v.color.rgb, v.color.a * a);
         }
         default: {
-            return v.color;
+            return plain(v.color.rgb, v.color.a);
         }
     }
 }

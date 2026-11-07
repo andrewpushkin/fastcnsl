@@ -60,6 +60,21 @@ pub struct Glyph {
     pub left: f32,
     pub top: f32,
     pub colored: bool,
+    /// ClearType: separate coverage per colour channel.
+    pub subpixel: bool,
+}
+
+impl Glyph {
+    /// The shader's kind of quad for this glyph.
+    pub fn kind(&self) -> u32 {
+        if self.colored {
+            super::KIND_COLOR_GLYPH
+        } else if self.subpixel {
+            super::KIND_SUBPIXEL_GLYPH
+        } else {
+            super::KIND_MASK_GLYPH
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -77,6 +92,7 @@ struct NativeMask {
     top: i32,
     width: u32,
     height: u32,
+    subpixel: bool,
     data: Vec<u8>,
 }
 
@@ -106,12 +122,15 @@ pub struct GlyphCache {
     pub overflowed: bool,
     /// How long startup waited for the font database.
     pub font_wait: Duration,
+    /// Rasterise with ClearType (per-channel coverage) where the platform
+    /// rasteriser offers it.
+    subpixel: bool,
     #[cfg(windows)]
     dwrite: super::dwrite::Rasterizer,
 }
 
 impl GlyphCache {
-    pub fn new(device: &wgpu::Device, family: &str, font_px: f32, line_height: f32) -> Self {
+    pub fn new(device: &wgpu::Device, family: &str, font_px: f32, line_height: f32, subpixel: bool) -> Self {
         let (mut font_system, font_wait) = take_font_system();
         let family = resolve_family(&mut font_system, family);
         let metrics_ct = Metrics::new(font_px, (font_px * line_height).round());
@@ -140,6 +159,7 @@ impl GlyphCache {
             texture,
             overflowed: false,
             font_wait,
+            subpixel,
             #[cfg(windows)]
             dwrite: Default::default(),
         };
@@ -158,6 +178,14 @@ impl GlyphCache {
         self.scratch.set_metrics(Metrics::new(font_px, (font_px * line_height).round()));
         self.metrics = self.measure(line_height);
         self.clear();
+    }
+
+    /// Switches ClearType on or off; clears the atlas if that changes.
+    pub fn set_subpixel(&mut self, subpixel: bool) {
+        if subpixel != self.subpixel {
+            self.subpixel = subpixel;
+            self.clear();
+        }
     }
 
     fn clear(&mut self) {
@@ -237,7 +265,10 @@ impl GlyphCache {
             return Slot::Empty;
         };
         let (left, top, w, h, content, data) = match self.native(key, c, style) {
-            Some(m) => (m.left, m.top, m.width, m.height, SwashContent::Mask, m.data),
+            Some(m) => {
+                let content = if m.subpixel { SwashContent::SubpixelMask } else { SwashContent::Mask };
+                (m.left, m.top, m.width, m.height, content, m.data)
+            }
             None => {
                 let Some(image) = self.swash.get_image_uncached(&mut self.font_system, key) else {
                     return Slot::Empty;
@@ -265,11 +296,13 @@ impl GlyphCache {
         };
 
         let colored = matches!(content, SwashContent::Color);
+        let subpixel = self.subpixel && matches!(content, SwashContent::SubpixelMask);
         self.upload.clear();
         match content {
             SwashContent::Mask => {
                 self.upload.extend(data.iter().flat_map(|&a| [255, 255, 255, a]));
             }
+            SwashContent::SubpixelMask if subpixel => self.upload.extend_from_slice(&data),
             SwashContent::SubpixelMask => {
                 self.upload.extend(data.chunks_exact(4).flat_map(|p| {
                     let a = ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8;
@@ -297,6 +330,7 @@ impl GlyphCache {
             left: left as f32,
             top: top as f32,
             colored,
+            subpixel,
         })
     }
 
@@ -304,7 +338,7 @@ impl GlyphCache {
     /// Windows. None means swash draws the glyph.
     #[cfg(windows)]
     fn native(&mut self, key: cosmic_text::CacheKey, c: char, style: GlyphStyle) -> Option<super::dwrite::Mask> {
-        self.dwrite.rasterize(&mut self.font_system, key, c, style.italic)
+        self.dwrite.rasterize(&mut self.font_system, key, c, style.italic, self.subpixel)
     }
 
     #[cfg(not(windows))]
@@ -358,7 +392,7 @@ mod tests {
 
     fn cache() -> Option<(GlyphCache, wgpu::Queue)> {
         let (device, queue) = testing::device()?;
-        Some((GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2), queue))
+        Some((GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2, false), queue))
     }
 
     #[test]
@@ -403,7 +437,7 @@ mod tests {
     #[test]
     fn unknown_family_falls_back_to_an_installed_monospace_font() {
         let Some((device, _)) = testing::device() else { return };
-        let g = GlyphCache::new(&device, "No Such Font 12345", 16.0, 1.2);
+        let g = GlyphCache::new(&device, "No Such Font 12345", 16.0, 1.2, false);
         assert_ne!(g.family, "No Such Font 12345");
         assert!(g.metrics.width > 0.0);
     }

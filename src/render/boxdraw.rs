@@ -277,12 +277,25 @@ mod tests {
 
     const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
+    thread_local! {
+        /// One GPU device for all of these tests: creating one per
+        /// character made them take seconds.
+        static CANVAS: std::cell::RefCell<Option<Option<Canvas>>> = const { std::cell::RefCell::new(None) };
+    }
+
     /// Draws `c` in a 10x20 cell at (100, 200) with 1px lines.
     fn shapes(c: char) -> Option<(bool, Vec<Instance>)> {
-        let mut canvas = Canvas::new()?;
+        CANVAS.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let canvas = slot.get_or_insert_with(Canvas::new).as_mut()?;
+            Some(shapes_on(canvas, c))
+        })
+    }
+
+    fn shapes_on(canvas: &mut Canvas, c: char) -> (bool, Vec<Instance>) {
         let mut drawn = false;
         canvas.paint(400.0, 400.0, |p| drawn = draw(p, Layer::Text, c, 100.0, 200.0, 10.0, 20.0, 1.0, RED));
-        Some((drawn, canvas.layer(Layer::Text).to_vec()))
+        (drawn, canvas.layer(Layer::Text).to_vec())
     }
 
     fn bounds(v: &[Instance]) -> (f32, f32, f32, f32) {
@@ -306,7 +319,7 @@ mod tests {
 
     #[test]
     fn every_line_and_block_character_is_drawn_except_diagonals() {
-        if Canvas::new().is_none() {
+        if shapes(' ').is_none() {
             return;
         }
         for cp in 0x2500..=0x259F {
