@@ -68,6 +68,10 @@ pub struct ChromeView<'a> {
     pub menu_open: bool,
     pub menu: Option<&'a Menu>,
     pub panel: Option<&'a Panel>,
+    /// Which tabs are being logged to a file (a dot on the tab).
+    pub logging: Vec<bool>,
+    /// A short notice at the bottom of the window ("Saved to ...").
+    pub toast: Option<&'a str>,
 }
 
 fn rgb(c: alacritty_terminal::vte::ansi::Rgb) -> Rgb {
@@ -132,6 +136,28 @@ pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>,
     if let Some(menu) = c.menu {
         draw_menu(p, v.palette, &m, menu);
     }
+    if let Some(text) = c.toast {
+        draw_toast(p, v.palette, &m, text);
+    }
+}
+
+/// A notice centred at the bottom of the window, on top of everything.
+fn draw_toast(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, text: &str) {
+    let margin = (16.0 * m.scale).round();
+    let pad = (12.0 * m.scale).round();
+    let room = ((m.width - 2.0 * margin - 2.0 * pad) / m.cw).floor().max(0.0) as usize;
+    let count = text.chars().count();
+    let shown: String = if count > room { text.chars().take(room.saturating_sub(1)).chain(std::iter::once('…')).collect() } else { text.to_owned() };
+    let w = shown.chars().count() as f32 * m.cw + 2.0 * pad;
+    let h = m.ch + (16.0 * m.scale).round();
+    let x = ((m.width - w) / 2.0).round();
+    let y = (m.height - h - margin).round();
+    let r = m.scale * 6.0;
+    let b = m.scale.round().max(1.0);
+    p.rounded(Layer::OverlayShapes, x + m.scale * 3.0, y + m.scale * 3.0, w, h, r, [0.0, 0.0, 0.0, 0.25]);
+    p.rounded(Layer::OverlayShapes, x - b, y - b, w + 2.0 * b, h + 2.0 * b, r + b, pal.ui_dim.rgba(0.6));
+    p.rounded(Layer::OverlayShapes, x, y, w, h, r, pal.ui_bg.rgba(1.0));
+    p.text(Layer::OverlayText, &shown, x + pad, (y + (h - m.ch) / 2.0).round(), pal.ui_fg.rgba(1.0));
 }
 
 fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<'_>) {
@@ -152,16 +178,24 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
             p.rounded(Layer::UiShapes, t.x, t.y, t.w, t.h - m.scale * 3.0, r, pal.background.mix(bar_bg, 0.5).rgba(1.0));
         }
         // Title, shortened to fit before the close button.
-        let room = ((slot.close.x - t.x - m.cw) / m.cw).floor().max(0.0) as usize;
+        // A tab being logged has a red dot before its title.
+        let logging = c.logging.get(i).copied().unwrap_or(false);
+        let lead = if logging { 2.0 * m.cw } else { m.cw };
+        let room = ((slot.close.x - t.x - lead) / m.cw).floor().max(0.0) as usize;
         let shown = fit_tab_title(i, title, room);
         let color = if active { pal.foreground } else { pal.ui_dim };
         // A lone number is centred: the tab is too narrow for anything else.
         let tx = if shown.chars().count() > room || room <= 3 {
             (t.x + (t.w - shown.chars().count() as f32 * m.cw) / 2.0).round()
         } else {
-            t.x + m.cw
+            t.x + lead
         };
         p.text(Layer::UiText, &shown, tx, text_y(&t), color.rgba(1.0));
+        if logging {
+            let d = (m.cw * 0.5).round().max(4.0);
+            let cx = t.x + m.cw - d / 2.0;
+            p.rounded(Layer::UiShapes, cx.round(), (t.y + (t.h - d) / 2.0).round(), d, d, d / 2.0, pal.ansi[1].rgba(1.0));
+        }
         if active || hovered {
             let cl = slot.close;
             if c.hover == Hover::TabClose(i) {
@@ -735,6 +769,8 @@ mod tests {
             menu_open: false,
             menu: None,
             panel: None,
+            logging: Vec::new(),
+            toast: None,
         }
     }
 
@@ -816,6 +852,29 @@ mod tests {
         // Without a gutter nothing is numbered and the text starts at the edge.
         c.paint(400.0, 300.0, |p| draw(p, &t, &View { line_numbers: &numbers, ..f.view() }, &chrome(vec![])));
         assert_eq!(c.glyph_count(Layer::Text), 4);
+    }
+
+    #[test]
+    fn logging_dot_and_toast() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("");
+        let f = Fixture::new();
+        let red = f.palette.ansi[1].rgba(1.0);
+        let reds = |c: &Canvas| c.layer(Layer::UiShapes).iter().filter(|i| i.color == red).count();
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec!["Tab 1: sh", "Tab 2: sh"])));
+        assert_eq!(reds(&c), 0);
+        let logged = ChromeView { logging: vec![false, true], ..chrome(vec!["Tab 1: sh", "Tab 2: sh"]) };
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &logged));
+        assert_eq!(reds(&c), 1, "one dot, on the logged tab");
+
+        let toast = ChromeView { toast: Some("Saved to ~/x.txt"), ..chrome(vec![]) };
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &toast));
+        assert_eq!(c.glyph_count(Layer::OverlayText), "Savedto~/x.txt".len());
+        // A long message is cut to the window.
+        let long = "x".repeat(500);
+        let toast = ChromeView { toast: Some(&long), ..chrome(vec![]) };
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &toast));
+        assert!(c.layer(Layer::OverlayShapes).iter().all(|i| i.pos[0] >= 0.0 && i.pos[0] < 600.0));
     }
 
     #[test]

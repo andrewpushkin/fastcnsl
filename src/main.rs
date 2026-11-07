@@ -12,6 +12,7 @@ mod detect;
 mod highlight;
 mod input;
 mod lines;
+mod logging;
 mod remote;
 mod render;
 mod search;

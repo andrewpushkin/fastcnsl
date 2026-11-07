@@ -43,6 +43,17 @@ pub enum Action {
     ApplyKeys,
     ClosePanel,
     Quit,
+    /// Tab N's right-click menu: copy all its text, save it to a file
+    /// once, start or stop logging it, close it.
+    CopyTabText(usize),
+    SaveTabText(usize),
+    ToggleTabLog(usize),
+    CloseTabAt(usize),
+    /// Open the folder saved and logged text goes to.
+    OpenLogFolder,
+    /// Options → Logging.
+    LogNewTabs(bool),
+    LogTimestamps(bool),
 }
 
 /// The pages of the Options panel.
@@ -51,6 +62,7 @@ pub enum OptionsPage {
     #[default]
     General,
     Shortcuts,
+    Logging,
 }
 
 /// Sizes shared by every layout.
@@ -227,6 +239,20 @@ impl Menu {
             MenuItem::new("Select all", Action::SelectAll),
             MenuItem::separator(),
             MenuItem::new("Find…", Action::Find),
+        ];
+        Self { items, x, y, align_right: false, hover: None }.with_hints(keys)
+    }
+
+    /// The right-click menu of tab `index`; `logging` if it is being logged.
+    pub fn tab(x: f32, y: f32, index: usize, logging: bool, keys: &Keymap) -> Self {
+        let log = if logging { "Stop logging" } else { "Log to file" };
+        let items = vec![
+            MenuItem::new("Copy all text", Action::CopyTabText(index)),
+            MenuItem::new("Save text to file", Action::SaveTabText(index)),
+            MenuItem::new(log, Action::ToggleTabLog(index)),
+            MenuItem::new("Open logs folder", Action::OpenLogFolder),
+            MenuItem::separator(),
+            MenuItem::new("Close tab", Action::CloseTabAt(index)),
         ];
         Self { items, x, y, align_right: false, hover: None }.with_hints(keys)
     }
@@ -473,6 +499,10 @@ pub struct OptionsState {
     /// The command waiting for new keys, if any.
     pub capturing: Option<Command>,
     pub line_numbers: LineNumbers,
+    /// Options → Logging: the folder (as shown) and the two switches.
+    pub log_folder: String,
+    pub log_new_tabs: bool,
+    pub log_timestamps: bool,
 }
 
 impl Default for OptionsState {
@@ -488,6 +518,9 @@ impl Default for OptionsState {
             keys: Keymap::default(),
             capturing: None,
             line_numbers: LineNumbers::Command,
+            log_folder: String::new(),
+            log_new_tabs: false,
+            log_timestamps: false,
         }
     }
 }
@@ -501,7 +534,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
     let fixed_w = fixed.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) as f32;
     let what_w = fixed.iter().map(|(_, w)| w.chars().count()).max().unwrap_or(0) as f32;
     // Each shortcut row: label, keys, and a ↺ that resets just that one.
-    let cols = 64.0f32.max(label_w + keys_w + 5.0).max(fixed_w + 2.0 + what_w);
+    let cols = 72.0f32.max(label_w + keys_w + 5.0).max(fixed_w + 2.0 + what_w);
     // The shortcuts page uses compact rows (see PanelBuilder::dense); in
     // normal rows it needs about four fifths of its row count.
     let list_rows = Command::ALL.len() + 1 + fixed.len();
@@ -513,9 +546,12 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
 
     let c = b.tab(0.0, "General", Action::OptionsPage(OptionsPage::General), s.page == OptionsPage::General);
     let c = b.tab(c, "Keyboard shortcuts", Action::OptionsPage(OptionsPage::Shortcuts), s.page == OptionsPage::Shortcuts);
+    b.tab(c, "Logging", Action::OptionsPage(OptionsPage::Logging), s.page == OptionsPage::Logging);
     if s.page == OptionsPage::Shortcuts {
         if s.capturing.is_some() {
-            b.text(c, "Press the new keys · Esc cancels · Backspace clears", TextStyle::Dim);
+            // The command's button says "Press keys…".
+            let hint = "Esc cancels · Backspace clears";
+            b.text(cols - hint.chars().count() as f32 - 1.0, hint, TextStyle::Dim);
         } else {
             let reset = "Reset all";
             b.button(cols - reset.chars().count() as f32 - 2.0, reset, Action::ResetKeys, false);
@@ -616,6 +652,46 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 }
                 b.text(0.0, *k, TextStyle::Key);
                 b.text(fixed_w + 2.0, *what, TextStyle::Normal);
+                b.next();
+            }
+        }
+        OptionsPage::Logging => {
+            let label_w = 20.0;
+            let compact = !b.fits_rows(8);
+            if !compact {
+                b.text(0.0, "FILES", TextStyle::Dim);
+                b.next();
+            }
+            if b.fits_rows(1) {
+                b.text(0.0, "Folder", TextStyle::Normal);
+                b.text(label_w, &s.log_folder, TextStyle::Normal);
+                b.next();
+            }
+            if b.fits_rows(1) {
+                let c = b.button(label_w, "Open folder", Action::OpenLogFolder, false);
+                b.text(c, "log_folder in config.toml sets it", TextStyle::Dim);
+                b.next();
+            }
+            if !compact {
+                b.gap();
+                b.text(0.0, "LOGGING", TextStyle::Dim);
+                b.next();
+            }
+            if b.fits_rows(1) {
+                b.text(0.0, "Log new tabs", TextStyle::Normal);
+                let c = b.button(label_w, "On", Action::LogNewTabs(true), s.log_new_tabs);
+                b.button(c, "Off", Action::LogNewTabs(false), !s.log_new_tabs);
+                b.next();
+            }
+            if b.fits_rows(1) {
+                b.text(0.0, "Timestamps", TextStyle::Normal);
+                let c = b.button(label_w, "On", Action::LogTimestamps(true), s.log_timestamps);
+                b.button(c, "Off", Action::LogTimestamps(false), !s.log_timestamps);
+                b.next();
+            }
+            if !compact {
+                b.gap();
+                b.text(0.0, "Right-click a tab to save its text or log it to a file.", TextStyle::Dim);
                 b.next();
             }
         }
@@ -827,6 +903,36 @@ mod tests {
         let find = q.buttons.iter().find(|b| b.action == Action::Rebind(Command::Find)).unwrap();
         assert!(find.active && find.label.starts_with("Press keys"));
         assert!(q.lines.iter().any(|l| l.text.contains("Esc cancels")));
+    }
+
+    #[test]
+    fn logging_page_shows_the_folder_and_its_switches() {
+        let s = OptionsState { page: OptionsPage::Logging, log_folder: "~/logs".into(), log_timestamps: true, ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text == "~/logs"));
+        let lit = |a: Action| p.buttons.iter().find(|b| b.action == a).unwrap_or_else(|| panic!("{a:?}")).active;
+        assert!(lit(Action::LogNewTabs(false)) && !lit(Action::LogNewTabs(true)));
+        assert!(lit(Action::LogTimestamps(true)) && !lit(Action::LogTimestamps(false)));
+        assert!(p.buttons.iter().any(|b| b.action == Action::OpenLogFolder));
+        assert!(lit(Action::OptionsPage(OptionsPage::Logging)));
+        assert!(p.buttons.iter().all(|b| b.rect.x + b.rect.w <= p.rect.x + p.rect.w), "inside the panel");
+        let general = options_panel(&m(), &OptionsState::default(), (0.0, 0.0));
+        assert_eq!(p.rect, general.rect, "same size as the other pages");
+    }
+
+    #[test]
+    fn tab_menu_saves_logs_and_closes_that_tab() {
+        let menu = Menu::tab(50.0, 30.0, 2, false, &Keymap::default());
+        let actions: Vec<_> = menu.items.iter().filter_map(|i| i.action).collect();
+        assert_eq!(
+            actions,
+            [Action::CopyTabText(2), Action::SaveTabText(2), Action::ToggleTabLog(2), Action::OpenLogFolder, Action::CloseTabAt(2)]
+        );
+        assert!(menu.items.iter().any(|i| i.label == "Log to file"));
+        let logging = Menu::tab(50.0, 30.0, 2, true, &Keymap::default());
+        assert!(logging.items.iter().any(|i| i.label == "Stop logging"));
+        let l = menu.layout(&m());
+        assert_eq!((l.rect.x, l.rect.y), (50.0, 30.0), "opens below the pointer");
     }
 
     #[test]

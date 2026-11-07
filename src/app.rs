@@ -25,6 +25,7 @@ use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
 use crate::input::{self, MouseButton};
 use crate::lines::{self, LineIndex};
+use crate::logging::{self, TabLog, Upto};
 use crate::remote;
 use crate::render::Renderer;
 use crate::search::Search;
@@ -39,6 +40,8 @@ const INITIAL_COLS: u32 = 100;
 const INITIAL_LINES: u32 = 30;
 const CONFIG_POLL: Duration = Duration::from_secs(1);
 const MULTI_CLICK: Duration = Duration::from_millis(400);
+/// How long a notice ("Saved to ...") stays up.
+const TOAST_FOR: Duration = Duration::from_secs(5);
 
 /// Font size in points → pixels at the given DPI scale.
 fn font_px(points: f32, scale: f64) -> f32 {
@@ -78,6 +81,8 @@ struct Tab {
     label: String,
     /// Title the shell set with an escape sequence, used for the window.
     shell_title: Option<String>,
+    /// The file this tab is being logged to.
+    log: Option<TabLog>,
 }
 
 enum Overlay {
@@ -145,6 +150,8 @@ struct State {
     /// present: output redraws are paced by these.
     last_frame: Instant,
     frame_cost: Duration,
+    /// A notice at the bottom of the window, and when it goes.
+    toast: Option<(String, Instant)>,
 }
 
 /// Fastest frame rate while output streams in (120/s).
@@ -349,6 +356,7 @@ impl App {
             pending_keys: None,
             last_frame: Instant::now(),
             frame_cost: Duration::ZERO,
+            toast: None,
         };
         let (name, command) = self.first_tab.clone();
         st.new_tab_with(cfg, name, command)?;
@@ -417,6 +425,8 @@ impl App {
                 | Action::FontSmaller
                 | Action::CodeHighlight(_)
                 | Action::LineNumbers(_)
+                | Action::LogNewTabs(_)
+                | Action::LogTimestamps(_)
                 | Action::Theme(_)
                 | Action::OptionsPage(_)
                 | Action::Gpu(_)
@@ -466,6 +476,30 @@ impl App {
             }
             Action::CodeHighlight(on) => self.change_config(|c| c.code_highlight = on),
             Action::LineNumbers(mode) => self.change_config(|c| c.line_numbers = mode),
+            Action::LogNewTabs(on) => self.change_config(|c| c.log_new_tabs = on),
+            Action::LogTimestamps(on) => self.change_config(|c| c.log_timestamps = on),
+            Action::CopyTabText(i) if i < st.tabs.len() => st.copy_tab_text(i),
+            Action::SaveTabText(i) if i < st.tabs.len() => st.save_tab_text(&self.cfg, i),
+            Action::ToggleTabLog(i) if i < st.tabs.len() => {
+                if st.tabs[i].log.is_some() {
+                    st.stop_log(i);
+                } else {
+                    st.start_log(&self.cfg, i, false);
+                }
+            }
+            Action::CloseTabAt(i) => {
+                if st.close_tab(i) {
+                    el.exit();
+                }
+            }
+            Action::OpenLogFolder => {
+                let dir = self.cfg.log_dir();
+                match std::fs::create_dir_all(&dir) {
+                    Ok(()) => open_in_os(&dir),
+                    Err(e) => st.show(format!("Could not create {}: {e}", logging::display_path(&dir))),
+                }
+            }
+            Action::CopyTabText(_) | Action::SaveTabText(_) | Action::ToggleTabLog(_) => {}
             Action::Gpu(gpu) => self.change_config(|c| c.gpu = gpu),
             Action::Rebind(cmd) => st.capturing = if st.capturing == Some(cmd) { None } else { Some(cmd) },
             Action::ResetKey(cmd) => {
@@ -621,10 +655,107 @@ impl State {
             name,
             label: String::new(),
             shell_title: None,
+            log: None,
         });
         self.relabel();
         self.select_tab(self.tabs.len() - 1);
+        if cfg.log_new_tabs {
+            self.start_log(cfg, self.tabs.len() - 1, true);
+        }
         Ok(())
+    }
+
+    /// Shows a notice at the bottom of the window for a few seconds.
+    fn show(&mut self, text: String) {
+        log::info!("{text}");
+        let until = Instant::now() + TOAST_FOR;
+        self.toast = Some((text, until));
+        let wake = until + Duration::from_millis(20);
+        self.wake_at = Some(self.wake_at.map_or(wake, |t| t.min(wake)));
+        self.window.request_redraw();
+    }
+
+    /// The name used in file names for tab `i`: its given name or its program.
+    fn tab_file_name(&self, i: usize) -> &str {
+        let tab = &self.tabs[i];
+        tab.name.as_deref().unwrap_or(&tab.app)
+    }
+
+    /// Copies all of tab `i`'s text to the clipboard.
+    fn copy_tab_text(&mut self, i: usize) {
+        let text = logging::all_text(self.tabs[i].session.term.lock().grid());
+        let lines = text.lines().count();
+        let label = self.tabs[i].label.clone();
+        match self.clipboard.as_mut().map(|cb| cb.set_text(text)) {
+            Some(Ok(())) => self.show(format!("Copied {lines} lines of {label}")),
+            Some(Err(e)) => self.show(format!("Could not copy: {e}")),
+            None => self.show("No clipboard available".to_owned()),
+        }
+    }
+
+    /// Saves all of tab `i`'s text to a new file in the logs folder.
+    fn save_tab_text(&mut self, cfg: &Config, i: usize) {
+        let path = logging::new_file(&cfg.log_dir(), i + 1, self.tab_file_name(i), "txt");
+        let result = logging::save_text(&path, self.tabs[i].session.term.lock().grid());
+        let shown = logging::display_path(&path);
+        match result {
+            Ok(()) => self.show(format!("Saved {} to {shown}", self.tabs[i].label)),
+            Err(e) => self.show(format!("Could not save {shown}: {e}")),
+        }
+    }
+
+    /// Starts logging tab `i` to a new file, beginning with the text it
+    /// already has. `quiet`: no notice unless it fails (new tabs).
+    fn start_log(&mut self, cfg: &Config, i: usize, quiet: bool) {
+        let path = logging::new_file(&cfg.log_dir(), i + 1, self.tab_file_name(i), "log");
+        let shown = logging::display_path(&path);
+        match TabLog::create(&path, cfg.log_timestamps) {
+            Ok(log) => {
+                self.tabs[i].log = Some(log);
+                self.write_log(i);
+                if !quiet && self.tabs[i].log.is_some() {
+                    self.show(format!("Logging {} to {shown}", self.tabs[i].label));
+                }
+            }
+            Err(e) => self.show(format!("Could not log to {shown}: {e}")),
+        }
+        self.window.request_redraw();
+    }
+
+    /// Writes tab `i`'s new complete lines to its log, if it has one. A
+    /// full-screen program's screen isn't logged; its output is, after it.
+    fn write_log(&mut self, i: usize) {
+        let tab = &mut self.tabs[i];
+        let Some(log) = tab.log.as_mut() else { return };
+        let term = tab.session.term.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        if let Err(e) = log.write_new(term.grid(), Upto::Complete) {
+            let shown = logging::display_path(log.path());
+            drop(term);
+            tab.log = None;
+            self.show(format!("Stopped logging to {shown}: {e}"));
+        }
+    }
+
+    /// Stops logging tab `i`, writing the line the cursor is on too.
+    fn finish_log(&mut self, i: usize) -> Option<std::path::PathBuf> {
+        let tab = &mut self.tabs[i];
+        let mut log = tab.log.take()?;
+        let term = tab.session.term.lock();
+        if !term.mode().contains(TermMode::ALT_SCREEN)
+            && let Err(e) = log.write_new(term.grid(), Upto::Cursor)
+        {
+            log::warn!("logging to {}: {e}", log.path().display());
+        }
+        Some(log.path().to_owned())
+    }
+
+    fn stop_log(&mut self, i: usize) {
+        if let Some(path) = self.finish_log(i) {
+            self.show(format!("Stopped logging {} to {}", self.tabs[i].label, logging::display_path(&path)));
+        }
     }
 
     /// Rebuilds the "Tab N: app" labels after tabs open, close or run
@@ -682,6 +813,7 @@ impl State {
         if i >= self.tabs.len() {
             return false;
         }
+        self.finish_log(i);
         self.tabs.remove(i);
         if self.tabs.is_empty() {
             return true;
@@ -721,6 +853,9 @@ impl State {
             }
             tab.session.resize(size);
             tab.lines.invalidate();
+            if let Some(log) = tab.log.as_mut() {
+                log.invalidate();
+            }
         }
         self.grid = size;
     }
@@ -759,6 +894,9 @@ impl State {
                     keys: self.keymap.clone(),
                     capturing: self.capturing,
                     line_numbers: cfg.line_numbers,
+                    log_folder: logging::display_path(&cfg.log_dir()),
+                    log_new_tabs: cfg.log_new_tabs,
+                    log_timestamps: cfg.log_timestamps,
                 },
                 self.panel_offset,
             )),
@@ -776,6 +914,9 @@ impl State {
         let search_target = if self.tab().search.focused || self.search_hover { 1.0 } else { idle };
         animating |= self.search_fade.update(search_target);
 
+        if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+            self.toast = None;
+        }
         let panel = self.panel(cfg);
         let top = self.top();
         let scale = self.scale();
@@ -824,6 +965,8 @@ impl State {
                     _ => None,
                 },
                 panel: panel.as_ref(),
+                logging: self.tabs.iter().map(|t| t.log.is_some()).collect(),
+                toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
             };
             self.renderer.build(|p| view::draw(p, &term, &v, &c));
         }
@@ -1007,6 +1150,12 @@ impl State {
             let line = highlight::command_line(term.grid());
             tab.code.on_enter(term.grid(), &line);
             tab.lines.on_enter(term.grid());
+            // The command line goes into the log as entered.
+            if let Some(log) = tab.log.as_mut()
+                && let Err(e) = log.write_new(term.grid(), Upto::Cursor)
+            {
+                log::warn!("logging: {e}");
+            }
             ran = detect::program_name(&line).filter(|name| *name != tab.app);
         }
         term.scroll_display(Scroll::Bottom);
@@ -1226,9 +1375,11 @@ impl State {
             self.overlay = Overlay::None;
             self.window.request_redraw();
             if picked.is_none() && !on_menu_button && !l.rect.contains(x, y) && button == WinitButton::Right {
-                // Right-click elsewhere reopens the context menu there.
-                let sel = self.has_selection();
-                self.overlay = Overlay::Menu(Menu::context(x, y, sel, &self.keymap));
+                // Right-click elsewhere reopens the menu of what is there.
+                self.overlay = Overlay::Menu(match self.chrome_hover(cfg, x, y) {
+                    Hover::Tab(i) | Hover::TabClose(i) => Menu::tab(x, y, i, self.tabs[i].log.is_some(), &self.keymap),
+                    _ => Menu::context(x, y, self.has_selection(), &self.keymap),
+                });
             }
             return picked;
         }
@@ -1298,6 +1449,10 @@ impl State {
                     return Some(Action::CloseTab);
                 }
                 (Hover::Tab(i), WinitButton::Left) => self.select_tab(i),
+                (Hover::Tab(i) | Hover::TabClose(i), WinitButton::Right) => {
+                    self.overlay = Overlay::Menu(Menu::tab(x, y, i, self.tabs[i].log.is_some(), &self.keymap));
+                    self.window.request_redraw();
+                }
                 _ => {}
             }
             return None;
@@ -1481,6 +1636,7 @@ impl State {
             TermEvent::Wakeup => {
                 self.frames.wakeup();
                 self.tabs[i].search.content_changed();
+                self.write_log(i);
                 if active {
                     self.redraw_for_output();
                 }
@@ -1677,6 +1833,15 @@ impl ApplicationHandler<UserEvent> for App {
         };
         if let Some(action) = action {
             self.perform(el, action);
+        }
+    }
+
+    fn exiting(&mut self, _el: &ActiveEventLoop) {
+        // Finish every log with the line its cursor is on.
+        if let Some(st) = self.state.as_mut() {
+            for i in 0..st.tabs.len() {
+                st.finish_log(i);
+            }
         }
     }
 

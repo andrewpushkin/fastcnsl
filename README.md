@@ -40,6 +40,15 @@ release, numbered `0.1.<commits on main>`. Older builds:
   coloured. The language comes from the file name, or from the content (`#!`
   lines, `#include`, `fn main`...) when there is no extension. Text a program
   colours itself is never touched.
+- **Line numbers** beside the text, counted from each command by default:
+  the output of `cat hello.c` is numbered like the file, and the next
+  command starts again at 1. They can count from the start of the tab
+  instead, or be turned off (Options → General). A line that wraps keeps
+  one number; the numbers hold as old lines leave the scrollback.
+- **Logging**: right-click a tab to copy all its text, save it to a file,
+  or log it to a file that keeps growing as output arrives (a red dot
+  marks the tab). Options → Logging sets logging for every new tab and
+  timestamps on each line.
 - **Tabs** labelled with the last program run in them (`Tab 1: vim`), each
   with its own shell, scrollback and search. With many tabs the labels
   shorten to `1: vim`, then just the number.
@@ -47,9 +56,10 @@ release, numbered `0.1.<commits on main>`. Older builds:
   next to ⋮ (on macOS the native buttons move into it). Drag the empty part
   of the bar to move the window; double-click it to maximize.
 - **⋮ menu** for tabs, find, copy and paste, Options and About, plus a
-  right-click menu for copy, paste and select all.
-- **Options panel** with two pages: General (theme, font size, code
-  highlighting, graphics API) and Keyboard shortcuts. Drag its title to
+  right-click menu for copy, paste and select all, and one on each tab.
+- **Options panel** with three pages: General (theme, font size, code
+  highlighting, line numbers, graphics API), Keyboard shortcuts and
+  Logging. Drag its title to
   move it. Changes are saved to the settings file.
 - **Light and dark themes** that follow the operating system automatically,
   including on Linux desktops (GNOME, KDE and others) and under WSL, or a
@@ -142,6 +152,7 @@ scrollback = 10000
 ui_idle_opacity = 0.4            # scrollbar/search bar opacity when idle
 padding = 6.0
 code_highlight = true
+line_numbers = "command"         # "command" (from each command) | "tab" | "off"
 code_theme_dark = "base16-ocean.dark"
 code_theme_light = "InspiredGitHub"
 bold_is_bright = false
@@ -150,7 +161,25 @@ display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to
 antialiasing = "auto"            # "auto" | "subpixel" | "grayscale"
 minimum_contrast = 4.5           # text on coloured backgrounds: WCAG contrast ratio, 1 = off
 gpu = "auto"                     # "auto" | "directx" | "vulkan" | "opengl" | "metal" | "software"
+log_folder = ""                  # empty: ragamuffin-logs in Documents (or home)
+log_new_tabs = false             # log every new tab to a file
+log_timestamps = false           # start each logged line with [HH:MM:SS]
 ```
+
+**Saving and logging tabs.** Right-click a tab:
+
+- *Copy all text* puts the tab's whole scrollback and screen on the
+  clipboard.
+- *Save text to file* writes it to `log_folder` as
+  `<tab>-<program>_<date>_<time>.txt`.
+- *Log to file* writes what the tab already has to a `.log` file, then
+  adds each line as it completes, until *Stop logging*, the tab closes
+  or ragamuffin quits. If more output arrives at once than the scrollback
+  holds, the log notes how many lines it missed. What full-screen
+  programs (vim, less) draw isn't logged.
+
+Text is written as programs printed it: wrapped rows joined, trailing
+spaces removed, no colours.
 
 **Graphics API.** `gpu` picks what draws the window (Options → General →
 Graphics); it takes effect when ragamuffin restarts. `software` draws on
@@ -321,9 +350,12 @@ PTY ──read──▶ I/O thread ──parse in place──▶ grid (shared, l
 | `src/session.rs`    | shell process, PTY and I/O thread                 |
 | `src/view.rs`       | terminal state → quads                            |
 | `src/render/`       | wgpu pipeline, glyph atlas, WGSL shader           |
+| `vendor/`           | alacritty_terminal with two patches (see its README) |
 | `src/search.rs`     | find, match navigation and counting               |
 | `src/highlight.rs`  | code blocks in the grid, syntect highlighting     |
 | `src/detect.rs`     | command-line and content language detection       |
+| `src/lines.rs`      | logical lines and their numbers                   |
+| `src/logging.rs`    | copying, saving and logging a tab's text          |
 | `src/input.rs`      | keyboard, mouse and paste encoding                |
 | `src/config.rs`     | settings file and hot reload                      |
 | `src/remote.rs`     | `ragamuffin new-tab/close-tab/quit` control       |

@@ -150,6 +150,14 @@ pub struct Config {
     /// "metal" (macOS) or "software" (drawn by the CPU). Applies after a
     /// restart; `ragamuffin --gpu NAME` overrides it for one run.
     pub gpu: GpuBackend,
+    /// Folder for tab text saved or logged from a tab's right-click menu.
+    /// Empty: `ragamuffin-logs` in the Documents folder (or the home
+    /// folder where there is none). `~` stands for the home folder.
+    pub log_folder: String,
+    /// Log every new tab to a file from the start.
+    pub log_new_tabs: bool,
+    /// Start each logged line with the time it was logged.
+    pub log_timestamps: bool,
     /// Changed keyboard shortcuts: command name -> keys, e.g.
     /// `new_tab = "Ctrl+T"`, `next_tab = "Ctrl+Tab, Ctrl+PageDown"`;
     /// "" turns a command off. Commands not listed keep their defaults.
@@ -257,6 +265,9 @@ impl Default for Config {
             antialiasing: Antialiasing::Auto,
             minimum_contrast: 4.5,
             gpu: GpuBackend::Auto,
+            log_folder: String::new(),
+            log_new_tabs: false,
+            log_timestamps: false,
             keys: BTreeMap::new(),
         }
     }
@@ -341,6 +352,20 @@ impl Config {
              #   base16-ocean.light, InspiredGitHub, Solarized (dark), Solarized (light)\n\n{body}"
         );
         std::fs::write(path, text)
+    }
+
+    /// The folder saved and logged tab text goes to.
+    pub fn log_dir(&self) -> PathBuf {
+        let home = dirs::home_dir().unwrap_or_default();
+        let folder = self.log_folder.trim();
+        if folder.is_empty() {
+            return dirs::document_dir().unwrap_or(home).join("ragamuffin-logs");
+        }
+        match folder.strip_prefix("~/").or_else(|| folder.strip_prefix("~\\")) {
+            Some(rest) => home.join(rest),
+            None if folder == "~" => home,
+            None => PathBuf::from(folder),
+        }
     }
 
     fn sanitized(mut self) -> Self {
@@ -476,6 +501,21 @@ mod tests {
             assert_eq!(cfg.line_numbers, want);
         }
         assert!(LineNumbers::Tab.is_on() && !LineNumbers::Off.is_on());
+    }
+
+    #[test]
+    fn log_folder_setting() {
+        let cfg = Config::default();
+        assert!(cfg.log_dir().ends_with("ragamuffin-logs"));
+        assert!(!cfg.log_new_tabs && !cfg.log_timestamps);
+        let at = |f: &str| Config { log_folder: f.into(), ..Config::default() }.log_dir();
+        assert_eq!(at("/var/log/term"), PathBuf::from("/var/log/term"));
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(at("~/logs"), home.join("logs"));
+            assert_eq!(at("~"), home);
+        }
+        let cfg: Config = toml::from_str("log_folder = \"/tmp/x\"\nlog_new_tabs = true\nlog_timestamps = true").unwrap();
+        assert_eq!((cfg.log_folder.as_str(), cfg.log_new_tabs, cfg.log_timestamps), ("/tmp/x", true, true));
     }
 
     #[test]

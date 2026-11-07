@@ -86,7 +86,6 @@ pub fn ends_before(grid: &Grid<Cell>, pos: &mut Option<Pos>, abs: usize) -> u64 
 }
 
 /// Appends the text of row `abs`, wide-character spacers left out.
-#[allow(dead_code)] // for tab logging, next
 pub fn push_row(out: &mut String, grid: &Grid<Cell>, abs: usize) {
     let row = &grid[line_of(grid, abs)];
     for col in 0..grid.columns() {

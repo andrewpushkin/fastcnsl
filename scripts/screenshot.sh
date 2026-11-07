@@ -121,3 +121,26 @@ shot shortcut_changed
 xdotool key Escape
 xdotool key alt+n
 shot shortcut_used
+
+# Tab 1's right-click menu: copy, save, log, open folder, close.
+click 100 15
+click 100 15 3
+shot tab_menu
+# "Log to file" (third item), then run something: a dot on the tab and
+# a notice at the bottom.
+xdotool key Down Down Down Return
+type_line "seq 3"
+shot tab_logging
+# "Save text to file" (second item).
+click 100 15 3
+xdotool key Down Down Return
+shot tab_saved
+# Options → Logging, the third page.
+xdotool key ctrl+shift+comma
+click 483 81
+shot options_logging
+xdotool key Escape
+
+LOGS="$HOME/ragamuffin-logs"
+[ -d "$HOME/Documents" ] && LOGS="$HOME/Documents/ragamuffin-logs"
+for f in "$LOGS"/*; do echo "== $f"; cat "$f"; done

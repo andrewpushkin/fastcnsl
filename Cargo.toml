@@ -18,6 +18,8 @@ cosmic-text = "0.19.0"
 dirs = "7.0.0"
 env_logger = "0.11.11"
 etagere = "0.3.0"
+# Local time for log file names and timestamps.
+jiff = "0.2.39"
 log = "0.4.35"
 pollster = "1.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
