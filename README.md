@@ -12,7 +12,7 @@ Windows and macOS.
 | Windows x86-64 | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-x86_64.zip) |
 | Windows ARM64 | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-arm64.zip) |
 | macOS Apple Silicon | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-macos-arm64.zip) |
-| Linux x86-64: Debian, Ubuntu | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.deb) |
+| Linux x86-64: Debian, Ubuntu | [apt repository](#install) (updates with `apt upgrade`) or [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.deb) |
 | Linux x86-64: any distro | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.AppImage) |
 
 Every push to `main` is built by GitHub Actions and published as a
@@ -320,6 +320,30 @@ Every push to `main` becomes a release. The version is
 `Cargo.toml`, so bump it there for a new minor version. Local builds use
 the same numbering, and `make VERSION=1.2.3 ...` overrides it.
 
+After the release, the `apt-repo` job puts the new `.deb` into the apt
+repository on GitHub Pages (`https://andrewpushkin.github.io/ragamuffin/apt`).
+`scripts/apt-repo.sh` builds it: `dists/stable/main` signed with gpg, the
+public key, a `ragamuffin.sources` file and an `index.html` with the
+install steps. The repository keeps the latest build only. One-time setup,
+until which the job is skipped with a warning:
+
+1. Settings → Pages → Source: **GitHub Actions**.
+2. A signing key without a passphrase, stored as the Actions secret
+   `APT_SIGNING_KEY` (Settings → Secrets and variables → Actions):
+
+   ```sh
+   gpg --batch --passphrase '' --quick-gen-key "ragamuffin apt <andrew.pushkin@gmail.com>" rsa4096 sign never
+   gpg --armor --export-secret-keys "ragamuffin apt"   # paste the output into the secret
+   ```
+
+   Back the key up and never replace it: users trust it once, and a new
+   key makes `apt update` fail for them until they download it again.
+
+To try the repository locally, in a Debian or Ubuntu container with
+`apt-utils` and `gnupg`: `scripts/apt-repo.sh /tmp/site/apt dist/*.deb`
+and serve `/tmp/site` over HTTP (`APT_REPO_URL` sets the URL written into
+`ragamuffin.sources` and `index.html`).
+
 The macOS image downloads Apple's macOS SDK from a third-party mirror while
 it is built. Apple's SDK license only allows use on Apple hardware and
 forbids redistribution, so check that you may use it, and don't publish that
@@ -373,6 +397,7 @@ PTY ──read──▶ I/O thread ──parse in place──▶ grid (shared, l
 | `src/remote.rs`     | `ragamuffin new-tab/close-tab/quit` control       |
 | `src/theme.rs`      | dark and light palettes, OS theme detection       |
 | `docker/`, `scripts/package/`, `packaging/` | release builds    |
+| `scripts/apt-repo.sh` | apt repository for GitHub Pages                 |
 
 ## License
 
