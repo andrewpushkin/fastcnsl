@@ -494,9 +494,10 @@ impl App {
             }
             Action::OpenLogFolder => {
                 let dir = self.cfg.log_dir();
-                match std::fs::create_dir_all(&dir) {
-                    Ok(()) => open_in_os(&dir),
-                    Err(e) => st.show(format!("Could not create {}: {e}", logging::display_path(&dir))),
+                let shown = logging::display_path(&dir);
+                match std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|()| crate::open::open(&dir)) {
+                    Ok(()) => {}
+                    Err(e) => st.show(format!("Could not open {shown}: {e}")),
                 }
             }
             Action::CopyTabText(_) | Action::SaveTabText(_) | Action::ToggleTabLog(_) => {}
@@ -526,9 +527,13 @@ impl App {
                 st.overlay = Overlay::About;
                 st.panel_offset = (0.0, 0.0);
             }
-            Action::OpenSettingsFile => open_settings(),
-            Action::OpenProjectPage => open_in_os(crate::REPOSITORY),
-            Action::OpenReleases => open_in_os(format!("{}/releases", crate::REPOSITORY)),
+            Action::OpenSettingsFile => {
+                if let Some(path) = Config::path() {
+                    st.open(path);
+                }
+            }
+            Action::OpenProjectPage => st.open(crate::REPOSITORY),
+            Action::OpenReleases => st.open(format!("{}/releases", crate::REPOSITORY)),
             Action::ClosePanel => {}
             Action::Quit => el.exit(),
             Action::OptionsPage(page) => {
@@ -673,6 +678,14 @@ impl State {
         let wake = until + Duration::from_millis(20);
         self.wake_at = Some(self.wake_at.map_or(wake, |t| t.min(wake)));
         self.window.request_redraw();
+    }
+
+    /// Opens a file or URL with the desktop's default app; says so if it can't.
+    fn open(&mut self, target: impl AsRef<std::ffi::OsStr>) {
+        let target = target.as_ref();
+        if let Err(e) = crate::open::open(target) {
+            self.show(format!("Could not open {}: {e}", logging::display_path(std::path::Path::new(target))));
+        }
     }
 
     /// The name used in file names for tab `i`: its given name or its program.
@@ -1682,27 +1695,6 @@ impl State {
             TermEvent::CursorBlinkingChange | TermEvent::MouseCursorDirty => {}
         }
         false
-    }
-}
-
-fn open_settings() {
-    if let Some(path) = Config::path() {
-        open_in_os(path);
-    }
-}
-
-/// Opens a file or URL with the OS's default application.
-fn open_in_os(target: impl AsRef<std::ffi::OsStr>) {
-    let target = target.as_ref();
-    let result = if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd").arg("/C").arg("start").arg("").arg(target).spawn()
-    } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(target).spawn()
-    } else {
-        std::process::Command::new("xdg-open").arg(target).spawn()
-    };
-    if let Err(e) = result {
-        log::warn!("could not open {}: {e}", target.to_string_lossy());
     }
 }
 
