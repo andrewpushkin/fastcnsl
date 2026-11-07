@@ -14,8 +14,8 @@ use cosmic_text::{CacheKey, FontSystem};
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT, DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN, DWRITE_GRID_FIT_MODE_DEFAULT,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
-    DWRITE_TEXTURE_CLEARTYPE_3x1, DWriteCreateFactory, IDWriteFactory2, IDWriteFontCollection, IDWriteFontFace,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    DWRITE_TEXTURE_ALIASED_1x1, DWriteCreateFactory, IDWriteFactory2, IDWriteFontCollection, IDWriteFontFace,
 };
 use windows::core::{BOOL, HSTRING};
 
@@ -123,11 +123,10 @@ fn draw(api: &Api, face: &IDWriteFontFace, glyph: u16, size: f32) -> Option<Mask
 
 unsafe fn draw_run(api: &Api, run: &DWRITE_GLYPH_RUN) -> Option<Mask> {
     unsafe {
-        // Symmetric anti-aliasing (smooth in x, grid-fitted in y) at
-        // ClearType's 3x horizontal resolution, averaged to grayscale.
-        // Side by side with Windows Terminal this matches it closely;
-        // DirectWrite's own grayscale mode gives only 16 coverage levels
-        // and looks harder.
+        // Grayscale, symmetric anti-aliasing (smooth in x, grid-fitted in
+        // y): measured against Windows Terminal on the same text, this
+        // gives the same share of solid and edge pixels. Averaging
+        // ClearType's 3x1 output instead leaves a faint halo around stems.
         let analysis = api
             .factory
             .CreateGlyphRunAnalysis(
@@ -136,19 +135,20 @@ unsafe fn draw_run(api: &Api, run: &DWRITE_GLYPH_RUN) -> Option<Mask> {
                 DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
                 DWRITE_MEASURING_MODE_NATURAL,
                 DWRITE_GRID_FIT_MODE_DEFAULT,
-                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+                DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
                 0.0,
                 0.0,
             )
             .ok()?;
-        let rect = analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1).ok()?;
+        // With grayscale anti-aliasing the 1x1 texture holds coverage
+        // (0-255), not just on/off.
+        let rect = analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1).ok()?;
         let (width, height) = ((rect.right - rect.left).max(0) as u32, (rect.bottom - rect.top).max(0) as u32);
         if width == 0 || height == 0 {
             return Some(Mask { left: 0, top: 0, width: 0, height: 0, data: Vec::new() });
         }
-        let mut rgb = vec![0u8; (width * height * 3) as usize];
-        analysis.CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &rect, &mut rgb).ok()?;
-        let data = rgb.chunks_exact(3).map(|p| ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8).collect();
+        let mut data = vec![0u8; (width * height) as usize];
+        analysis.CreateAlphaTexture(DWRITE_TEXTURE_ALIASED_1x1, &rect, &mut data).ok()?;
         Some(Mask { left: rect.left, top: -rect.top, width, height, data })
     }
 }
