@@ -200,6 +200,23 @@ fn handle(mut stream: TcpStream, token: &str, proxy: &EventLoopProxy<UserEvent>)
     stream.write_all(out.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Windows: the release build is a GUI program, so it has no console and
+/// its replies would vanish when typed in cmd or PowerShell. Borrow the
+/// console of the shell it was started from, unless output already goes
+/// somewhere (a pipe or file).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn attach_console() {
+    use std::os::windows::io::AsRawHandle;
+    if std::io::stdout().as_raw_handle().is_null() {
+        // SAFETY: a plain Win32 call with a constant argument.
+        let _ = unsafe { windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS) };
+    }
+}
+
+#[cfg(not(windows))]
+pub fn attach_console() {}
+
 /// Why a command couldn't be delivered.
 #[derive(Debug)]
 pub enum SendError {

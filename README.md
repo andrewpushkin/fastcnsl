@@ -132,20 +132,62 @@ Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
 
 ## Command line
 
-A running window can be controlled from a shell:
+The same `ragamuffin` program controls a window that is already open:
 
-```sh
-ragamuffin new-tab                          # a tab with the shell
-ragamuffin new-tab logs -- tail -f app.log  # a tab named "logs" running a command
-ragamuffin close-tab logs                   # by name, or by number: close-tab 2
-ragamuffin close-tab                        # the active tab
-ragamuffin quit
+```text
+ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
+ragamuffin [--pid N] close-tab [NAME | NUMBER]
+ragamuffin [--pid N] quit
+ragamuffin --help
 ```
 
-Commands go to the most recently started window; `--pid N` picks
-another (`ragamuffin --pid 1234 quit`). `new-tab` with no window running
-opens one. The Windows build has no console of its own, so its replies
-show up when it is run from WSL.
+| Command | What it does |
+|---|---|
+| `new-tab` | Opens a tab with your shell. If no window is running, starts one. |
+| `new-tab NAME` | The tab's label reads `Tab N: NAME` instead of the program name. |
+| `new-tab NAME -- COMMAND ARGS...` | Runs `COMMAND` in the tab instead of the shell; the tab closes when it exits. |
+| `close-tab` | Closes the active tab. |
+| `close-tab NAME` | Closes the tab with that name (or, failing that, running that program). |
+| `close-tab 2` | Closes the second tab. |
+| `quit` | Closes the window and all its tabs. |
+
+Examples:
+
+```sh
+ragamuffin new-tab logs -- tail -f /var/log/syslog
+ragamuffin new-tab build -- cargo watch -x test
+ragamuffin close-tab logs
+```
+
+```powershell
+ragamuffin new-tab dev -- powershell -NoExit -Command "cd C:\src\app"
+ragamuffin new-tab cmd -- cmd /k echo hello
+```
+
+**Which window.** Commands go to the most recently started window.
+`--pid N` picks one by process id (`ragamuffin --pid 1234 quit`).
+
+**Replies and exit codes.** A command prints a short reply (`opened tab
+2`, `closed Tab 1: logs`) and exits with 0; errors (`no tab named x`,
+`no window is running`) exit with 1, bad usage with 2.
+
+**Windows.** `ragamuffin.exe` is a GUI program, so cmd and PowerShell
+don't wait for it: the reply appears, but after the prompt. To wait for
+it and read `$LASTEXITCODE` in a PowerShell script, pipe its output:
+
+```powershell
+ragamuffin quit 2>&1 | Out-Host
+if ($LASTEXITCODE -ne 0) { "no window to close" }
+```
+
+From WSL it behaves like any Linux command.
+
+**How it works.** Each window listens on a random port on 127.0.0.1 and
+writes the port and a random secret to `instances/<pid>` in the local
+data directory (`%LOCALAPPDATA%\ragamuffin` on Windows,
+`~/.local/share/ragamuffin` on Linux, `~/Library/Application
+Support/ragamuffin` on macOS), readable only by you. A command must
+present that secret. The file is removed when the window closes.
 
 ## Building
 

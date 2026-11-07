@@ -112,8 +112,17 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let first_tab = match remote::parse_args(&args) {
         Ok(None) => (None, Vec::new()),
-        Ok(Some(inv)) => run_command(inv),
+        Ok(Some(inv)) => {
+            remote::attach_console();
+            run_command(inv)
+        }
+        Err(msg) if msg == remote::USAGE => {
+            remote::attach_console();
+            println!("{msg}");
+            std::process::exit(0);
+        }
         Err(msg) => {
+            remote::attach_console();
             eprintln!("{msg}");
             std::process::exit(2);
         }
