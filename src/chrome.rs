@@ -570,7 +570,10 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 let waiting = s.capturing == Some(cmd);
                 let keys = if waiting { "Press keys…".to_owned() } else { s.keys.keys_text(cmd) };
                 b.button(label_w, &keys, Action::Rebind(cmd), waiting);
-                b.icon_button(label_w + keys_w + 1.0, "↺", Action::ResetKey(cmd), !s.keys.is_default(cmd));
+                // Only commands whose keys were changed have something to reset.
+                if !s.keys.is_default(cmd) {
+                    b.icon_button(label_w + keys_w + 1.0, "↺", Action::ResetKey(cmd), true);
+                }
                 b.next();
             }
             if b.fits_rows(2) {
@@ -778,19 +781,20 @@ mod tests {
             assert!(b.rect.y + b.rect.h <= p.rect.y + p.rect.h, "{cmd:?} inside the panel");
         }
         assert!(p.buttons.iter().any(|b| b.action == Action::ResetKeys));
-        // Every row has its own reset, lit only when the keys were changed.
-        for cmd in Command::ALL {
-            let keys = p.buttons.iter().find(|b| b.action == Action::Rebind(cmd)).unwrap().rect;
-            let reset = p.buttons.iter().find(|b| b.action == Action::ResetKey(cmd)).unwrap_or_else(|| panic!("{cmd:?} reset"));
-            assert_eq!(reset.style, ButtonStyle::Icon);
-            assert!(!reset.active, "{cmd:?} is at its default");
-            assert!(reset.rect.y == keys.y && reset.rect.x > keys.x + keys.w, "{cmd:?} reset right of its keys");
-            assert!(reset.rect.x + reset.rect.w <= p.rect.x + p.rect.w, "{cmd:?} reset inside the panel");
-        }
+        // No resets while every shortcut is at its default.
+        assert!(!p.buttons.iter().any(|b| matches!(b.action, Action::ResetKey(_))));
+        // A changed shortcut gets a ↺ right of its keys; the others don't.
         let mut o = std::collections::BTreeMap::new();
         o.insert("find".to_owned(), "Alt+F".to_owned());
         let changed = options_panel(&m(), &OptionsState { keys: Keymap::new(&o), ..st.clone() }, (0.0, 0.0));
-        assert!(changed.buttons.iter().any(|b| b.action == Action::ResetKey(Command::Find) && b.active));
+        let resets: Vec<&Button> = changed.buttons.iter().filter(|b| matches!(b.action, Action::ResetKey(_))).collect();
+        assert_eq!(resets.len(), 1, "only the changed command");
+        let reset = resets[0];
+        assert_eq!(reset.action, Action::ResetKey(Command::Find));
+        assert_eq!(reset.style, ButtonStyle::Icon);
+        let keys = changed.buttons.iter().find(|b| b.action == Action::Rebind(Command::Find)).unwrap().rect;
+        assert!(reset.rect.y == keys.y && reset.rect.x > keys.x + keys.w, "reset right of its keys");
+        assert!(reset.rect.x + reset.rect.w <= changed.rect.x + changed.rect.w, "reset inside the panel");
         st.capturing = Some(Command::Find);
         let q = options_panel(&m(), &st, (0.0, 0.0));
         let find = q.buttons.iter().find(|b| b.action == Action::Rebind(Command::Find)).unwrap();
