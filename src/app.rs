@@ -122,6 +122,68 @@ struct State {
     options_page: OptionsPage,
     /// Graphics API asked for at startup (it changes only on a restart).
     gpu_started: GpuBackend,
+    frames: FrameStats,
+    /// When the last frame finished, and how long it took to build and
+    /// present: output redraws are paced by these.
+    last_frame: Instant,
+    frame_cost: Duration,
+}
+
+/// Fastest frame rate while output streams in (120/s).
+const MIN_FRAME_GAP: Duration = Duration::from_millis(8);
+/// While output streams in, frames start no sooner than this many times
+/// the last frame's cost after it: drawing then takes at most a third of
+/// the time, leaving the CPU to the program and the terminal. Matters most
+/// for software rendering, which competes with them for the same cores.
+const FRAME_COST_FACTOR: u32 = 3;
+
+/// Frame timings, logged every 2 s at debug level (RUST_LOG=ragamuffin=debug).
+struct FrameStats {
+    since: Instant,
+    count: u32,
+    /// Time the terminal was locked to build frames: the reading thread waits.
+    locked: Duration,
+    present: Duration,
+    /// Output notifications and replies to the program, since `since`.
+    wakeups: u32,
+    replies: u32,
+}
+
+impl FrameStats {
+    fn new() -> Self {
+        Self { since: Instant::now(), count: 0, locked: Duration::ZERO, present: Duration::ZERO, wakeups: 0, replies: 0 }
+    }
+
+    fn add(&mut self, locked: Duration, present: Duration) {
+        self.count += 1;
+        self.locked += locked;
+        self.present += present;
+        self.report();
+    }
+
+    /// Output arrived (whether or not a frame follows).
+    fn wakeup(&mut self) {
+        self.wakeups += 1;
+        self.report();
+    }
+
+    fn report(&mut self) {
+        let span = self.since.elapsed();
+        if span >= Duration::from_secs(2) {
+            if log::log_enabled!(log::Level::Debug) {
+                let ms = |d: Duration| d.as_secs_f64() * 1000.0 / self.count.max(1) as f64;
+                log::debug!(
+                    "{:.1} frames/s, per frame: {:.2} ms building (terminal locked), {:.2} ms presenting; {} output wakeups, {} replies",
+                    self.count as f64 / span.as_secs_f64(),
+                    ms(self.locked),
+                    ms(self.present),
+                    self.wakeups,
+                    self.replies
+                );
+            }
+            *self = Self::new();
+        }
+    }
 }
 
 /// Writes "Tab N: app" into `buf`, reusing its allocation.
@@ -261,6 +323,9 @@ impl App {
             startup: String::new(),
             options_page: OptionsPage::General,
             gpu_started: self.gpu_override.unwrap_or(cfg.gpu),
+            frames: FrameStats::new(),
+            last_frame: Instant::now(),
+            frame_cost: Duration::ZERO,
         };
         let (name, command) = self.first_tab.clone();
         st.new_tab_with(cfg, name, command)?;
@@ -650,6 +715,7 @@ impl State {
         // Lock through a cloned handle so the guard doesn't borrow `self.tabs`
         // (the tab bar needs every tab's title while the active tab updates).
         let shared = self.tabs[self.active].session.term.clone();
+        let t0 = Instant::now();
         {
             let term = shared.lock();
             let tab = &mut self.tabs[self.active];
@@ -688,7 +754,12 @@ impl State {
             };
             self.renderer.build(|p| view::draw(p, &term, &v, &c));
         }
+        let t1 = Instant::now();
         self.renderer.present(self.palette.background);
+        let end = Instant::now();
+        self.frames.add(t1 - t0, end - t1);
+        self.frame_cost = end - t0;
+        self.last_frame = end;
 
         let tab = &self.tabs[self.active];
         if animating || self.renderer.needs_rebuild() || tab.search.recount_pending() {
@@ -1300,6 +1371,18 @@ impl State {
         }
     }
 
+    /// New output: draw it now, or once enough time has passed since the
+    /// last frame (see FRAME_COST_FACTOR). Typing after a pause draws at
+    /// once; a stream of output is shown at a pace the machine can afford.
+    fn redraw_for_output(&mut self) {
+        let next = self.last_frame + MIN_FRAME_GAP.max(self.frame_cost * FRAME_COST_FACTOR);
+        if Instant::now() >= next {
+            self.window.request_redraw();
+        } else {
+            self.wake_at = Some(self.wake_at.map_or(next, |t| t.min(next)));
+        }
+    }
+
     /// Handles an event from tab `id`'s terminal. Returns true when the
     /// last tab closed and the app should quit.
     fn on_term_event(&mut self, id: u64, event: TermEvent) -> bool {
@@ -1307,9 +1390,10 @@ impl State {
         let active = i == self.active;
         match event {
             TermEvent::Wakeup => {
+                self.frames.wakeup();
                 self.tabs[i].search.content_changed();
                 if active {
-                    self.window.request_redraw();
+                    self.redraw_for_output();
                 }
             }
             TermEvent::Title(t) => {
@@ -1339,7 +1423,10 @@ impl State {
                 let reply = format(alacritty_terminal::vte::ansi::Rgb { r: c.r, g: c.g, b: c.b });
                 self.tabs[i].session.write(reply.into_bytes());
             }
-            TermEvent::PtyWrite(s) => self.tabs[i].session.write(s.into_bytes()),
+            TermEvent::PtyWrite(s) => {
+                self.frames.replies += 1;
+                self.tabs[i].session.write(s.into_bytes());
+            }
             TermEvent::TextAreaSizeRequest(format) => self.tabs[i].session.write(format(self.grid).into_bytes()),
             TermEvent::Bell => {
                 if !self.focused {

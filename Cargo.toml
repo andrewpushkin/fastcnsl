@@ -56,3 +56,8 @@ assets = [
     ["packaging/icons/ragamuffin-256.png", "usr/share/icons/hicolor/256x256/apps/ragamuffin.png", "644"],
     ["packaging/icons/ragamuffin.svg", "usr/share/icons/hicolor/scalable/apps/ragamuffin.svg", "644"],
 ]
+
+# alacritty_terminal with a fix for a Windows output stall (large output
+# could stop until the window was resized); see vendor/README.md.
+[patch.crates-io]
+alacritty_terminal = { path = "vendor/alacritty_terminal" }
