@@ -362,20 +362,40 @@ impl Keymap {
     /// nothing): other commands lose that combo, and entries equal to the
     /// defaults are dropped.
     pub fn rebind(&self, cmd: Command, combo: Option<Combo>) -> BTreeMap<String, String> {
+        self.table_with(cmd, combo.into_iter().collect())
+    }
+
+    /// The `[keys]` table after putting `cmd` back to its default keys;
+    /// other commands lose those keys.
+    pub fn reset(&self, cmd: Command) -> BTreeMap<String, String> {
+        self.table_with(cmd, default_combos(cmd))
+    }
+
+    /// `cmd` has its default keys.
+    pub fn is_default(&self, cmd: Command) -> bool {
+        self.combos(cmd) == default_combos(cmd).as_slice()
+    }
+
+    /// The `[keys]` table with `cmd` bound to `keys`, taken from any other
+    /// command that had them. Entries equal to the defaults are dropped.
+    fn table_with(&self, cmd: Command, keys: Vec<Combo>) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
         for (c, combos) in &self.bindings {
             let new: Vec<Combo> = if *c == cmd {
-                combo.iter().cloned().collect()
+                keys.clone()
             } else {
-                combos.iter().filter(|k| Some(*k) != combo.as_ref()).cloned().collect()
+                combos.iter().filter(|k| !keys.contains(k)).cloned().collect()
             };
-            let defaults: Vec<Combo> = c.defaults().iter().filter_map(|t| Combo::parse(t)).collect();
-            if new != defaults {
+            if new != default_combos(*c) {
                 out.insert(c.name().to_owned(), settings_text(&new));
             }
         }
         out
     }
+}
+
+fn default_combos(cmd: Command) -> Vec<Combo> {
+    cmd.defaults().iter().filter_map(|t| Combo::parse(t)).collect()
 }
 
 /// Keys that can't be changed, for the Options panel: they only mean
@@ -459,6 +479,29 @@ mod tests {
         assert_eq!(cleared.get("find").map(String::as_str), Some(""));
         // Next tab keeps its other keys.
         assert_eq!(k2.combos(Command::NextTab), &k.combos(Command::NextTab)[1..]);
+    }
+
+    #[test]
+    fn resetting_one_command_leaves_the_others_changed() {
+        let mut o = BTreeMap::new();
+        o.insert("new_tab".to_owned(), "Alt+N".to_owned());
+        o.insert("find".to_owned(), "Alt+F".to_owned());
+        let k = Keymap::new(&o);
+        assert!(!k.is_default(Command::NewTab) && k.is_default(Command::Copy));
+        let table = k.reset(Command::NewTab);
+        assert!(!table.contains_key("new_tab"), "back to its defaults");
+        assert_eq!(table.get("find").map(String::as_str), Some("Alt+F"), "others keep their change");
+        assert!(Keymap::new(&table).is_default(Command::NewTab));
+
+        // A default key now used by another command is taken back from it.
+        let new_tab = Keymap::default().combos(Command::NewTab)[0].clone();
+        let mut o = BTreeMap::new();
+        o.insert("new_tab".to_owned(), "Alt+N".to_owned());
+        o.insert("find".to_owned(), new_tab.to_string());
+        let table = Keymap::new(&o).reset(Command::NewTab);
+        let k = Keymap::new(&table);
+        assert_eq!(k.command(&new_tab), Some(Command::NewTab));
+        assert!(k.combos(Command::Find).is_empty());
     }
 
     #[test]

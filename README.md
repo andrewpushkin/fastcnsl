@@ -74,7 +74,8 @@ Fedora 32 and anything newer.
 On macOS, use Cmd where the table says Ctrl+Shift. These are the defaults:
 change them in Options (⋮ → Options… → Keyboard shortcuts): click a
 command's keys and press the new ones (Esc cancels, Backspace removes the
-shortcut, Reset all restores the defaults). A key taken from another command
+shortcut, ↺ next to a command restores just its default keys, Reset all
+restores every default). A key taken from another command
 is removed there. The search keys (Enter, F3, Ctrl+R, Esc) and the mouse
 can't be changed.
 

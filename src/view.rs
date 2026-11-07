@@ -336,6 +336,21 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
             }
             continue;
         }
+        if btn.style == ButtonStyle::Icon {
+            if hovered {
+                p.rounded(Layer::OverlayShapes, br.x, br.y, br.w, br.h, m.scale * 5.0, pal.ui_dim.mix(pal.ui_bg, 0.5).rgba(1.0));
+            }
+            let fg = if hovered {
+                pal.foreground
+            } else if btn.active {
+                pal.ui_accent
+            } else {
+                pal.ui_dim.mix(pal.ui_bg, 0.4)
+            };
+            let c = btn.label.chars().next().unwrap_or(' ');
+            p.icon(Layer::OverlayText, c, br.x + br.w / 2.0, br.y + br.h / 2.0, fg.rgba(1.0));
+            continue;
+        }
         let (bg, fg) = if btn.active {
             (pal.ui_accent, Rgb::hex(0xffffff))
         } else if hovered {

@@ -415,6 +415,7 @@ impl App {
                 | Action::OptionsPage(_)
                 | Action::Gpu(_)
                 | Action::Rebind(_)
+                | Action::ResetKey(_)
                 | Action::ResetKeys
                 | Action::ApplyKeys
         )
@@ -460,6 +461,11 @@ impl App {
             Action::CodeHighlight(on) => self.change_config(|c| c.code_highlight = on),
             Action::Gpu(gpu) => self.change_config(|c| c.gpu = gpu),
             Action::Rebind(cmd) => st.capturing = if st.capturing == Some(cmd) { None } else { Some(cmd) },
+            Action::ResetKey(cmd) => {
+                st.capturing = None;
+                let keys = st.keymap.reset(cmd);
+                self.change_config(|c| c.keys = keys);
+            }
             Action::ResetKeys => {
                 st.capturing = None;
                 self.change_config(|c| c.keys.clear());

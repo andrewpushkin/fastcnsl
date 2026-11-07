@@ -34,6 +34,8 @@ pub enum Action {
     Gpu(GpuBackend),
     /// Wait for keys to bind to this command (Options → shortcuts).
     Rebind(Command),
+    /// Put this command's shortcut back to its default.
+    ResetKey(Command),
     /// Put every shortcut back to its default.
     ResetKeys,
     /// Save the shortcuts just captured (see State::pending_keys).
@@ -319,6 +321,9 @@ pub enum ButtonStyle {
     Tab,
     /// The × in the header.
     Close,
+    /// A small one-character button with no background until hovered;
+    /// `active` draws it in the accent colour.
+    Icon,
 }
 
 pub struct Panel {
@@ -401,6 +406,11 @@ impl<'a> PanelBuilder<'a> {
         self.add_button(col, label, action, active, ButtonStyle::Normal)
     }
 
+    /// A small icon button (see ButtonStyle::Icon).
+    fn icon_button(&mut self, col: f32, label: &str, action: Action, active: bool) {
+        self.add_button(col, label, action, active, ButtonStyle::Icon);
+    }
+
     /// A page tab; returns the column after it.
     fn tab(&mut self, col: f32, label: &str, action: Action, active: bool) -> f32 {
         self.add_button(col, label, action, active, ButtonStyle::Tab)
@@ -471,7 +481,8 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
     let keys_w = Command::ALL.iter().map(|c| s.keys.keys_text(*c).chars().count()).max().unwrap_or(0).max(16) as f32 + 2.0;
     let fixed_w = fixed.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) as f32;
     let what_w = fixed.iter().map(|(_, w)| w.chars().count()).max().unwrap_or(0) as f32;
-    let cols = 64.0f32.max(label_w + keys_w).max(fixed_w + 2.0 + what_w);
+    // Each shortcut row: label, keys, and a ↺ that resets just that one.
+    let cols = 64.0f32.max(label_w + keys_w + 5.0).max(fixed_w + 2.0 + what_w);
     // The shortcuts page uses compact rows (see PanelBuilder::dense); in
     // normal rows it needs about four fifths of its row count.
     let list_rows = Command::ALL.len() + 1 + fixed.len();
@@ -559,6 +570,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 let waiting = s.capturing == Some(cmd);
                 let keys = if waiting { "Press keys…".to_owned() } else { s.keys.keys_text(cmd) };
                 b.button(label_w, &keys, Action::Rebind(cmd), waiting);
+                b.icon_button(label_w + keys_w + 1.0, "↺", Action::ResetKey(cmd), !s.keys.is_default(cmd));
                 b.next();
             }
             if b.fits_rows(2) {
@@ -766,6 +778,19 @@ mod tests {
             assert!(b.rect.y + b.rect.h <= p.rect.y + p.rect.h, "{cmd:?} inside the panel");
         }
         assert!(p.buttons.iter().any(|b| b.action == Action::ResetKeys));
+        // Every row has its own reset, lit only when the keys were changed.
+        for cmd in Command::ALL {
+            let keys = p.buttons.iter().find(|b| b.action == Action::Rebind(cmd)).unwrap().rect;
+            let reset = p.buttons.iter().find(|b| b.action == Action::ResetKey(cmd)).unwrap_or_else(|| panic!("{cmd:?} reset"));
+            assert_eq!(reset.style, ButtonStyle::Icon);
+            assert!(!reset.active, "{cmd:?} is at its default");
+            assert!(reset.rect.y == keys.y && reset.rect.x > keys.x + keys.w, "{cmd:?} reset right of its keys");
+            assert!(reset.rect.x + reset.rect.w <= p.rect.x + p.rect.w, "{cmd:?} reset inside the panel");
+        }
+        let mut o = std::collections::BTreeMap::new();
+        o.insert("find".to_owned(), "Alt+F".to_owned());
+        let changed = options_panel(&m(), &OptionsState { keys: Keymap::new(&o), ..st.clone() }, (0.0, 0.0));
+        assert!(changed.buttons.iter().any(|b| b.action == Action::ResetKey(Command::Find) && b.active));
         st.capturing = Some(Command::Find);
         let q = options_panel(&m(), &st, (0.0, 0.0));
         let find = q.buttons.iter().find(|b| b.action == Action::Rebind(Command::Find)).unwrap();
