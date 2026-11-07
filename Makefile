@@ -83,6 +83,9 @@ target/.image-%: docker/%.Dockerfile
 	docker build -f $< -t ragamuffin-$* docker
 	@mkdir -p $(dir $@) && touch $@
 
+# Windows images also download Microsoft's ConPTY with this script.
+target/.image-windows-x86_64 target/.image-windows-arm64: docker/conpty.sh
+
 # macOS: same as the pattern rule, plus the optional SDK overrides.
 target/.image-macos-arm64: docker/macos-arm64.Dockerfile
 	docker build $(MACOS_SDK_ARGS) -f $< -t ragamuffin-macos-arm64 docker

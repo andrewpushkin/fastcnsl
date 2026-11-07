@@ -5,7 +5,7 @@ FROM rust:1.91-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        zip xz-utils \
+        zip unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 ARG LLVM_MINGW=20261020
@@ -19,6 +19,10 @@ RUN rustup target add aarch64-pc-windows-gnullvm
 ENV CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER=aarch64-w64-mingw32-clang \
     CC_aarch64_pc_windows_gnullvm=aarch64-w64-mingw32-clang \
     AR_aarch64_pc_windows_gnullvm=llvm-ar
+
+# Microsoft's ConPTY (conpty.dll + OpenConsole.exe), shipped next to the exe.
+COPY conpty.sh /usr/local/bin/conpty.sh
+RUN sh /usr/local/bin/conpty.sh arm64
 
 ENV CARGO_HOME=/cargo
 RUN mkdir -p /cargo && chmod 1777 /cargo

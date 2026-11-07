@@ -12,10 +12,23 @@ case "$ARCH" in
 esac
 
 EXE="$TARGET_DIR/$TRIPLE/release/ragamuffin.exe"
+# Microsoft's ConPTY, downloaded into the image by docker/conpty.sh.
+CONPTY=/opt/conpty
+
+# Puts conpty.dll and OpenConsole.exe next to ragamuffin.exe in $1: the
+# terminal then uses them instead of Windows' own, much slower, console host.
+add_conpty() {
+    if [[ -f "$CONPTY/conpty.dll" && -f "$CONPTY/OpenConsole.exe" ]]; then
+        cp "$CONPTY/conpty.dll" "$CONPTY/OpenConsole.exe" "$1/"
+    else
+        echo "warning: $CONPTY missing; using the console host built into Windows" >&2
+    fi
+}
 
 if [[ "$STEP" == build ]]; then
     say "compiling ragamuffin $VERSION for $TRIPLE"
     cargo build --release --locked --target "$TRIPLE"
+    add_conpty "$(dirname "$EXE")"
     echo "-> ${EXE#$ROOT/}"
     exit 0
 fi
@@ -28,6 +41,8 @@ rm -rf "$STAGE" && mkdir -p "$STAGE"
 cp "$EXE" "$STAGE/"
 cp README.md "$STAGE/" 2>/dev/null || true
 cp LICENSE "$STAGE/" 2>/dev/null || true
+add_conpty "$STAGE"
+[[ -f "$STAGE/conpty.dll" ]] && cp packaging/windows/ConPTY-LICENSE.txt "$STAGE/"
 
 # Ship any toolchain runtime DLL the exe imports (e.g. libunwind.dll from
 # llvm-mingw); everything else must be a Windows system DLL.

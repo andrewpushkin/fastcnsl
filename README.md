@@ -114,7 +114,11 @@ release, numbered `0.1.<commits on main>`. Older builds:
   [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher), or
   [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) from
   the command line: `appimageupdatetool ragamuffin-linux-x86_64.AppImage`.
-- Windows: unzip and run `ragamuffin.exe` (Windows 10 1809 or newer).
+- Windows: unzip and run `ragamuffin.exe` (Windows 10 1809 or newer). Keep
+  `conpty.dll` and `OpenConsole.exe` next to it: they are Microsoft's
+  console host from Windows Terminal (MIT, see `ConPTY-LICENSE.txt`), about
+  7 times faster with large output than the one built into Windows, which
+  is used if they are missing.
 - macOS: unzip and move `Ragamuffin.app` to Applications. The app is ad-hoc
   signed, not notarized, so the first launch needs right-click → Open.
 
