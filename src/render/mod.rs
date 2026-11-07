@@ -6,6 +6,8 @@
 //! and each one is written into the GPU buffer straight from its slice, so
 //! building a frame allocates nothing in steady state.
 
+#[cfg(windows)]
+mod dwrite;
 pub mod glyphs;
 
 use std::sync::Arc;

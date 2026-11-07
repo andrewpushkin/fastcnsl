@@ -70,6 +70,16 @@ enum Slot {
     Ready(Glyph),
 }
 
+/// Off Windows there is no native rasteriser; this stands in for its mask.
+#[cfg(not(windows))]
+struct NativeMask {
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellMetrics {
     pub width: f32,
@@ -96,6 +106,8 @@ pub struct GlyphCache {
     pub overflowed: bool,
     /// How long startup waited for the font database.
     pub font_wait: Duration,
+    #[cfg(windows)]
+    dwrite: super::dwrite::Rasterizer,
 }
 
 impl GlyphCache {
@@ -128,6 +140,8 @@ impl GlyphCache {
             texture,
             overflowed: false,
             font_wait,
+            #[cfg(windows)]
+            dwrite: Default::default(),
         };
         cache.metrics = cache.measure(line_height);
         cache
@@ -222,10 +236,16 @@ impl GlyphCache {
         else {
             return Slot::Empty;
         };
-        let Some(image) = self.swash.get_image_uncached(&mut self.font_system, key) else {
-            return Slot::Empty;
+        let (left, top, w, h, content, data) = match self.native(key, c, style) {
+            Some(m) => (m.left, m.top, m.width, m.height, SwashContent::Mask, m.data),
+            None => {
+                let Some(image) = self.swash.get_image_uncached(&mut self.font_system, key) else {
+                    return Slot::Empty;
+                };
+                let p = image.placement;
+                (p.left, p.top, p.width, p.height, image.content, image.data)
+            }
         };
-        let (w, h) = (image.placement.width, image.placement.height);
         if w == 0 || h == 0 {
             return Slot::Empty;
         }
@@ -244,19 +264,19 @@ impl GlyphCache {
             }
         };
 
-        let colored = matches!(image.content, SwashContent::Color);
+        let colored = matches!(content, SwashContent::Color);
         self.upload.clear();
-        match image.content {
+        match content {
             SwashContent::Mask => {
-                self.upload.extend(image.data.iter().flat_map(|&a| [255, 255, 255, a]));
+                self.upload.extend(data.iter().flat_map(|&a| [255, 255, 255, a]));
             }
             SwashContent::SubpixelMask => {
-                self.upload.extend(image.data.chunks_exact(4).flat_map(|p| {
+                self.upload.extend(data.chunks_exact(4).flat_map(|p| {
                     let a = ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8;
                     [255, 255, 255, a]
                 }));
             }
-            SwashContent::Color => self.upload.extend_from_slice(&image.data),
+            SwashContent::Color => self.upload.extend_from_slice(&data),
         }
 
         let origin = alloc.rectangle.min;
@@ -274,10 +294,22 @@ impl GlyphCache {
 
         Slot::Ready(Glyph {
             uv: [origin.x as f32, origin.y as f32, w as f32, h as f32],
-            left: image.placement.left as f32,
-            top: image.placement.top as f32,
+            left: left as f32,
+            top: top as f32,
             colored,
         })
+    }
+
+    /// The platform's own rasteriser, where there is one: DirectWrite on
+    /// Windows. None means swash draws the glyph.
+    #[cfg(windows)]
+    fn native(&mut self, key: cosmic_text::CacheKey, c: char, style: GlyphStyle) -> Option<super::dwrite::Mask> {
+        self.dwrite.rasterize(&mut self.font_system, key, c, style.italic)
+    }
+
+    #[cfg(not(windows))]
+    fn native(&mut self, _key: cosmic_text::CacheKey, _c: char, _style: GlyphStyle) -> Option<NativeMask> {
+        None
     }
 
     /// Names of installed monospace font families, for the settings help.

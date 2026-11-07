@@ -27,6 +27,10 @@ unicode-width = "0.2.3"
 wgpu = "30.0.1"
 winit = "0.30.13"
 
+[target.'cfg(windows)'.dependencies]
+# Glyphs rasterised by DirectWrite, like other Windows apps.
+dwrote = { version = "0.11.5", default-features = false }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

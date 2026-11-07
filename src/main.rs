@@ -1,5 +1,7 @@
 //! ragamuffin: a fast, GPU-accelerated terminal.
-#![forbid(unsafe_code)]
+// Denied rather than forbidden so that render::dwrite (Windows) can make
+// its one DirectWrite call.
+#![deny(unsafe_code)]
 // No console window behind the terminal on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
