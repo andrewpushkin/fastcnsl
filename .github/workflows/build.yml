@@ -3,7 +3,8 @@
 #
 # - Push to main: lints, all packages, then a GitHub release. Every run
 #   on main is a release: version 0.1.<commits on main> (scripts/version.sh),
-#   tag v0.1.<commits>, marked "latest".
+#   tag v0.1.<commits>, marked "latest". The .deb then also goes to the
+#   apt repository on GitHub Pages (job apt-repo).
 # - Pull requests: lints + all packages, uploaded as workflow artifacts.
 #
 # Linux and Windows packages are built with the same Docker images and
@@ -144,3 +145,59 @@ jobs:
             --title "ragamuffin $VERSION" \
             --notes "Build ${VERSION##*.} of \`main\` (${GITHUB_SHA::7}). Downloads: see the assets below." \
             --latest
+
+  # apt repository on GitHub Pages: https://<owner>.github.io/<repo>/apt
+  # (README "Install"). Holds the latest .deb only; older ones are on the
+  # releases page. One-time setup, until then this job is skipped:
+  # - Settings → Pages → Source: GitHub Actions
+  # - Settings → Secrets → Actions: APT_SIGNING_KEY = an armored gpg secret
+  #   key without a passphrase. Keep the same key forever: users trust it
+  #   once, a new key breaks their apt update.
+  apt-repo:
+    name: Publish apt repository
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}apt/
+    steps:
+      - name: Check the signing key
+        id: key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::warning::APT_SIGNING_KEY is not set; apt repository not published"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.ok == 'true'
+      - uses: actions/download-artifact@v4
+        if: steps.key.outputs.ok == 'true'
+        with:
+          name: ragamuffin-linux-x86_64
+          path: dist
+      - name: Build the repository
+        if: steps.key.outputs.ok == 'true'
+        run: |
+          sudo apt-get install -y --no-install-recommends apt-utils
+          APT_REPO_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/apt" \
+            scripts/apt-repo.sh site/apt dist/*.deb
+          touch site/.nojekyll
+          printf '<!doctype html><meta http-equiv="refresh" content="0; url=apt/">\n' > site/index.html
+      - uses: actions/configure-pages@v5
+        if: steps.key.outputs.ok == 'true'
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.key.outputs.ok == 'true'
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+        if: steps.key.outputs.ok == 'true'
+        id: deploy
