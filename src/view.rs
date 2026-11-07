@@ -36,6 +36,11 @@ pub struct View<'a> {
     /// Text on a coloured background is made at least this readable
     /// (contrast ratio, 1 = off).
     pub min_contrast: f32,
+    /// Width of the line-number gutter left of the text (0: none).
+    pub gutter: f32,
+    /// The numbers beside the rows on screen, top to bottom (see
+    /// `LineIndex::numbers`).
+    pub line_numbers: &'a [Option<u64>],
 }
 
 /// What the pointer is over, for hover highlights.
@@ -114,6 +119,7 @@ fn span_at(spans: &[Span], col: u16) -> Option<Rgb> {
 
 pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>, c: &ChromeView<'_>) {
     draw_grid(p, term, v);
+    draw_line_numbers(p, v);
     draw_scrollbar(p, term, v);
     if v.search.open {
         draw_search_bar(p, v, c.hover);
@@ -372,6 +378,20 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
     }
 }
 
+/// Line numbers, right-aligned in the gutter left of the text.
+fn draw_line_numbers(p: &mut Painter<'_>, v: &View<'_>) {
+    if v.gutter <= 0.0 {
+        return;
+    }
+    let color = v.palette.ui_dim.rgba(1.0);
+    let mut buf = String::new();
+    for (row, n) in v.line_numbers.iter().enumerate() {
+        let Some(n) = n else { continue };
+        crate::lines::format_number(*n, &mut buf);
+        p.text(Layer::Text, &buf, v.padding, v.top + v.padding + row as f32 * p.cell.height, color);
+    }
+}
+
 fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>) {
     let pal = v.palette;
     let content = term.renderable_content();
@@ -401,7 +421,7 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
         }
         let point = indexed.point;
         let row = (point.line.0 + offset) as f32;
-        let x = pad + point.column.0 as f32 * cw;
+        let x = pad + v.gutter + point.column.0 as f32 * cw;
         let y = v.top + pad + row * ch;
 
         let mut fg_color = cell.fg;
@@ -699,6 +719,8 @@ mod tests {
                 scrollbar_alpha: 1.0,
                 search_alpha: 1.0,
                 min_contrast: 4.5,
+                gutter: 0.0,
+                line_numbers: &[],
             }
         }
     }
@@ -772,6 +794,28 @@ mod tests {
         // Grid starts below the tab bar.
         let first = c.layer(Layer::Text).iter().map(|i| i.pos[1]).fold(f32::MAX, f32::min);
         assert!(first >= 30.0);
+    }
+
+    #[test]
+    fn line_numbers_sit_in_a_gutter_left_of_the_text() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("ab\r\ncd");
+        let f = Fixture::new();
+        let numbers = [Some(1), Some(12)];
+        let gutter = 60.0;
+        let v = View { gutter, line_numbers: &numbers, ..f.view() };
+        c.paint(400.0, 300.0, |p| draw(p, &t, &v, &chrome(vec![])));
+        let dim = f.palette.ui_dim.rgba(1.0);
+        let glyphs = || c.layer(Layer::Text).iter().filter(|i| i.kind != 0);
+        let nums: Vec<_> = glyphs().filter(|i| i.color == dim).collect();
+        let text: Vec<_> = glyphs().filter(|i| i.color != dim).collect();
+        assert_eq!(nums.len(), 3, "1 and 12");
+        assert_eq!(text.len(), 4, "ab and cd");
+        assert!(nums.iter().all(|i| i.pos[0] < gutter), "numbers in the gutter");
+        assert!(text.iter().all(|i| i.pos[0] >= gutter), "text right of it");
+        // Without a gutter nothing is numbered and the text starts at the edge.
+        c.paint(400.0, 300.0, |p| draw(p, &t, &View { line_numbers: &numbers, ..f.view() }, &chrome(vec![])));
+        assert_eq!(c.glyph_count(Layer::Text), 4);
     }
 
     #[test]
@@ -898,7 +942,7 @@ mod tests {
         assert!(c.glyph_count(Layer::OverlayText) > 20, "menu labels");
 
         let m = Metrics { width: 900.0, height: 700.0, scale: 1.0, cw: 8.0, ch: 17.0 };
-        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: crate::config::GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None }, (0.0, 0.0));
+        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: crate::config::GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None, ..OptionsState::default() }, (0.0, 0.0));
         let about = about_panel(&m, "gpu", "300 ms", "/cfg", (0.0, 0.0));
         for panel in [&opts, &about] {
             let mut ch = chrome(vec!["Tab 1"]);

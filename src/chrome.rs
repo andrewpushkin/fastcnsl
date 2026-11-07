@@ -5,7 +5,7 @@
 //! draws from the layout and the app hit-tests clicks against the same
 //! layout, so they never disagree.
 
-use crate::config::{GpuBackend, ThemeMode};
+use crate::config::{GpuBackend, LineNumbers, ThemeMode};
 use crate::shortcuts::{Command, Keymap};
 use crate::shortcuts;
 use crate::ui::Rect;
@@ -28,6 +28,7 @@ pub enum Action {
     FontBigger,
     FontSmaller,
     CodeHighlight(bool),
+    LineNumbers(LineNumbers),
     /// Switch the Options panel to this page.
     OptionsPage(OptionsPage),
     /// Graphics API for the next start.
@@ -471,6 +472,24 @@ pub struct OptionsState {
     pub keys: Keymap,
     /// The command waiting for new keys, if any.
     pub capturing: Option<Command>,
+    pub line_numbers: LineNumbers,
+}
+
+impl Default for OptionsState {
+    fn default() -> Self {
+        Self {
+            page: OptionsPage::General,
+            theme: ThemeMode::System,
+            font_size: 11.0,
+            font_family: String::new(),
+            code_highlight: true,
+            gpu: GpuBackend::Auto,
+            gpu_pending: false,
+            keys: Keymap::default(),
+            capturing: None,
+            line_numbers: LineNumbers::Command,
+        }
+    }
 }
 
 /// The Options panel, moved by `offset` from the centre. Both pages have
@@ -487,8 +506,8 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
     // normal rows it needs about four fifths of its row count.
     let list_rows = Command::ALL.len() + 1 + fixed.len();
     let shortcut_rows = (list_rows as f32 * 0.8).ceil() as usize;
-    // Header, tabs and rules take 3 rows; General needs 9.
-    const GENERAL_ROWS: usize = 9;
+    // Header, tabs and rules take 3 rows; General needs 10.
+    const GENERAL_ROWS: usize = 10;
     let mut b = PanelBuilder::new(m, cols, 3.0 + shortcut_rows.max(GENERAL_ROWS) as f32, offset);
     b.header("Options");
 
@@ -535,6 +554,14 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 b.text(0.0, "Code highlighting", TextStyle::Normal);
                 let c = b.button(label_w, "On", Action::CodeHighlight(true), s.code_highlight);
                 b.button(c, "Off", Action::CodeHighlight(false), !s.code_highlight);
+                b.next();
+            }
+            if b.fits_rows(1) {
+                b.text(0.0, "Line numbers", TextStyle::Normal);
+                let mut c = label_w;
+                for (name, mode) in [("Per command", LineNumbers::Command), ("Per tab", LineNumbers::Tab), ("Off", LineNumbers::Off)] {
+                    c = b.button(c, name, Action::LineNumbers(mode), s.line_numbers == mode);
+                }
                 b.next();
             }
             if !compact {
@@ -758,7 +785,7 @@ mod tests {
 
     #[test]
     fn panels_move_by_their_header_and_stay_in_the_window() {
-        let st = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None };
+        let st = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None, ..OptionsState::default() };
         let centred = options_panel(&m(), &st, (0.0, 0.0));
         let h = centred.header;
         assert!(h.w == centred.rect.w && h.y == centred.rect.y && h.h > 0.0, "header across the top");
@@ -773,7 +800,7 @@ mod tests {
 
     #[test]
     fn shortcuts_page_has_a_button_per_command_and_shows_capture() {
-        let mut st = OptionsState { page: OptionsPage::Shortcuts, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None };
+        let mut st = OptionsState { page: OptionsPage::Shortcuts, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None, ..OptionsState::default() };
         let p = options_panel(&m(), &st, (0.0, 0.0));
         for cmd in Command::ALL {
             let b = p.buttons.iter().find(|b| b.action == Action::Rebind(cmd)).unwrap_or_else(|| panic!("{cmd:?} button"));
@@ -805,16 +832,18 @@ mod tests {
     #[test]
     fn options_panel_fits_small_windows() {
         let small = Metrics { width: 500.0, height: 300.0, ..m() };
-        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None }, (0.0, 0.0));
+        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None, ..OptionsState::default() }, (0.0, 0.0));
         assert!(p.rect.w <= 500.0 && p.rect.h <= 300.0);
         assert!(p.lines.iter().all(|l| l.y + small.ch <= p.rect.y + p.rect.h), "no text below the panel");
         let off = p.buttons.iter().find(|b| b.action == Action::CodeHighlight(false)).unwrap();
         assert!(off.active);
+        let normal = options_panel(&m(), &OptionsState::default(), (0.0, 0.0));
+        assert!(normal.buttons.iter().any(|b| b.action == Action::LineNumbers(LineNumbers::Command) && b.active));
     }
 
     #[test]
     fn options_panel_has_a_general_page_and_a_shortcuts_page() {
-        let mut s = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None };
+        let mut s = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None, ..OptionsState::default() };
         let p = options_panel(&m(), &s, (0.0, 0.0));
         let dark = p.buttons.iter().find(|b| b.action == Action::Theme(ThemeMode::Dark)).unwrap();
         assert!(dark.active);

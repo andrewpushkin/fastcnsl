@@ -24,6 +24,7 @@ use crate::config::{Config, ConfigWatcher, GpuBackend, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
 use crate::input::{self, MouseButton};
+use crate::lines::{self, LineIndex};
 use crate::remote;
 use crate::render::Renderer;
 use crate::search::Search;
@@ -65,6 +66,10 @@ struct Tab {
     session: Session,
     search: Search,
     code: CodeHighlighter,
+    /// Command lines, for line numbers.
+    lines: LineIndex,
+    /// The line numbers on screen, rebuilt each frame.
+    numbers: Vec<Option<u64>>,
     /// Last program started in this tab (the shell's name until then).
     app: String,
     /// Name given with `ragamuffin new-tab NAME`; shown instead of `app`.
@@ -284,7 +289,7 @@ impl App {
         let sb = ui::scrollbar_width(scale as f32);
         let bar = chrome::tab_bar_height(&Metrics { width: 0.0, height: 0.0, scale: scale as f32, cw: cell.width, ch: cell.height });
         let want = PhysicalSize::new(
-            (INITIAL_COLS as f32 * cell.width + 2.0 * pad + sb).ceil() as u32,
+            (INITIAL_COLS as f32 * cell.width + 2.0 * pad + gutter_px(cfg, cell.width) + sb).ceil() as u32,
             (INITIAL_LINES as f32 * cell.height + 2.0 * pad + bar).ceil() as u32,
         );
         let _ = window.request_inner_size(want);
@@ -365,7 +370,7 @@ impl App {
         if old.antialiasing != cfg.antialiasing {
             st.renderer.set_subpixel(cfg.antialiasing.subpixel(crate::render::system_subpixel()));
         }
-        if old.padding != cfg.padding {
+        if old.padding != cfg.padding || old.line_numbers != cfg.line_numbers {
             st.resize_grid(cfg);
         }
         if old.theme != cfg.theme {
@@ -411,6 +416,7 @@ impl App {
             Action::FontBigger
                 | Action::FontSmaller
                 | Action::CodeHighlight(_)
+                | Action::LineNumbers(_)
                 | Action::Theme(_)
                 | Action::OptionsPage(_)
                 | Action::Gpu(_)
@@ -459,6 +465,7 @@ impl App {
                 self.change_config(|c| c.font_size = size);
             }
             Action::CodeHighlight(on) => self.change_config(|c| c.code_highlight = on),
+            Action::LineNumbers(mode) => self.change_config(|c| c.line_numbers = mode),
             Action::Gpu(gpu) => self.change_config(|c| c.gpu = gpu),
             Action::Rebind(cmd) => st.capturing = if st.capturing == Some(cmd) { None } else { Some(cmd) },
             Action::ResetKey(cmd) => {
@@ -505,13 +512,18 @@ fn padding_px(cfg: &Config, scale: f32) -> f32 {
     (cfg.padding * scale).round()
 }
 
+/// Width of the line-number gutter in whole pixels (0 without numbers).
+fn gutter_px(cfg: &Config, cell_width: f32) -> f32 {
+    if cfg.line_numbers.is_on() { (lines::GUTTER_CELLS as f32 * cell_width).round() } else { 0.0 }
+}
+
 fn grid_size(r: &Renderer, cfg: &Config, scale: f64) -> WindowSize {
     let (w, h) = r.size();
     let cell = r.cell();
     let pad = padding_px(cfg, scale as f32);
     let sb = ui::scrollbar_width(scale as f32);
     let bar = chrome::tab_bar_height(&Metrics { width: w as f32, height: h as f32, scale: scale as f32, cw: cell.width, ch: cell.height });
-    let cols = ((w as f32 - 2.0 * pad - sb) / cell.width).floor().max(2.0);
+    let cols = ((w as f32 - 2.0 * pad - gutter_px(cfg, cell.width) - sb) / cell.width).floor().max(2.0);
     let lines = ((h as f32 - 2.0 * pad - bar) / cell.height).floor().max(1.0);
     WindowSize {
         num_cols: cols as u16,
@@ -603,6 +615,8 @@ impl State {
             session,
             search: Search::new(),
             code: CodeHighlighter::new(cfg.code_highlight, code_theme),
+            lines: LineIndex::new(),
+            numbers: Vec::new(),
             app: shell_name(cfg),
             name,
             label: String::new(),
@@ -706,6 +720,7 @@ impl State {
                 tab.code.clear();
             }
             tab.session.resize(size);
+            tab.lines.invalidate();
         }
         self.grid = size;
     }
@@ -743,6 +758,7 @@ impl State {
                     gpu_pending: cfg.gpu != self.gpu_started,
                     keys: self.keymap.clone(),
                     capturing: self.capturing,
+                    line_numbers: cfg.line_numbers,
                 },
                 self.panel_offset,
             )),
@@ -772,6 +788,10 @@ impl State {
             let tab = &mut self.tabs[self.active];
             if !term.mode().contains(TermMode::ALT_SCREEN) {
                 tab.code.update(term.grid());
+                tab.lines.numbers(term.grid(), cfg.line_numbers, &mut tab.numbers);
+            } else {
+                // Full-screen programs (vim, less) number their own lines.
+                tab.numbers.clear();
             }
             if tab.search.open {
                 tab.search.refresh(&term);
@@ -789,6 +809,8 @@ impl State {
                 scrollbar_alpha: self.scrollbar.fade.value,
                 search_alpha: self.search_fade.value,
                 min_contrast: cfg.minimum_contrast,
+                gutter: gutter_px(cfg, self.renderer.cell().width),
+                line_numbers: &tab.numbers,
             };
             let c = ChromeView {
                 caption: self.caption(),
@@ -821,7 +843,7 @@ impl State {
     /// Viewport cell under the pointer: (grid point, side, col, row).
     fn mouse_cell(&self, cfg: &Config, display_offset: usize) -> (Point, Side, usize, usize) {
         let cell = self.renderer.cell();
-        let pad = padding_px(cfg, self.scale());
+        let pad = padding_px(cfg, self.scale()) + gutter_px(cfg, cell.width);
         let x = (self.mouse.0 - pad).max(0.0);
         let y = (self.mouse.1 - self.top() - pad).max(0.0);
         let col = ((x / cell.width) as usize).min(self.grid.num_cols as usize - 1);
@@ -984,6 +1006,7 @@ impl State {
         if matches!(event.logical_key, Key::Named(NamedKey::Enter)) && !mode.contains(TermMode::ALT_SCREEN) {
             let line = highlight::command_line(term.grid());
             tab.code.on_enter(term.grid(), &line);
+            tab.lines.on_enter(term.grid());
             ran = detect::program_name(&line).filter(|name| *name != tab.app);
         }
         term.scroll_display(Scroll::Bottom);
