@@ -45,7 +45,9 @@ pub enum DisplayBackend {
 
 impl DisplayBackend {
     /// The backend to force, if any. X11 needs libxkbcommon-x11 (winit
-    /// panics without it), so without it the default is kept.
+    /// panics without it), so without it the default is kept. Only called
+    /// on Linux.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn resolve(self, x11_libs: bool) -> Option<DisplayBackend> {
         match self {
             DisplayBackend::Auto => None,

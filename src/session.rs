@@ -32,6 +32,8 @@ pub enum UserEvent {
     /// An event from the terminal of the tab with this id.
     Term(u64, Event),
     /// The operating system switched between dark (true) and light mode.
+    /// Only sent on Linux; elsewhere winit reports theme changes itself.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     OsTheme(bool),
 }
 
