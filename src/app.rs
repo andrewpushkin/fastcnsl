@@ -640,6 +640,7 @@ impl State {
                 top,
                 scrollbar_alpha: self.scrollbar.fade.value,
                 search_alpha: self.search_fade.value,
+                min_contrast: cfg.minimum_contrast,
             };
             let c = ChromeView {
                 caption: self.caption(),

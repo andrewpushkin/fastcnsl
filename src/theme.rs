@@ -24,6 +24,41 @@ impl Rgb {
         let l = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
         Rgb { r: l(self.r, other.r), g: l(self.g, other.g), b: l(self.b, other.b) }
     }
+
+    /// Relative luminance (WCAG): 0 for black, 1 for white.
+    pub fn luminance(self) -> f32 {
+        let lin = |c: u8| {
+            let c = c as f32 / 255.0;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(self.r) + 0.7152 * lin(self.g) + 0.0722 * lin(self.b)
+    }
+
+    /// Contrast ratio (WCAG) between two colours: 1 (same) to 21.
+    pub fn contrast(self, other: Rgb) -> f32 {
+        let (a, b) = (self.luminance(), other.luminance());
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// This colour as text on `bg`: unchanged if their contrast is at
+    /// least `min`, else moved towards black or white (whichever stands
+    /// out more from `bg`) just far enough to reach it.
+    pub fn readable_on(self, bg: Rgb, min: f32) -> Rgb {
+        if self.contrast(bg) >= min {
+            return self;
+        }
+        let (black, white) = (Rgb::hex(0x000000), Rgb::hex(0xffffff));
+        let target = if black.contrast(bg) >= white.contrast(bg) { black } else { white };
+        if target.contrast(bg) < min {
+            return target;
+        }
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..12 {
+            let mid = (lo + hi) / 2.0;
+            if self.mix(target, mid).contrast(bg) >= min { hi = mid } else { lo = mid }
+        }
+        self.mix(target, hi)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,6 +324,30 @@ mod linux {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn contrast_ratio_matches_wcag() {
+        assert!((Rgb::hex(0x000000).contrast(Rgb::hex(0xffffff)) - 21.0).abs() < 0.01);
+        assert_eq!(Rgb::hex(0x777777).contrast(Rgb::hex(0x777777)), 1.0);
+    }
+
+    #[test]
+    fn unreadable_text_is_pushed_to_the_minimum_contrast() {
+        // `ls` on a world-writable directory: blue on green (34;42).
+        let p = Palette::dark();
+        let (blue, green) = (p.ansi[4], p.ansi[2]);
+        assert!(blue.contrast(green) < 1.5, "the palette's blue on green is unreadable");
+        let fixed = blue.readable_on(green, 3.0);
+        assert!(fixed.contrast(green) >= 3.0);
+        assert!(fixed.contrast(green) < 3.3, "moved only as far as needed");
+        assert!(fixed.luminance() < blue.luminance(), "darkened, since green is light");
+        // Readable pairs are left alone.
+        assert_eq!(p.foreground.readable_on(p.background, 3.0), p.foreground);
+        // Dark text on a dark background gets lighter.
+        let dark = Rgb::hex(0x303030).readable_on(Rgb::hex(0x202020), 3.0);
+        assert!(dark.luminance() > Rgb::hex(0x303030).luminance() && dark.contrast(Rgb::hex(0x202020)) >= 3.0);
+    }
+
     use super::*;
 
     #[test]

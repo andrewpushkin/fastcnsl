@@ -121,6 +121,7 @@ bold_is_bright = false
 title_bar = "custom"             # "custom" (buttons in the tab bar) | "system" (OS title bar)
 display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to apply)
 antialiasing = "auto"            # "auto" | "subpixel" | "grayscale"
+minimum_contrast = 3.0           # text on coloured backgrounds: WCAG contrast ratio, 1 = off
 ```
 
 **Text on Windows** is drawn by DirectWrite, like in other Windows apps.

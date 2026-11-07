@@ -32,6 +32,9 @@ pub struct View<'a> {
     pub top: f32,
     pub scrollbar_alpha: f32,
     pub search_alpha: f32,
+    /// Text on a coloured background is made at least this readable
+    /// (contrast ratio, 1 = off).
+    pub min_contrast: f32,
 }
 
 /// What the pointer is over, for hover highlights.
@@ -337,6 +340,8 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
     let thin = (1.0 * v.scale).round().max(1.0);
 
     let mut mi = 0usize;
+    // Last (fg, bg) -> readable fg: neighbouring cells share colours.
+    let mut readable: Option<(Rgb, Rgb, Rgb)> = None;
     let mut span_line = i32::MIN;
     let mut spans: &[Span] = &[];
 
@@ -396,6 +401,19 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
         if is_cursor && v.focused && cursor.shape == CursorShape::Block {
             bg = pal.cursor;
             fg = pal.background;
+        }
+
+        // Programs pick colour pairs the palette can make unreadable, e.g.
+        // `ls` showing world-writable directories blue on green.
+        if bg != pal.background && v.min_contrast > 1.0 {
+            fg = match readable {
+                Some((f, b, r)) if f == fg && b == bg => r,
+                _ => {
+                    let r = fg.readable_on(bg, v.min_contrast);
+                    readable = Some((fg, bg, r));
+                    r
+                }
+            };
         }
 
         let w = if cell.flags.contains(Flags::WIDE_CHAR) { cw * 2.0 } else { cw };
@@ -586,6 +604,7 @@ mod tests {
                 top: 30.0,
                 scrollbar_alpha: 1.0,
                 search_alpha: 1.0,
+                min_contrast: 3.0,
             }
         }
     }
@@ -674,6 +693,25 @@ mod tests {
         // Inverse: background takes the foreground colour.
         let inv_bg = f.palette.foreground.rgba(1.0);
         assert!(c.layer(Layer::Background).iter().any(|i| i.color == inv_bg));
+    }
+
+    #[test]
+    fn text_on_a_clashing_background_is_made_readable() {
+        let Some(mut c) = Canvas::new() else { return };
+        // How `ls` shows world-writable directories (e.g. on /mnt/c).
+        let t = term("\x1b[34;42mDocuments\x1b[0m");
+        let f = Fixture::new();
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec![])));
+        let green = f.palette.ansi[2];
+        let fg = glyph_colors(&c)[0];
+        let fg = crate::theme::Rgb { r: (fg[0] * 255.0).round() as u8, g: (fg[1] * 255.0).round() as u8, b: (fg[2] * 255.0).round() as u8 };
+        assert!(fg.contrast(green) >= 3.0, "contrast {}", fg.contrast(green));
+
+        // Turned off: the palette's blue as is.
+        let mut v = f.view();
+        v.min_contrast = 1.0;
+        c.paint(400.0, 300.0, |p| draw(p, &t, &v, &chrome(vec![])));
+        assert_eq!(glyph_colors(&c)[0], f.palette.ansi[4].rgba(1.0));
     }
 
     #[test]

@@ -119,6 +119,10 @@ pub struct Config {
     /// grayscale), "subpixel" or "grayscale". Sub-pixel (ClearType) text
     /// is drawn on Windows only.
     pub antialiasing: Antialiasing,
+    /// Text on a coloured background is moved towards black or white until
+    /// its contrast ratio with the background is at least this (WCAG ratio:
+    /// 1 turns it off, 4.5 is the usual "readable" level, 21 is the maximum).
+    pub minimum_contrast: f32,
 }
 
 /// How glyph edges are smoothed.
@@ -162,6 +166,7 @@ impl Default for Config {
             title_bar: TitleBar::Custom,
             display_backend: DisplayBackend::Auto,
             antialiasing: Antialiasing::Auto,
+            minimum_contrast: 3.0,
         }
     }
 }
@@ -252,6 +257,7 @@ impl Config {
         self.line_height = self.line_height.clamp(0.8, 3.0);
         self.ui_idle_opacity = self.ui_idle_opacity.clamp(0.0, 1.0);
         self.padding = self.padding.clamp(0.0, 64.0);
+        self.minimum_contrast = self.minimum_contrast.clamp(1.0, 21.0);
         self.scrollback = self.scrollback.min(1_000_000);
         self
     }
