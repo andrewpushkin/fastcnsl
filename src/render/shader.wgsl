@@ -33,6 +33,8 @@ const KIND_MASK_GLYPH: u32 = 1u;
 const KIND_COLOR_GLYPH: u32 = 2u;
 const KIND_ROUNDED: u32 = 3u;
 const KIND_CROSS: u32 = 4u;
+// 8-11: quarter circle; bit 0: centre at the right edge, bit 1: at the bottom.
+const KIND_ARC: u32 = 8u;
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, i: InstanceIn) -> VOut {
@@ -65,6 +67,16 @@ fn text_coverage(a: f32, rgb: vec3<f32>) -> f32 {
 
 @fragment
 fn fs(v: VOut) -> @location(0) vec4<f32> {
+    if v.kind >= KIND_ARC {
+        // `radius` is the line width; the circle touches the quad's far
+        // edges with a 1px margin for anti-aliasing.
+        let k = v.kind - KIND_ARC;
+        let centre = vec2<f32>(f32(k & 1u), f32((k >> 1u) & 1u)) * v.size;
+        let r = v.size.x - v.radius * 0.5 - 1.0;
+        let d = abs(length(v.local - centre) - r);
+        let a = clamp(v.radius * 0.5 + 0.5 - d, 0.0, 1.0);
+        return vec4<f32>(v.color.rgb, v.color.a * a);
+    }
     switch v.kind {
         case KIND_MASK_GLYPH: {
             let a = textureSampleLevel(atlas_tex, atlas_smp, v.uv, 0.0).a;

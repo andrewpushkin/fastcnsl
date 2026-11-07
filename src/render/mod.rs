@@ -6,6 +6,7 @@
 //! and each one is written into the GPU buffer straight from its slice, so
 //! building a frame allocates nothing in steady state.
 
+mod boxdraw;
 #[cfg(windows)]
 mod dwrite;
 pub mod glyphs;
@@ -34,6 +35,9 @@ const KIND_MASK_GLYPH: u32 = 1;
 const KIND_COLOR_GLYPH: u32 = 2;
 const KIND_ROUNDED: u32 = 3;
 const KIND_CROSS: u32 = 4;
+/// Quarter-circle stroke; + 1 if the circle's centre is at the quad's
+/// right edge, + 2 if at its bottom edge.
+const KIND_ARC: u32 = 8;
 
 #[derive(Clone, Copy)]
 pub enum Layer {
@@ -138,8 +142,27 @@ impl<'a> Painter<'a> {
         });
     }
 
+    /// One quarter of the circle of radius `r` around (cx, cy), stroked
+    /// `stroke` wide: the upper-left quarter if `left` and `up`, and so on.
+    #[allow(clippy::too_many_arguments)]
+    pub fn arc(&mut self, layer: Layer, cx: f32, cy: f32, r: f32, stroke: f32, left: bool, up: bool, color: [f32; 4]) {
+        let s = r + stroke / 2.0 + 1.0;
+        self.layers[layer as usize].push(Instance {
+            pos: [if left { cx - s } else { cx }, if up { cy - s } else { cy }],
+            size: [s, s],
+            uv: [0.0; 4],
+            color,
+            kind: KIND_ARC + left as u32 + 2 * up as u32,
+            radius: stroke,
+        });
+    }
+
     /// Draws `c` with its pen at (x, top-of-cell y).
     pub fn glyph(&mut self, layer: Layer, c: char, style: GlyphStyle, x: f32, y: f32, color: [f32; 4]) {
+        let cell = self.cell;
+        if boxdraw::draw(self, layer, c, x, y, cell.width, cell.height, cell.underline_thickness, color) {
+            return;
+        }
         let Some(g) = self.glyphs.get(self.queue, c, style) else { return };
         self.layers[layer as usize].push(Instance {
             pos: [x + g.left, y + self.cell.baseline - g.top],
