@@ -62,7 +62,9 @@ impl DisplayBackend {
 #[serde(rename_all = "lowercase")]
 pub enum TitleBar {
     /// Buttons in the tab bar (on macOS: the native buttons, moved there).
+    /// "auto" was the default in an earlier version; it means the same now.
     #[default]
+    #[serde(alias = "auto")]
     Custom,
     /// The operating system's title bar, on its own line. Under WSLg's
     /// Wayland there is none, so the window then has no buttons.
@@ -153,7 +155,12 @@ fn default_font() -> &'static str {
 }
 
 impl Config {
+    /// The settings file: $RAGAMUFFIN_CONFIG if set, else
+    /// <config dir>/ragamuffin/config.toml.
     pub fn path() -> Option<PathBuf> {
+        if let Some(p) = std::env::var_os("RAGAMUFFIN_CONFIG").filter(|p| !p.is_empty()) {
+            return Some(PathBuf::from(p));
+        }
         dirs::config_dir().map(|d| d.join("ragamuffin").join("config.toml"))
     }
 
@@ -369,6 +376,18 @@ mod tests {
 
     #[test]
     fn values_are_clamped() {
+        let cfg: Config = toml::from_str("title_bar = \"auto\"").unwrap();
+        assert_eq!(cfg.title_bar, TitleBar::Custom, "older configs say auto");
+        // A whole file written by that version.
+        let old = "font_family = \"Cascadia Mono\"\nfont_size = 11.0\nshell_args = []\n\
+                   title_bar = \"auto\"\ndisplay_backend = \"auto\"\n";
+        let dir = std::env::temp_dir().join(format!("ragamuffin-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, old).unwrap();
+        let cfg = Config::load(&path).expect("old file loads").unwrap();
+        assert_eq!((cfg.title_bar, cfg.font_size), (TitleBar::Custom, 11.0));
+        let _ = std::fs::remove_dir_all(&dir);
         let cfg: Config = toml::from_str("font_size = 1000.0\nui_idle_opacity = 7.0").unwrap();
         let cfg = cfg.sanitized();
         assert_eq!(cfg.font_size, 96.0);

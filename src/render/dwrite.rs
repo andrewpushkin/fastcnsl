@@ -1,19 +1,23 @@
 //! Windows: glyphs rasterised by DirectWrite, so text looks like it does in
-//! other Windows apps (Windows Terminal among them). cosmic-text still
-//! picks the font and glyph; DirectWrite only draws it. Colour glyphs
-//! (emoji) and fonts DirectWrite doesn't know stay with swash.
-// The one unsafe call hands DirectWrite the font face pointer.
+//! other Windows apps (Windows Terminal among them): grayscale, symmetric
+//! anti-aliasing. cosmic-text still picks the font and
+//! glyph; DirectWrite only draws it. Colour glyphs (emoji) and fonts
+//! DirectWrite doesn't know stay with swash.
+// DirectWrite is a COM API: every call is unsafe. They are all plain
+// calls on interfaces this module owns, with buffers sized as asked.
 #![allow(unsafe_code)]
 
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 
 use cosmic_text::{CacheKey, FontSystem};
-use dwrote::{
-    DWRITE_GLYPH_RUN, DWRITE_MEASURING_MODE_NATURAL, DWRITE_RENDERING_MODE_ALIASED, DWRITE_RENDERING_MODE_DEFAULT,
-    DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_RENDERING_MODE_OUTLINE, DWRITE_TEXTURE_ALIASED_1x1,
-    DWRITE_TEXTURE_CLEARTYPE_3x1, FontCollection, FontFace, FontStretch, FontStyle, FontWeight, GlyphOffset,
-    GlyphRunAnalysis,
+use windows::Win32::Graphics::DirectWrite::{
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT, DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN, DWRITE_GRID_FIT_MODE_DEFAULT,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+    DWRITE_TEXTURE_CLEARTYPE_3x1, DWriteCreateFactory, IDWriteFactory2, IDWriteFontCollection, IDWriteFontFace,
 };
+use windows::core::{BOOL, HSTRING};
 
 /// A rasterised glyph: an 8-bit coverage mask placed relative to the pen
 /// position on the baseline (`top` is upwards).
@@ -25,91 +29,128 @@ pub struct Mask {
     pub data: Vec<u8>,
 }
 
+struct Api {
+    factory: IDWriteFactory2,
+    fonts: IDWriteFontCollection,
+}
+
 #[derive(Default)]
 pub struct Rasterizer {
-    collection: Option<FontCollection>,
+    /// None until first use; Some(None) if DirectWrite is unavailable.
+    api: Option<Option<Api>>,
     /// DirectWrite face per (font, weight, italic); None when DirectWrite
     /// has no matching font.
-    faces: HashMap<(cosmic_text::fontdb::ID, u16, bool), Option<FontFace>>,
+    faces: HashMap<(cosmic_text::fontdb::ID, u16, bool), Option<IDWriteFontFace>>,
 }
 
 impl Rasterizer {
     /// Draws the glyph `key` (shaped from the single character `c`), or
     /// returns None to leave it to swash.
     pub fn rasterize(&mut self, fs: &mut FontSystem, key: CacheKey, c: char, italic: bool) -> Option<Mask> {
+        if self.api.is_none() {
+            self.api = Some(Api::new().map_err(|e| log::warn!("DirectWrite unavailable: {e}")).ok());
+        }
+        let api = self.api.as_ref()?.as_ref()?;
         let face_key = (key.font_id, key.font_weight.0, italic);
-        if !self.faces.contains_key(&face_key) {
-            let face = self.load_face(fs, key, italic);
-            self.faces.insert(face_key, face);
-        }
-        let face = self.faces.get(&face_key)?.as_ref()?;
+        let face = self.faces.entry(face_key).or_insert_with(|| load_face(api, fs, key, italic)).as_ref()?;
         // Same font file? Then the character maps to the glyph cosmic-text chose.
-        if face.glyph_indices(&[c as u32]).ok()?.first() != Some(&key.glyph_id) {
+        let mut glyph = 0u16;
+        unsafe { face.GetGlyphIndices(&(c as u32), 1, &mut glyph) }.ok()?;
+        if glyph != key.glyph_id {
             return None;
         }
-        draw(face, key.glyph_id, f32::from_bits(key.font_size_bits))
-    }
-
-    fn load_face(&mut self, fs: &mut FontSystem, key: CacheKey, italic: bool) -> Option<FontFace> {
-        // Emoji and other colour fonts: DirectWrite would draw them as
-        // plain outlines.
-        let font = fs.get_font(key.font_id, key.font_weight)?;
-        let swash = font.as_swash();
-        if [*b"COLR", *b"CBDT", *b"sbix", *b"SVG "].iter().any(|t| swash.table(u32::from_be_bytes(*t)).is_some()) {
-            return None;
-        }
-        let info = fs.db().face(key.font_id)?;
-        let family = info.families.first().map(|(name, _)| name.clone())?;
-        let collection = self.collection.get_or_insert_with(FontCollection::system);
-        let found = collection.font_family_by_name(&family).ok()??;
-        let style = if italic { FontStyle::Italic } else { FontStyle::Normal };
-        let dw_font = found
-            .first_matching_font(FontWeight::Unknown(key.font_weight.0 as u32), FontStretch::Normal, style)
-            .ok()?;
-        log::info!("DirectWrite draws '{family}' weight {}", key.font_weight.0);
-        Some(dw_font.create_font_face())
+        draw(api, face, glyph, f32::from_bits(key.font_size_bits))
     }
 }
 
-fn draw(face: &FontFace, glyph: u16, size: f32) -> Option<Mask> {
-    let indices = [glyph];
-    let advances = [0.0f32];
-    let offsets = [GlyphOffset { advanceOffset: 0.0, ascenderOffset: 0.0 }];
-    let run = DWRITE_GLYPH_RUN {
-        // SAFETY: `face` outlives `run` and the analysis made from it, and
-        // DirectWrite only reads through the pointer.
-        fontFace: unsafe { face.as_ptr() },
+impl Api {
+    fn new() -> windows::core::Result<Self> {
+        unsafe {
+            let factory: IDWriteFactory2 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+            let mut fonts = None;
+            factory.GetSystemFontCollection(&mut fonts, false)?;
+            Ok(Self { fonts: fonts.ok_or_else(windows::core::Error::empty)?, factory })
+        }
+    }
+}
+
+fn load_face(api: &Api, fs: &mut FontSystem, key: CacheKey, italic: bool) -> Option<IDWriteFontFace> {
+    // Emoji and other colour fonts: DirectWrite would draw them as plain
+    // outlines.
+    let font = fs.get_font(key.font_id, key.font_weight)?;
+    let swash = font.as_swash();
+    if [*b"COLR", *b"CBDT", *b"sbix", *b"SVG "].iter().any(|t| swash.table(u32::from_be_bytes(*t)).is_some()) {
+        return None;
+    }
+    let family = fs.db().face(key.font_id)?.families.first().map(|(name, _)| name.clone())?;
+    let style = if italic { DWRITE_FONT_STYLE_ITALIC } else { DWRITE_FONT_STYLE_NORMAL };
+    let face = unsafe {
+        let (mut index, mut exists) = (0u32, BOOL(0));
+        api.fonts.FindFamilyName(&HSTRING::from(family.as_str()), &mut index, &mut exists).ok()?;
+        if !exists.as_bool() {
+            return None;
+        }
+        let font = api
+            .fonts
+            .GetFontFamily(index)
+            .ok()?
+            .GetFirstMatchingFont(DWRITE_FONT_WEIGHT(key.font_weight.0 as i32), DWRITE_FONT_STRETCH_NORMAL, style)
+            .ok()?;
+        font.CreateFontFace().ok()?
+    };
+    log::info!("DirectWrite draws '{family}' weight {}", key.font_weight.0);
+    Some(face)
+}
+
+fn draw(api: &Api, face: &IDWriteFontFace, glyph: u16, size: f32) -> Option<Mask> {
+    let advance = 0.0f32;
+    let offset = DWRITE_GLYPH_OFFSET::default();
+    let run = ManuallyDrop::new(DWRITE_GLYPH_RUN {
+        fontFace: ManuallyDrop::new(Some(face.clone())),
         fontEmSize: size,
         glyphCount: 1,
-        glyphIndices: indices.as_ptr(),
-        glyphAdvances: advances.as_ptr(),
-        glyphOffsets: offsets.as_ptr(),
-        isSideways: 0,
+        glyphIndices: &glyph,
+        glyphAdvances: &advance,
+        glyphOffsets: &offset,
+        isSideways: BOOL(0),
         bidiLevel: 0,
-    };
-    // The mode Windows recommends for this font and size (from its gasp
-    // table and the system's text settings), as DirectWrite apps use.
-    let mode = match face.get_recommended_rendering_mode_default_params(size, 1.0, DWRITE_MEASURING_MODE_NATURAL) {
-        DWRITE_RENDERING_MODE_DEFAULT | DWRITE_RENDERING_MODE_OUTLINE => DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
-        m => m,
-    };
-    let aliased = mode == DWRITE_RENDERING_MODE_ALIASED;
-    let texture = if aliased { DWRITE_TEXTURE_ALIASED_1x1 } else { DWRITE_TEXTURE_CLEARTYPE_3x1 };
-    let analysis = GlyphRunAnalysis::create(&run, 1.0, None, mode, DWRITE_MEASURING_MODE_NATURAL, 0.0, 0.0).ok()?;
-    let rect = analysis.get_alpha_texture_bounds(texture).ok()?;
-    let (width, height) = ((rect.right - rect.left).max(0) as u32, (rect.bottom - rect.top).max(0) as u32);
-    if width == 0 || height == 0 {
-        return Some(Mask { left: 0, top: 0, width: 0, height: 0, data: Vec::new() });
+    });
+    let result = unsafe { draw_run(api, &run) };
+    // The run holds a reference to the face; give it back.
+    drop(ManuallyDrop::into_inner(ManuallyDrop::into_inner(run).fontFace));
+    result
+}
+
+unsafe fn draw_run(api: &Api, run: &DWRITE_GLYPH_RUN) -> Option<Mask> {
+    unsafe {
+        // Symmetric anti-aliasing (smooth in x, grid-fitted in y) at
+        // ClearType's 3x horizontal resolution, averaged to grayscale.
+        // Side by side with Windows Terminal this matches it closely;
+        // DirectWrite's own grayscale mode gives only 16 coverage levels
+        // and looks harder.
+        let analysis = api
+            .factory
+            .CreateGlyphRunAnalysis(
+                run,
+                None,
+                DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+                DWRITE_MEASURING_MODE_NATURAL,
+                DWRITE_GRID_FIT_MODE_DEFAULT,
+                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+                0.0,
+                0.0,
+            )
+            .ok()?;
+        let rect = analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1).ok()?;
+        let (width, height) = ((rect.right - rect.left).max(0) as u32, (rect.bottom - rect.top).max(0) as u32);
+        if width == 0 || height == 0 {
+            return Some(Mask { left: 0, top: 0, width: 0, height: 0, data: Vec::new() });
+        }
+        let mut rgb = vec![0u8; (width * height * 3) as usize];
+        analysis.CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &rect, &mut rgb).ok()?;
+        let data = rgb.chunks_exact(3).map(|p| ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8).collect();
+        Some(Mask { left: rect.left, top: -rect.top, width, height, data })
     }
-    let raw = analysis.create_alpha_texture(texture, rect).ok()?;
-    // ClearType 3x1 has a value per colour channel; their mean is the
-    // grayscale coverage.
-    let data = if aliased {
-        raw
-    } else {
-        raw.chunks_exact(3).map(|p| ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8).collect()
-    };
-    Some(Mask { left: rect.left, top: -rect.top, width, height, data })
 }
 
 #[cfg(test)]
@@ -141,6 +182,7 @@ mod tests {
             eprintln!("{family} {c}: dwrite {}x{} at ({}, {}), swash {}x{} at ({}, {})", m.width, m.height, m.left, m.top, s.width, s.height, s.left, s.top);
             assert_eq!(m.data.len(), (m.width * m.height) as usize);
             assert!(m.data.iter().any(|&a| a > 200), "{c} has solid pixels");
+            assert!(m.data.iter().any(|&a| a > 30 && a < 225), "{c} is anti-aliased");
             assert!((m.top - s.top).abs() <= 2 && (m.left - s.left).abs() <= 2, "{c} placed like swash");
             assert!((m.width as i32 - s.width as i32).abs() <= 3 && (m.height as i32 - s.height as i32).abs() <= 3, "{c} sized like swash");
             drawn += 1;

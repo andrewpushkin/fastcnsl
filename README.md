@@ -102,6 +102,8 @@ The settings file is created on first start:
 - macOS: `~/Library/Application Support/ragamuffin/config.toml`
 - Windows: `%APPDATA%\ragamuffin\config.toml`
 
+Set `RAGAMUFFIN_CONFIG` to use a different file.
+
 ```toml
 font_family = "JetBrains Mono"   # any installed font
 font_size = 11.0                 # points
