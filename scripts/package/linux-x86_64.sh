@@ -49,7 +49,9 @@ appimage)
     UPDATE_INFO="${APPIMAGE_UPDATE_INFO-gh-releases-zsync|andrewpushkin|ragamuffin|latest|ragamuffin-linux-x86_64.AppImage.zsync}"
     ARCH=x86_64 appimagetool --no-appstream --runtime-file /opt/appimage-runtime-x86_64 \
         ${UPDATE_INFO:+--updateinformation "$UPDATE_INFO"} "$APPDIR" "$OUT"
-    rm -f "$OUT.zsync" # names the versioned file; CI makes one for the release name
+    # appimagetool also writes a .zsync into the current directory. It names
+    # the versioned file, so it's useless; CI makes one for the release name.
+    rm -f "$(basename "$OUT").zsync" "$OUT.zsync"
     echo "-> ${OUT#$ROOT/}"
     ;;
 *)
