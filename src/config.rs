@@ -7,6 +7,7 @@
 //! The file is created with defaults on first start and re-read whenever it
 //! changes on disk, so edits apply without restarting.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -127,6 +128,11 @@ pub struct Config {
     /// "metal" (macOS) or "software" (drawn by the CPU). Applies after a
     /// restart; `ragamuffin --gpu NAME` overrides it for one run.
     pub gpu: GpuBackend,
+    /// Changed keyboard shortcuts: command name -> keys, e.g.
+    /// `new_tab = "Ctrl+T"`, `next_tab = "Ctrl+Tab, Ctrl+PageDown"`;
+    /// "" turns a command off. Commands not listed keep their defaults.
+    /// (Last: TOML writes tables after plain values.)
+    pub keys: BTreeMap<String, String>,
 }
 
 /// Which graphics API draws the window.
@@ -228,6 +234,7 @@ impl Default for Config {
             antialiasing: Antialiasing::Auto,
             minimum_contrast: 4.5,
             gpu: GpuBackend::Auto,
+            keys: BTreeMap::new(),
         }
     }
 }
@@ -470,6 +477,10 @@ mod tests {
 
     #[test]
     fn values_are_clamped() {
+        let cfg: Config = toml::from_str("[keys]\nnew_tab = \"Ctrl+T\"\nfind = \"\"").unwrap();
+        assert_eq!(cfg.keys.get("new_tab").map(String::as_str), Some("Ctrl+T"));
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert_eq!(toml::from_str::<Config>(&text).unwrap().keys, cfg.keys, "keys round-trip");
         let cfg: Config = toml::from_str("gpu = \"opengl\"").unwrap();
         assert_eq!(cfg.gpu, GpuBackend::OpenGl);
         for g in GpuBackend::choices() {

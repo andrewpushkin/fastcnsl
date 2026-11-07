@@ -97,3 +97,14 @@ xdotool key Escape
 xdotool key ctrl+shift+l
 xdotool key ctrl+shift+f
 shot light
+xdotool key Escape
+
+# Rebind "New tab" to Alt+N in Options, then use it.
+xdotool key ctrl+shift+comma
+click 350 81
+click 430 121
+xdotool key alt+n
+shot shortcut_changed
+xdotool key Escape
+xdotool key alt+n
+shot shortcut_used

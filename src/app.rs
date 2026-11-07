@@ -27,6 +27,7 @@ use crate::input::{self, MouseButton};
 use crate::remote;
 use crate::render::Renderer;
 use crate::search::Search;
+use crate::shortcuts::{Combo, Command, Keymap};
 use crate::session::{EventProxy, Session, UserEvent};
 use crate::theme::{self, Palette};
 use crate::ui::{self, Fade, Scrollbar};
@@ -123,6 +124,13 @@ struct State {
     /// Graphics API asked for at startup (it changes only on a restart).
     gpu_started: GpuBackend,
     frames: FrameStats,
+    /// Keyboard shortcuts in effect.
+    keymap: Keymap,
+    /// Options → shortcuts: the command waiting for new keys.
+    capturing: Option<Command>,
+    /// New `[keys]` table from a key press while capturing, applied by
+    /// Action::ApplyKeys (actions are Copy; the table isn't).
+    pending_keys: Option<std::collections::BTreeMap<String, String>>,
     /// How far the open panel has been dragged from the centre.
     panel_offset: (f32, f32),
     /// While dragging a panel by its header: the pointer and offset at the
@@ -331,6 +339,9 @@ impl App {
             frames: FrameStats::new(),
             panel_offset: (0.0, 0.0),
             panel_drag: None,
+            keymap: Keymap::new(&cfg.keys),
+            capturing: None,
+            pending_keys: None,
             last_frame: Instant::now(),
             frame_cost: Duration::ZERO,
         };
@@ -347,6 +358,9 @@ impl App {
         if old.font_family != cfg.font_family || old.font_size != cfg.font_size || old.line_height != cfg.line_height {
             st.font_pt = cfg.font_size;
             st.reload_font(cfg);
+        }
+        if old.keys != cfg.keys {
+            st.keymap = Keymap::new(&cfg.keys);
         }
         if old.antialiasing != cfg.antialiasing {
             st.renderer.set_subpixel(cfg.antialiasing.subpixel(crate::render::system_subpixel()));
@@ -400,6 +414,9 @@ impl App {
                 | Action::Theme(_)
                 | Action::OptionsPage(_)
                 | Action::Gpu(_)
+                | Action::Rebind(_)
+                | Action::ResetKeys
+                | Action::ApplyKeys
         )
             || matches!(st.overlay, Overlay::Menu(_))
         {
@@ -442,10 +459,21 @@ impl App {
             }
             Action::CodeHighlight(on) => self.change_config(|c| c.code_highlight = on),
             Action::Gpu(gpu) => self.change_config(|c| c.gpu = gpu),
+            Action::Rebind(cmd) => st.capturing = if st.capturing == Some(cmd) { None } else { Some(cmd) },
+            Action::ResetKeys => {
+                st.capturing = None;
+                self.change_config(|c| c.keys.clear());
+            }
+            Action::ApplyKeys => {
+                if let Some(keys) = st.pending_keys.take() {
+                    self.change_config(|c| c.keys = keys);
+                }
+            }
             Action::Options => {
                 st.overlay = Overlay::Options;
                 st.options_page = OptionsPage::General;
                 st.panel_offset = (0.0, 0.0);
+                st.capturing = None;
             }
             Action::About => {
                 st.overlay = Overlay::About;
@@ -456,7 +484,10 @@ impl App {
             Action::OpenReleases => open_in_os(format!("{}/releases", crate::REPOSITORY)),
             Action::ClosePanel => {}
             Action::Quit => el.exit(),
-            Action::OptionsPage(page) => st.options_page = page,
+            Action::OptionsPage(page) => {
+                st.options_page = page;
+                st.capturing = None;
+            }
         }
     }
 }
@@ -704,6 +735,8 @@ impl State {
                     code_highlight: cfg.code_highlight,
                     gpu: cfg.gpu,
                     gpu_pending: cfg.gpu != self.gpu_started,
+                    keys: self.keymap.clone(),
+                    capturing: self.capturing,
                 },
                 self.panel_offset,
             )),
@@ -832,9 +865,6 @@ impl State {
             return None;
         }
         let m = self.mods;
-        let mac = cfg!(target_os = "macos");
-        let primary = if mac { m.super_key() } else { m.control_key() && m.shift_key() };
-        let ctrl = if mac { m.super_key() } else { m.control_key() };
 
         // Menus and panels take the keyboard while open.
         match &mut self.overlay {
@@ -854,6 +884,22 @@ impl State {
                 self.window.request_redraw();
                 return None;
             }
+            Overlay::Options if self.capturing.is_some() => {
+                let cmd = self.capturing.unwrap_or(Command::NewTab);
+                self.window.request_redraw();
+                let table = match event.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        self.capturing = None;
+                        return None;
+                    }
+                    Key::Named(NamedKey::Backspace | NamedKey::Delete) if m.is_empty() => self.keymap.rebind(cmd, None),
+                    // Modifier keys alone wait for the rest of the combination.
+                    _ => self.keymap.rebind(cmd, Some(Combo::from_event(&event, m)?)),
+                };
+                self.capturing = None;
+                self.pending_keys = Some(table);
+                return Some(Action::ApplyKeys);
+            }
             Overlay::Options | Overlay::About => {
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter)) {
                     self.overlay = Overlay::None;
@@ -864,51 +910,51 @@ impl State {
             Overlay::None => {}
         }
 
-        // Tab switching.
-        let tab_switch = match &event.logical_key {
-            Key::Named(NamedKey::Tab) if m.control_key() => Some(!m.shift_key()),
-            Key::Named(NamedKey::PageDown) if ctrl && !m.shift_key() => Some(true),
-            Key::Named(NamedKey::PageUp) if ctrl && !m.shift_key() => Some(false),
-            Key::Character(c) if mac && m.super_key() && m.shift_key() && (c == "]" || c == "}") => Some(true),
-            Key::Character(c) if mac && m.super_key() && m.shift_key() && (c == "[" || c == "{") => Some(false),
-            _ => None,
-        };
-        if let Some(forward) = tab_switch {
-            self.cycle_tab(forward);
-            return None;
-        }
-
-        if let Key::Character(c) = &event.logical_key {
-            let c = c.to_lowercase();
-            if primary {
-                let action = match c.as_str() {
-                    "t" => Some(Action::NewTab),
-                    "w" => Some(Action::CloseTab),
-                    "f" => Some(Action::Find),
-                    "c" => Some(Action::Copy),
-                    "v" => Some(Action::Paste),
-                    "," | "<" => Some(Action::Options),
-                    "l" => Some(Action::Theme(self.theme_mode.next())),
-                    _ => None,
-                };
-                if action.is_some() {
-                    return action;
-                }
+        // Shortcuts (Options → Keyboard shortcuts; [keys] in settings).
+        if let Some(cmd) = Combo::from_event(&event, m).and_then(|c| self.keymap.command(&c)) {
+            let searching = self.tab().search.focused;
+            let alt_screen = self.tab().session.term.lock().mode().contains(TermMode::ALT_SCREEN);
+            let font = |size: f32| Some(size.clamp(4.0, 96.0));
+            let zoom = match cmd {
+                Command::FontBigger if !searching => font(self.font_pt + 1.0),
+                Command::FontSmaller if !searching => font(self.font_pt - 1.0),
+                Command::FontReset if !searching => font(cfg.font_size),
+                _ => None,
+            };
+            if let Some(size) = zoom {
+                // Temporary zoom, like a browser; Options changes the saved size.
+                self.font_pt = size;
+                self.reload_font(cfg);
+                self.window.request_redraw();
+                return None;
             }
-            if ctrl && !self.tab().search.focused {
-                let size = match c.as_str() {
-                    "=" | "+" => Some(self.font_pt + 1.0),
-                    "-" if !m.shift_key() => Some(self.font_pt - 1.0),
-                    "0" => Some(cfg.font_size),
-                    _ => None,
-                };
-                if let Some(size) = size {
-                    // Temporary zoom, like a browser; Options changes the saved size.
-                    self.font_pt = size.clamp(4.0, 96.0);
-                    self.reload_font(cfg);
-                    self.window.request_redraw();
+            let scroll = match cmd {
+                Command::ScrollPageUp => Some(Scroll::PageUp),
+                Command::ScrollPageDown => Some(Scroll::PageDown),
+                Command::ScrollTop => Some(Scroll::Top),
+                Command::ScrollBottom => Some(Scroll::Bottom),
+                _ => None,
+            };
+            // Full-screen programs (vim, less) get these keys themselves.
+            if let Some(s) = scroll.filter(|_| !alt_screen) {
+                self.tab().session.term.lock().scroll_display(s);
+                self.scrolled();
+                self.window.request_redraw();
+                return None;
+            }
+            match cmd {
+                Command::NewTab => return Some(Action::NewTab),
+                Command::CloseTab => return Some(Action::CloseTab),
+                Command::Find => return Some(Action::Find),
+                Command::Copy => return Some(Action::Copy),
+                Command::Paste => return Some(Action::Paste),
+                Command::Options => return Some(Action::Options),
+                Command::CycleTheme => return Some(Action::Theme(self.theme_mode.next())),
+                Command::NextTab | Command::PreviousTab => {
+                    self.cycle_tab(cmd == Command::NextTab);
                     return None;
                 }
+                _ => {}
             }
         }
 
@@ -924,24 +970,6 @@ impl State {
             self.on_search_key(&event);
             self.window.request_redraw();
             return None;
-        }
-
-        if m.shift_key() && !m.control_key() {
-            let scroll = match event.logical_key {
-                Key::Named(NamedKey::PageUp) => Some(Scroll::PageUp),
-                Key::Named(NamedKey::PageDown) => Some(Scroll::PageDown),
-                Key::Named(NamedKey::Home) => Some(Scroll::Top),
-                Key::Named(NamedKey::End) => Some(Scroll::Bottom),
-                _ => None,
-            };
-            let mut term = tab.session.term.lock();
-            if let (Some(s), false) = (scroll, term.mode().contains(TermMode::ALT_SCREEN)) {
-                term.scroll_display(s);
-                drop(term);
-                self.scrolled();
-                self.window.request_redraw();
-                return None;
-            }
         }
 
         let mut term = tab.session.term.lock();
@@ -1178,7 +1206,7 @@ impl State {
             if picked.is_none() && !on_menu_button && !l.rect.contains(x, y) && button == WinitButton::Right {
                 // Right-click elsewhere reopens the context menu there.
                 let sel = self.has_selection();
-                self.overlay = Overlay::Menu(Menu::context(x, y, sel));
+                self.overlay = Overlay::Menu(Menu::context(x, y, sel, &self.keymap));
             }
             return picked;
         }
@@ -1239,7 +1267,7 @@ impl State {
                 (Hover::MenuButton, WinitButton::Left) => {
                     let bar = self.tab_bar();
                     let sel = self.has_selection();
-                    self.overlay = Overlay::Menu(Menu::main(bar.menu.x + bar.menu.w, bar.height, sel, self.tabs.len()));
+                    self.overlay = Overlay::Menu(Menu::main(bar.menu.x + bar.menu.w, bar.height, sel, self.tabs.len(), &self.keymap));
                     self.window.request_redraw();
                 }
                 (Hover::Plus, WinitButton::Left) => return Some(Action::NewTab),
@@ -1346,7 +1374,7 @@ impl State {
             (WinitButton::Right, true) => {
                 let sel = term.selection.as_ref().is_some_and(|s| !s.is_empty());
                 drop(term);
-                self.overlay = Overlay::Menu(Menu::context(x, y, sel));
+                self.overlay = Overlay::Menu(Menu::context(x, y, sel, &self.keymap));
             }
             (WinitButton::Middle, true) => {
                 drop(term);

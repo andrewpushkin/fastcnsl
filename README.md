@@ -71,8 +71,29 @@ Fedora 32 and anything newer.
 
 ## Shortcuts
 
-On macOS, use Cmd where the table says Ctrl+Shift. The Options panel (⋮ →
-Options… → Keyboard shortcuts) shows the same list.
+On macOS, use Cmd where the table says Ctrl+Shift. These are the defaults:
+change them in Options (⋮ → Options… → Keyboard shortcuts): click a
+command's keys and press the new ones (Esc cancels, Backspace removes the
+shortcut, Reset all restores the defaults). A key taken from another command
+is removed there. The search keys (Enter, F3, Ctrl+R, Esc) and the mouse
+can't be changed.
+
+Changes are saved in the settings file's `[keys]` table, which lists only
+what differs from the defaults:
+
+```toml
+[keys]
+new_tab = "Ctrl+T"
+next_tab = "Ctrl+Tab, Alt+Right"   # several keys: comma-separated
+find = ""                          # no shortcut
+```
+
+Command names: `new_tab`, `close_tab`, `next_tab`, `previous_tab`, `find`,
+`copy`, `paste`, `options`, `cycle_theme`, `font_bigger`, `font_smaller`,
+`font_reset`, `scroll_page_up`, `scroll_page_down`, `scroll_top`,
+`scroll_bottom`. Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`); keys:
+a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
+`Up`/`Down`/`Left`/`Right`, `F1`–`F12`, and similar.
 
 | Keys                        | Action                                   |
 |-----------------------------|------------------------------------------|

@@ -6,6 +6,7 @@
 //! layout, so they never disagree.
 
 use crate::config::{GpuBackend, ThemeMode};
+use crate::shortcuts::{Command, Keymap};
 use crate::shortcuts;
 use crate::ui::Rect;
 
@@ -31,6 +32,12 @@ pub enum Action {
     OptionsPage(OptionsPage),
     /// Graphics API for the next start.
     Gpu(GpuBackend),
+    /// Wait for keys to bind to this command (Options → shortcuts).
+    Rebind(Command),
+    /// Put every shortcut back to its default.
+    ResetKeys,
+    /// Save the shortcuts just captured (see State::pending_keys).
+    ApplyKeys,
     ClosePanel,
     Quit,
 }
@@ -161,7 +168,7 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: &str, action: Action) -> Self {
-        Self { label: label.to_owned(), hint: shortcuts::hint(action), action: Some(action), enabled: true }
+        Self { label: label.to_owned(), hint: String::new(), action: Some(action), enabled: true }
     }
 
     pub fn separator() -> Self {
@@ -194,7 +201,7 @@ pub struct MenuLayout {
 
 impl Menu {
     /// The ⋮ menu.
-    pub fn main(x: f32, y: f32, has_selection: bool, tabs: usize) -> Self {
+    pub fn main(x: f32, y: f32, has_selection: bool, tabs: usize, keys: &Keymap) -> Self {
         let items = vec![
             MenuItem::new("New tab", Action::NewTab),
             MenuItem::new("Close tab", Action::CloseTab).enabled(tabs > 0),
@@ -206,11 +213,11 @@ impl Menu {
             MenuItem::new("Options…", Action::Options),
             MenuItem::new("About", Action::About),
         ];
-        Self { items, x, y, align_right: true, hover: None }
+        Self { items, x, y, align_right: true, hover: None }.with_hints(keys)
     }
 
     /// The right-click menu.
-    pub fn context(x: f32, y: f32, has_selection: bool) -> Self {
+    pub fn context(x: f32, y: f32, has_selection: bool, keys: &Keymap) -> Self {
         let items = vec![
             MenuItem::new("Copy", Action::Copy).enabled(has_selection),
             MenuItem::new("Paste", Action::Paste),
@@ -218,7 +225,17 @@ impl Menu {
             MenuItem::separator(),
             MenuItem::new("Find…", Action::Find),
         ];
-        Self { items, x, y, align_right: false, hover: None }
+        Self { items, x, y, align_right: false, hover: None }.with_hints(keys)
+    }
+
+    /// Shows each item's current shortcut next to it.
+    fn with_hints(mut self, keys: &Keymap) -> Self {
+        for item in &mut self.items {
+            if let Some(a) = item.action {
+                item.hint = keys.hint(a);
+            }
+        }
+        self
     }
 
     pub fn layout(&self, m: &Metrics) -> MenuLayout {
@@ -417,6 +434,11 @@ impl<'a> PanelBuilder<'a> {
         self.y += self.row_h;
     }
 
+    /// Compact rows from here on, for long lists.
+    fn dense(&mut self) {
+        self.row_h = self.m.ch + self.m.px(5.0);
+    }
+
     fn gap(&mut self) {
         self.y += self.row_h / 2.0;
     }
@@ -436,26 +458,39 @@ pub struct OptionsState {
     pub gpu: GpuBackend,
     /// `gpu` differs from what this run started with.
     pub gpu_pending: bool,
+    pub keys: Keymap,
+    /// The command waiting for new keys, if any.
+    pub capturing: Option<Command>,
 }
 
 /// The Options panel, moved by `offset` from the centre. Both pages have
 /// the same size, set by the longer one.
 pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel {
-    let keys = shortcuts::all();
-    let key_w = keys.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) as f32;
-    let what_w = keys.iter().map(|(_, w)| w.chars().count()).max().unwrap_or(0) as f32;
-    let entry_w = key_w + 2.0 + what_w;
-    // Two columns of shortcuts when the window is wide enough.
-    let two_cols = (2.0 * entry_w + 4.0) * m.cw + m.px(36.0) <= m.width - m.px(16.0);
-    let cols = if two_cols { 2.0 * entry_w + 4.0 } else { 64.0f32.max(entry_w) };
-    let key_rows = if two_cols { keys.len().div_ceil(2) } else { keys.len() };
+    let fixed = shortcuts::fixed();
+    let label_w = 22.0f32;
+    let keys_w = Command::ALL.iter().map(|c| s.keys.keys_text(*c).chars().count()).max().unwrap_or(0).max(16) as f32 + 2.0;
+    let fixed_w = fixed.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) as f32;
+    let what_w = fixed.iter().map(|(_, w)| w.chars().count()).max().unwrap_or(0) as f32;
+    let cols = 64.0f32.max(label_w + keys_w).max(fixed_w + 2.0 + what_w);
+    // The shortcuts page uses compact rows (see PanelBuilder::dense); in
+    // normal rows it needs about four fifths of its row count.
+    let list_rows = Command::ALL.len() + 1 + fixed.len();
+    let shortcut_rows = (list_rows as f32 * 0.8).ceil() as usize;
     // Header, tabs and rules take 3 rows; General needs 9.
     const GENERAL_ROWS: usize = 9;
-    let mut b = PanelBuilder::new(m, cols, 3.0 + key_rows.max(GENERAL_ROWS) as f32, offset);
+    let mut b = PanelBuilder::new(m, cols, 3.0 + shortcut_rows.max(GENERAL_ROWS) as f32, offset);
     b.header("Options");
 
     let c = b.tab(0.0, "General", Action::OptionsPage(OptionsPage::General), s.page == OptionsPage::General);
-    b.tab(c, "Keyboard shortcuts", Action::OptionsPage(OptionsPage::Shortcuts), s.page == OptionsPage::Shortcuts);
+    let c = b.tab(c, "Keyboard shortcuts", Action::OptionsPage(OptionsPage::Shortcuts), s.page == OptionsPage::Shortcuts);
+    if s.page == OptionsPage::Shortcuts {
+        if s.capturing.is_some() {
+            b.text(c, "Press the new keys · Esc cancels · Backspace clears", TextStyle::Dim);
+        } else {
+            let reset = "Reset all";
+            b.button(cols - reset.chars().count() as f32 - 2.0, reset, Action::ResetKeys, false);
+        }
+    }
     b.next();
     b.rule();
 
@@ -515,19 +550,30 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
             }
         }
         OptionsPage::Shortcuts => {
-            let rows: Vec<&[(String, &str)]> = if two_cols { keys.chunks(2).collect() } else { keys.chunks(1).collect() };
-            for (n, row) in rows.iter().enumerate() {
-                let last_fitting = !b.fits_rows(2) && n + 1 < rows.len();
-                if last_fitting {
+            b.dense();
+            for cmd in Command::ALL {
+                if !b.fits_rows(1) {
+                    break;
+                }
+                b.text(0.0, cmd.label(), TextStyle::Normal);
+                let waiting = s.capturing == Some(cmd);
+                let keys = if waiting { "Press keys…".to_owned() } else { s.keys.keys_text(cmd) };
+                b.button(label_w, &keys, Action::Rebind(cmd), waiting);
+                b.next();
+            }
+            if b.fits_rows(2) {
+                b.gap();
+                b.text(0.0, "FIXED", TextStyle::Dim);
+                b.next();
+            }
+            for (n, (k, what)) in fixed.iter().enumerate() {
+                if !b.fits_rows(2) && n + 1 < fixed.len() {
                     b.text(0.0, "… more in the README", TextStyle::Dim);
                     b.next();
                     break;
                 }
-                for (i, (k, what)) in row.iter().enumerate() {
-                    let x = i as f32 * (entry_w + 4.0);
-                    b.text(x, k.as_str(), TextStyle::Key);
-                    b.text(x + key_w + 2.0, *what, TextStyle::Normal);
-                }
+                b.text(0.0, *k, TextStyle::Key);
+                b.text(fixed_w + 2.0, *what, TextStyle::Normal);
                 b.next();
             }
         }
@@ -587,7 +633,7 @@ mod tests {
 
     #[test]
     fn menu_stays_inside_window_and_hits_items() {
-        let menu = Menu::main(1000.0, 30.0, false, 1);
+        let menu = Menu::main(1000.0, 30.0, false, 1, &Keymap::default());
         let l = menu.layout(&m());
         assert!(l.rect.x >= 0.0 && l.rect.x + l.rect.w <= 1000.0);
         let first = l.rows[0];
@@ -599,7 +645,7 @@ mod tests {
 
     #[test]
     fn keyboard_navigation_skips_separators_and_disabled() {
-        let mut menu = Menu::context(10.0, 10.0, false);
+        let mut menu = Menu::context(10.0, 10.0, false, &Keymap::default());
         menu.step(true);
         assert_eq!(menu.hover, Some(1)); // Copy disabled → Paste
         menu.step(true);
@@ -658,12 +704,12 @@ mod tests {
     #[test]
     fn menus_open_inside_the_window() {
         // Right-click near the bottom-right corner: shifted up and left.
-        let menu = Menu::context(995.0, 695.0, true);
+        let menu = Menu::context(995.0, 695.0, true, &Keymap::default());
         let l = menu.layout(&m());
         assert!(l.rect.x + l.rect.w <= 1000.0);
         assert!(l.rect.y + l.rect.h <= 700.0);
         // The ⋮ menu grows leftwards from its anchor.
-        let main = Menu::main(1000.0, 31.0, true, 1);
+        let main = Menu::main(1000.0, 31.0, true, 1, &Keymap::default());
         let l = main.layout(&m());
         assert_eq!(l.rect.x + l.rect.w, 1000.0);
         assert_eq!(l.rect.y, 31.0);
@@ -675,7 +721,7 @@ mod tests {
     #[test]
     fn copy_is_enabled_only_with_a_selection() {
         for sel in [false, true] {
-            let menu = Menu::context(0.0, 0.0, sel);
+            let menu = Menu::context(0.0, 0.0, sel, &Keymap::default());
             let copy = menu.items.iter().find(|i| i.action == Some(Action::Copy)).unwrap();
             assert_eq!(copy.enabled, sel);
         }
@@ -697,13 +743,13 @@ mod tests {
 
     #[test]
     fn panels_move_by_their_header_and_stay_in_the_window() {
-        let st = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false };
+        let st = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None };
         let centred = options_panel(&m(), &st, (0.0, 0.0));
         let h = centred.header;
         assert!(h.w == centred.rect.w && h.y == centred.rect.y && h.h > 0.0, "header across the top");
         assert!(centred.buttons.iter().filter(|b| b.style == ButtonStyle::Normal).all(|b| b.rect.y > h.y + h.h), "controls below it");
-        let moved = options_panel(&m(), &st, (-50.0, 30.0));
-        assert_eq!((moved.rect.x, moved.rect.y), (centred.rect.x - 50.0, centred.rect.y + 30.0));
+        let moved = options_panel(&m(), &st, (-50.0, -20.0));
+        assert_eq!((moved.rect.x, moved.rect.y), (centred.rect.x - 50.0, centred.rect.y - 20.0));
         let close = |p: &Panel| p.buttons.iter().find(|b| b.style == ButtonStyle::Close).unwrap().rect;
         assert_eq!(close(&moved).x - close(&centred).x, -50.0, "contents move with it");
         let far = options_panel(&m(), &st, (5000.0, -5000.0));
@@ -711,9 +757,26 @@ mod tests {
     }
 
     #[test]
+    fn shortcuts_page_has_a_button_per_command_and_shows_capture() {
+        let mut st = OptionsState { page: OptionsPage::Shortcuts, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None };
+        let p = options_panel(&m(), &st, (0.0, 0.0));
+        for cmd in Command::ALL {
+            let b = p.buttons.iter().find(|b| b.action == Action::Rebind(cmd)).unwrap_or_else(|| panic!("{cmd:?} button"));
+            assert_eq!(b.label, st.keys.keys_text(cmd));
+            assert!(b.rect.y + b.rect.h <= p.rect.y + p.rect.h, "{cmd:?} inside the panel");
+        }
+        assert!(p.buttons.iter().any(|b| b.action == Action::ResetKeys));
+        st.capturing = Some(Command::Find);
+        let q = options_panel(&m(), &st, (0.0, 0.0));
+        let find = q.buttons.iter().find(|b| b.action == Action::Rebind(Command::Find)).unwrap();
+        assert!(find.active && find.label.starts_with("Press keys"));
+        assert!(q.lines.iter().any(|l| l.text.contains("Esc cancels")));
+    }
+
+    #[test]
     fn options_panel_fits_small_windows() {
         let small = Metrics { width: 500.0, height: 300.0, ..m() };
-        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false, gpu: GpuBackend::Auto, gpu_pending: false }, (0.0, 0.0));
+        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None }, (0.0, 0.0));
         assert!(p.rect.w <= 500.0 && p.rect.h <= 300.0);
         assert!(p.lines.iter().all(|l| l.y + small.ch <= p.rect.y + p.rect.h), "no text below the panel");
         let off = p.buttons.iter().find(|b| b.action == Action::CodeHighlight(false)).unwrap();
@@ -722,7 +785,7 @@ mod tests {
 
     #[test]
     fn options_panel_has_a_general_page_and_a_shortcuts_page() {
-        let mut s = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false };
+        let mut s = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None };
         let p = options_panel(&m(), &s, (0.0, 0.0));
         let dark = p.buttons.iter().find(|b| b.action == Action::Theme(ThemeMode::Dark)).unwrap();
         assert!(dark.active);

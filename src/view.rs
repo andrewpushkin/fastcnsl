@@ -596,6 +596,7 @@ fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>, hover: Hover) {
 
 #[cfg(test)]
 mod tests {
+    use crate::shortcuts::Keymap;
     use super::*;
     use crate::chrome::{OptionsState, about_panel, options_panel};
     use crate::config::ThemeMode;
@@ -801,7 +802,7 @@ mod tests {
         let Some(mut c) = Canvas::new() else { return };
         let t = term("");
         let f = Fixture::new();
-        let menu = Menu::main(400.0, 30.0, false, 2);
+        let menu = Menu::main(400.0, 30.0, false, 2, &Keymap::default());
         let mut ch = chrome(vec!["Tab 1: vim", "Tab 2: cat"]);
         ch.menu = Some(&menu);
         ch.menu_open = true;
@@ -811,7 +812,7 @@ mod tests {
         assert!(c.glyph_count(Layer::OverlayText) > 20, "menu labels");
 
         let m = Metrics { width: 900.0, height: 700.0, scale: 1.0, cw: 8.0, ch: 17.0 };
-        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: crate::config::GpuBackend::Auto, gpu_pending: false }, (0.0, 0.0));
+        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: crate::config::GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None }, (0.0, 0.0));
         let about = about_panel(&m, "gpu", "300 ms", "/cfg", (0.0, 0.0));
         for panel in [&opts, &about] {
             let mut ch = chrome(vec!["Tab 1"]);

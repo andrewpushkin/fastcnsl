@@ -279,15 +279,18 @@ mod tests {
 
     thread_local! {
         /// One GPU device for all of these tests: creating one per
-        /// character made them take seconds.
-        static CANVAS: std::cell::RefCell<Option<Option<Canvas>>> = const { std::cell::RefCell::new(None) };
+        /// character made them take seconds. Never dropped: on Windows a
+        /// thread-local is dropped under the loader lock at thread exit,
+        /// and dropping a DX12 device there hangs.
+        static CANVAS: std::cell::RefCell<Option<Option<std::mem::ManuallyDrop<Canvas>>>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     /// Draws `c` in a 10x20 cell at (100, 200) with 1px lines.
     fn shapes(c: char) -> Option<(bool, Vec<Instance>)> {
         CANVAS.with(|cell| {
             let mut slot = cell.borrow_mut();
-            let canvas = slot.get_or_insert_with(Canvas::new).as_mut()?;
+            let canvas = slot.get_or_insert_with(|| Canvas::new().map(std::mem::ManuallyDrop::new)).as_mut()?;
             Some(shapes_on(canvas, c))
         })
     }
