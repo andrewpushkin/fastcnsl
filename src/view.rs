@@ -17,7 +17,8 @@ use crate::highlight::{CodeHighlighter, Span};
 use crate::render::glyphs::GlyphStyle;
 use crate::render::{Layer, Painter};
 use crate::search::Search;
-use crate::theme::{Palette, Rgb};
+use crate::search::MAX_BOXES;
+use crate::theme::{MatchColors, Palette, Rgb};
 use crate::ui;
 
 pub struct View<'a> {
@@ -46,9 +47,8 @@ pub enum Hover {
     Plus,
     MenuButton,
     PanelButton(usize),
-    SearchPrev,
-    SearchNext,
-    SearchClose,
+    /// A part of the search bars.
+    Search(ui::SearchHit),
     Minimize,
     Maximize,
     CloseWindow,
@@ -382,11 +382,13 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
     let code_on = !content.mode.contains(TermMode::ALT_SCREEN);
     let cursor = content.cursor;
     let selection = content.selection;
-    let matches = &v.search.visible;
-    let current = v.search.current.as_ref();
+    // Each search box: its on-screen matches, a cursor into them, its colours.
+    let mut boxes: Vec<(&[alacritty_terminal::term::search::Match], usize, MatchColors)> =
+        v.search.boxes.iter().map(|b| (b.visible.as_slice(), 0, pal.search_colors(b.color))).collect();
+    let active = v.search.active;
+    let current = v.search.active_box().current.as_ref();
     let thin = (1.0 * v.scale).round().max(1.0);
 
-    let mut mi = 0usize;
     // Last (fg, bg) -> readable fg: neighbouring cells share colours.
     let mut readable: Option<(Rgb, Rgb, Rgb)> = None;
     let mut span_line = i32::MIN;
@@ -431,17 +433,23 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
             bg = pal.selection_bg;
         }
 
-        while mi < matches.len() && *matches[mi].end() < point {
-            mi += 1;
-        }
-        if let Some(m) = matches.get(mi).filter(|m| *m.start() <= point) {
-            if current.is_some_and(|c| c == m) {
-                bg = pal.current_match_bg;
-                fg = pal.current_match_fg;
-            } else {
-                bg = pal.match_bg;
-                fg = pal.match_fg;
+        // The focused box's current match comes first, then the first box
+        // (top to bottom) with a match here.
+        let mut mark: Option<(Rgb, Rgb)> = None;
+        for (i, (matches, mi, colors)) in boxes.iter_mut().enumerate() {
+            while *mi < matches.len() && *matches[*mi].end() < point {
+                *mi += 1;
             }
+            let Some(m) = matches.get(*mi).filter(|m| *m.start() <= point) else { continue };
+            if i == active && current.is_some_and(|c| c == m) {
+                mark = Some((colors.current_bg, colors.current_fg));
+            } else if mark.is_none() {
+                mark = Some((colors.bg, colors.fg));
+            }
+        }
+        if let Some((b, f)) = mark {
+            bg = b;
+            fg = f;
         }
 
         let is_cursor = point == cursor.point && cursor.shape != CursorShape::Hidden;
@@ -527,18 +535,29 @@ fn draw_scrollbar<T>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>) {
 }
 
 fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>, hover: Hover) {
-    let pal = v.palette;
     let s = v.search;
+    let (cw, ch) = (p.cell.width, p.cell.height);
+    let g = ui::search_geometry(p.width, v.top, v.scale, cw, ch, s.boxes.len(), s.picker);
+    for (i, b) in s.boxes.iter().enumerate() {
+        draw_search_box(p, v, &g, i, b, hover);
+    }
+}
+
+fn draw_search_box(p: &mut Painter<'_>, v: &View<'_>, g: &ui::SearchGeometry, i: usize, s: &crate::search::SearchBox, hover: Hover) {
+    use ui::SearchHit as H;
+    let pal = v.palette;
     let a = v.search_alpha;
     let (cw, ch) = (p.cell.width, p.cell.height);
-    let g = ui::search_geometry(p.width, v.top, v.scale, cw, ch);
-    let b = g.bar;
+    let bg = &g.boxes[i];
+    let b = bg.bar;
     let r = (6.0 * v.scale).round();
+    let small_r = (4.0 * v.scale).round();
     let border = (1.0 * v.scale).round().max(1.0);
+    let focused = v.search.focused && v.search.active == i;
 
     let edge = if s.invalid {
         pal.ansi[1]
-    } else if s.focused {
+    } else if focused {
         pal.ui_accent
     } else {
         pal.ui_dim
@@ -548,14 +567,18 @@ fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>, hover: Hover) {
 
     let pad = (6.0 * v.scale).round();
     let ty = b.y + pad;
-    let mut x = b.x + pad;
 
-    // Mode badge: ".*" when regex mode is on, "Aa" otherwise.
-    let badge = if s.regex_mode { ".*" } else { "Aa" };
-    let badge_color = if s.regex_mode { pal.ui_accent } else { pal.ui_dim };
-    x = p.text(Layer::UiText, badge, x, ty, badge_color.rgba(a)) + cw;
+    // Colour button: a dot in this box's highlight colour.
+    let colors = pal.search_colors(s.color);
+    let cr = bg.color;
+    let picking = g.picker == Some(i);
+    if hover == Hover::Search(H::Color(i)) || picking {
+        p.rounded(Layer::UiShapes, cr.x, cr.y, cr.w, cr.h, small_r, pal.ui_dim.rgba(0.3 * a));
+    }
+    let dot = (ch * 0.6).round();
+    p.rounded(Layer::UiShapes, cr.x + (cr.w - dot) / 2.0, cr.y + (cr.h - dot) / 2.0, dot, dot, dot / 2.0, colors.current_bg.rgba(a));
 
-    // Status text, right-aligned before the close button.
+    // Status text, right-aligned before ↑.
     let status = if s.query.is_empty() {
         String::new()
     } else if s.invalid {
@@ -570,37 +593,60 @@ fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>, hover: Hover) {
         }
     };
     let status_w = status.chars().count() as f32 * cw;
-    let status_x = g.prev.x - status_w - cw;
+    let status_x = bg.prev.x - status_w - cw;
 
-    // Query, scrolled to keep its end visible.
-    let room = ((status_x - x) / cw).floor().max(1.0) as usize - 1;
-    let chars = s.query.chars().count();
-    let skip = chars.saturating_sub(room);
-    let shown: String = s.query.chars().skip(skip).collect();
-    let end = if s.query.is_empty() && !s.focused {
-        p.text(Layer::UiText, "search", x, ty, pal.ui_dim.rgba(a))
+    if picking {
+        // Colour choices in place of the query; the chosen one is ringed.
+        for (c, sw) in g.swatches.iter().enumerate() {
+            if c == s.color || hover == Hover::Search(H::Swatch(i, c)) {
+                let ring = if c == s.color { pal.ui_fg } else { pal.ui_dim };
+                p.rounded(Layer::UiShapes, sw.x, sw.y, sw.w, sw.h, small_r, ring.rgba(a));
+                p.rounded(Layer::UiShapes, sw.x + border, sw.y + border, sw.w - 2.0 * border, sw.h - 2.0 * border, small_r - border, pal.ui_bg.rgba(a));
+            }
+            let d = sw.h - 6.0 * border;
+            let col = pal.search_colors(c).current_bg;
+            p.rounded(Layer::UiShapes, sw.x + (sw.w - d) / 2.0, sw.y + (sw.h - d) / 2.0, d, d, small_r - border, col.rgba(a));
+        }
     } else {
-        p.text(Layer::UiText, &shown, x, ty, pal.ui_fg.rgba(a))
-    };
-    if s.focused {
-        p.rect(Layer::UiText, end + 1.0, ty, (2.0 * v.scale).round(), ch, pal.ui_accent.rgba(a));
+        let mut x = cr.x + cr.w + pad / 2.0;
+        // Mode badge: ".*" when regex mode is on, "Aa" otherwise.
+        let badge = if s.regex_mode { ".*" } else { "Aa" };
+        let badge_color = if s.regex_mode { pal.ui_accent } else { pal.ui_dim };
+        x = p.text(Layer::UiText, badge, x, ty, badge_color.rgba(a)) + cw;
+
+        // Query, scrolled to keep its end visible.
+        let room = ((status_x - x) / cw).floor().max(1.0) as usize - 1;
+        let chars = s.query.chars().count();
+        let skip = chars.saturating_sub(room);
+        let shown: String = s.query.chars().skip(skip).collect();
+        let end = if s.query.is_empty() && !focused {
+            p.text(Layer::UiText, "search", x, ty, pal.ui_dim.rgba(a))
+        } else {
+            p.text(Layer::UiText, &shown, x, ty, pal.ui_fg.rgba(a))
+        };
+        if focused {
+            p.rect(Layer::UiText, end + 1.0, ty, (2.0 * v.scale).round(), ch, pal.ui_accent.rgba(a));
+        }
+        p.text(Layer::UiText, &status, status_x, ty, pal.ui_dim.rgba(a));
     }
 
-    p.text(Layer::UiText, &status, status_x, ty, pal.ui_dim.rgba(a));
-
-    // ↑ previous, ↓ next (dimmed with nothing to jump to), × close.
+    // ↑ previous, ↓ next (dimmed with nothing to jump to), + another
+    // search, × remove this one.
     let has_matches = s.total > 0;
+    let can_add = v.search.boxes.len() < MAX_BOXES;
     for (rect, glyph, h, enabled) in [
-        (g.prev, '↑', Hover::SearchPrev, has_matches),
-        (g.next, '↓', Hover::SearchNext, has_matches),
-        (g.close, '×', Hover::SearchClose, true),
+        (bg.prev, '↑', H::Prev(i), has_matches),
+        (bg.next, '↓', H::Next(i), has_matches),
+        (bg.add, '+', H::Add(i), can_add),
+        (bg.close, '×', H::Close(i), true),
     ] {
-        if hover == h && enabled {
-            p.rounded(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, (4.0 * v.scale).round(), pal.ui_dim.rgba(0.3 * a));
+        let hovered = hover == Hover::Search(h);
+        if hovered && enabled {
+            p.rounded(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, small_r, pal.ui_dim.rgba(0.3 * a));
         }
         let color = if !enabled {
             pal.ui_dim.mix(pal.ui_bg, 0.5)
-        } else if hover == h {
+        } else if hovered {
             pal.foreground
         } else {
             pal.ui_dim
@@ -788,11 +834,36 @@ mod tests {
         let current = bg.iter().filter(|i| i.color == f.palette.current_match_bg.rgba(1.0)).count();
         let other = bg.iter().filter(|i| i.color == f.palette.match_bg.rgba(1.0)).count();
         assert_eq!((current, other), (3, 3), "one current and one other 3-letter match");
-        // The search bar is drawn with its ↑ ↓ × buttons.
-        assert!(c.glyph_count(Layer::UiText) >= "Aafoo3/3".len() + 3);
+        // The search bar is drawn with its ↑ ↓ + × buttons.
+        assert!(c.glyph_count(Layer::UiText) >= "Aafoo3/3".len() + 4);
         let hover_bg = f.palette.ui_dim.rgba(0.3);
-        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &ChromeView { hover: Hover::SearchNext, ..chrome(vec![]) }));
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &ChromeView { hover: Hover::Search(ui::SearchHit::Next(0)), ..chrome(vec![]) }));
         assert!(c.layer(Layer::UiShapes).iter().any(|i| i.color == hover_bg), "hovered ↓ is highlighted");
+    }
+
+    #[test]
+    fn each_search_box_highlights_in_its_own_colour() {
+        let Some(mut c) = Canvas::new() else { return };
+        let mut t = term("foo bar foo bar");
+        let mut f = Fixture::new();
+        f.search.open();
+        f.search.type_text("foo", &mut t);
+        f.search.add_box(0);
+        f.search.type_text("bar", &mut t);
+        f.search.set_color(1, 3);
+        f.search.refresh(&t);
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec![])));
+        let bg = c.layer(Layer::Background);
+        let count = |col: Rgb| bg.iter().filter(|i| i.color == col.rgba(1.0)).count();
+        let (first, second) = (f.palette.search_colors(0), f.palette.search_colors(3));
+        assert_eq!(count(first.bg), 6, "both foo matches in box 0's colour");
+        assert_eq!((count(second.current_bg), count(second.bg)), (3, 3), "focused box 1 has the current bar");
+        // Two bars, and with box 1's colour choices open, a dot per colour.
+        let shapes = |c: &Canvas| c.layer(Layer::UiShapes).len();
+        let before = shapes(&c);
+        f.search.toggle_picker(1);
+        c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec![])));
+        assert!(shapes(&c) >= before + 4, "colour choices drawn");
     }
 
     #[test]

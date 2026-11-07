@@ -405,6 +405,7 @@ pub fn fixed() -> Vec<(&'static str, &'static str)> {
         ("Enter / Shift+Enter", "Previous / next match"),
         ("F3 / Shift+F3", "Previous / next match"),
         ("Ctrl+R (in search)", "Toggle regex search"),
+        ("Tab (in search)", "Next search box"),
         ("Esc", "Close search, menu or panel"),
         ("Right click", "Copy / paste menu"),
         ("Middle click", "Paste; close tab on tab bar"),

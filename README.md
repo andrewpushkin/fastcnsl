@@ -32,7 +32,9 @@ release, numbered `0.1.<commits on main>`. Older builds:
   changed.
 - **Search highlighting like Notepad++ or Konsole**: every match on screen is
   marked, the current one stands out, and `3/17` shows where you are in the
-  whole scrollback.
+  whole scrollback. **+** in the search bar adds another search below it (up
+  to 8), each highlighted in its own colour: click the dot at the left of a
+  search to pick it.
 - **Code highlighting**: `cat hello.c`, `head main.rs`, `bat`, `type`
   (Windows), `Get-Content` (PowerShell) and `git diff` output is detected and
   coloured. The language comes from the file name, or from the content (`#!`
@@ -76,7 +78,7 @@ change them in Options (⋮ → Options… → Keyboard shortcuts): click a
 command's keys and press the new ones (Esc cancels, Backspace removes the
 shortcut, ↺ next to a command restores just its default keys, Reset all
 restores every default). A key taken from another command
-is removed there. The search keys (Enter, F3, Ctrl+R, Esc) and the mouse
+is removed there. The search keys (Enter, F3, Ctrl+R, Tab, Esc) and the mouse
 can't be changed.
 
 Changes are saved in the settings file's `[keys]` table, which lists only
@@ -105,7 +107,8 @@ a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 | Enter / Shift+Enter, F3     | previous (older) / next match            |
 | ↑ / ↓ in search             | previous / next match                    |
 | Ctrl+R in search            | toggle regular expressions               |
-| Esc in search               | close search                             |
+| Tab / Shift+Tab in search   | next / previous search box               |
+| Esc in search               | close search (all boxes)                 |
 | Ctrl+Shift+C / Ctrl+Shift+V | copy / paste                             |
 | Ctrl+= / Ctrl+- / Ctrl+0    | larger / smaller / default font          |
 | Ctrl+Shift+L                | cycle theme: system → dark → light       |

@@ -60,6 +60,19 @@ xdotool key ctrl+shift+f
 xdotool type --delay 40 "greet"
 shot main
 
+# A second search box: + is the third of the four buttons (↑ ↓ + ×, 24 px
+# each) at the right end of the bar, which ends 18 px from the window edge.
+BAR_R=$((WIDTH - 18))
+click $((BAR_R - 3 - 24 * 2 + 12)) 55
+xdotool type --delay 40 "int"
+shot multisearch
+# Its colour button at the left end of the 58-cell bar; then the fifth colour.
+BAR_L=$((BAR_R - 58 * 9 - 12))
+click $((BAR_L + 15)) 89
+shot search_colors
+click $((BAR_L + 30 + 12 + 4 * 27)) 89
+shot search_recolored
+
 # Pointer over the close button: red hover.
 xdotool mousemove --window "$WIN" "$CLOSE_X" 15
 shot titlebar

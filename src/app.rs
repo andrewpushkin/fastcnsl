@@ -30,7 +30,7 @@ use crate::search::Search;
 use crate::shortcuts::{Combo, Command, Keymap};
 use crate::session::{EventProxy, Session, UserEvent};
 use crate::theme::{self, Palette};
-use crate::ui::{self, Fade, Scrollbar};
+use crate::ui::{self, Fade, Scrollbar, SearchHit};
 use crate::view::{self, ChromeView, Hover, View};
 
 const TITLE: &str = "ragamuffin";
@@ -851,9 +851,8 @@ impl State {
         let Some(text) = self.clipboard_text() else { return };
         let tab = &mut self.tabs[self.active];
         if tab.search.focused {
-            let q = format!("{}{}", tab.search.query, text.lines().next().unwrap_or(""));
             let mut term = tab.session.term.lock();
-            tab.search.set_query(q, &mut term);
+            tab.search.type_text(text.lines().next().unwrap_or(""), &mut term);
             return;
         }
         let mode = *tab.session.term.lock().mode();
@@ -1005,7 +1004,9 @@ impl State {
         let mut term = tab.session.term.lock();
         let search = &mut tab.search;
         match &event.logical_key {
+            Key::Named(NamedKey::Escape) if search.picker.is_some() => search.picker = None,
             Key::Named(NamedKey::Escape) => search.close(),
+            Key::Named(NamedKey::Tab) => search.cycle(!m.shift_key()),
             Key::Named(NamedKey::Enter) => {
                 let dir = if m.shift_key() { Direction::Right } else { Direction::Left };
                 search.step(&mut term, dir);
@@ -1013,7 +1014,7 @@ impl State {
             Key::Named(NamedKey::ArrowUp) => search.step(&mut term, Direction::Left),
             Key::Named(NamedKey::ArrowDown) => search.step(&mut term, Direction::Right),
             Key::Named(NamedKey::Backspace) => {
-                let mut q = search.query.clone();
+                let mut q = search.query().to_owned();
                 if m.control_key() {
                     q.clear();
                 } else {
@@ -1031,8 +1032,7 @@ impl State {
                     return;
                 }
                 if let Some(text) = event.text.as_deref().filter(|t| t.chars().all(|c| !c.is_control())) {
-                    let q = format!("{}{text}", search.query);
-                    search.set_query(q, &mut term);
+                    search.type_text(text, &mut term);
                 }
             }
         }
@@ -1132,18 +1132,11 @@ impl State {
         let geo = ui::scroll_geometry(m.width, top, m.height, scale, hist, screen, offset);
 
         let over_bar = geo.as_ref().is_some_and(|g| g.track.contains(x, y));
-        let sg = ui::search_geometry(m.width, top, scale, m.cw, m.ch);
-        let over_search = tab.search.open && sg.bar.contains(x, y);
-        let search_button = if !over_search {
-            Hover::None
-        } else if sg.prev.contains(x, y) {
-            Hover::SearchPrev
-        } else if sg.next.contains(x, y) {
-            Hover::SearchNext
-        } else if sg.close.contains(x, y) {
-            Hover::SearchClose
-        } else {
-            Hover::None
+        let sg = ui::search_geometry(m.width, top, scale, m.cw, m.ch, tab.search.boxes.len(), tab.search.picker);
+        let over_search = tab.search.open && sg.contains(x, y);
+        let search_button = match sg.hit(x, y).filter(|_| tab.search.open) {
+            None | Some(SearchHit::Bar(_)) => Hover::None,
+            Some(h) => Hover::Search(h),
         };
         let redraw = over_bar != self.scrollbar.hover || over_search != self.search_hover || search_button != self.hover;
         self.hover = search_button;
@@ -1292,22 +1285,27 @@ impl State {
         if pressed && button == WinitButton::Left {
             let tab = &mut self.tabs[self.active];
             if tab.search.open {
-                let g = ui::search_geometry(m.width, top, scale, m.cw, m.ch);
-                if g.close.contains(x, y) {
-                    tab.search.close();
-                    self.window.request_redraw();
-                    return None;
-                }
-                for (rect, dir) in [(g.prev, Direction::Left), (g.next, Direction::Right)] {
-                    if rect.contains(x, y) {
-                        tab.search.focused = true;
-                        tab.search.step(&mut tab.session.term.lock(), dir);
-                        self.window.request_redraw();
-                        return None;
+                let s = &mut tab.search;
+                let g = ui::search_geometry(m.width, top, scale, m.cw, m.ch, s.boxes.len(), s.picker);
+                if let Some(hit) = g.hit(x, y) {
+                    match hit {
+                        SearchHit::Close(i) => s.remove_box(i),
+                        SearchHit::Add(i) => s.add_box(i),
+                        SearchHit::Color(i) => s.toggle_picker(i),
+                        SearchHit::Swatch(i, c) => s.set_color(i, c),
+                        SearchHit::Prev(i) | SearchHit::Next(i) => {
+                            s.focus(i);
+                            s.picker = None;
+                            let dir = if hit == SearchHit::Prev(i) { Direction::Left } else { Direction::Right };
+                            s.step(&mut tab.session.term.lock(), dir);
+                        }
+                        SearchHit::Bar(i) => {
+                            s.focus(i);
+                            if s.picker != Some(i) {
+                                s.picker = None;
+                            }
+                        }
                     }
-                }
-                if g.bar.contains(x, y) {
-                    tab.search.focused = true;
                     self.window.request_redraw();
                     return None;
                 }
@@ -1369,7 +1367,7 @@ impl State {
                 term.selection = Some(Selection::new(ty, point, side));
                 drop(term);
                 self.selecting = true;
-                self.tab_mut().search.focused = false;
+                self.tab_mut().search.blur();
             }
             (WinitButton::Left, false) => {
                 self.selecting = false;
@@ -1629,8 +1627,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 let tab = &mut st.tabs[st.active];
                 if tab.search.focused {
-                    let q = format!("{}{text}", tab.search.query);
-                    tab.search.set_query(q, &mut tab.session.term.lock());
+                    tab.search.type_text(&text, &mut tab.session.term.lock());
                     st.window.request_redraw();
                 } else if matches!(st.overlay, Overlay::None) {
                     st.write(text.into_bytes());

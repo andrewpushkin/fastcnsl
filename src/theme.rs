@@ -61,6 +61,24 @@ impl Rgb {
     }
 }
 
+/// How many highlight colours a search box can pick from (see
+/// Palette::search_colors).
+pub const SEARCH_COLORS: usize = 8;
+
+/// Search colours after the theme's own: green, blue, pink, red, purple,
+/// teal, lime.
+const SEARCH_HUES: [u32; SEARCH_COLORS - 1] = [0x3fb950, 0x4c8dff, 0xe05fb0, 0xf0524f, 0x9a6cf0, 0x22b8a8, 0xb0c41e];
+
+/// The colours of one search box's matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchColors {
+    pub bg: Rgb,
+    pub fg: Rgb,
+    /// The match Enter/Shift+Enter is on.
+    pub current_bg: Rgb,
+    pub current_fg: Rgb,
+}
+
 #[derive(Debug, Clone)]
 pub struct Palette {
     pub dark: bool,
@@ -83,6 +101,21 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Highlight colour `i` for search matches. 0 is the theme's own
+    /// match colours; the others are fixed hues, toned towards the
+    /// background for matches and in full for the current one.
+    pub fn search_colors(&self, i: usize) -> MatchColors {
+        let i = i % SEARCH_COLORS;
+        if i == 0 {
+            return MatchColors { bg: self.match_bg, fg: self.match_fg, current_bg: self.current_match_bg, current_fg: self.current_match_fg };
+        }
+        let hue = Rgb::hex(SEARCH_HUES[i - 1]);
+        let bg = hue.mix(self.background, if self.dark { 0.55 } else { 0.6 });
+        let (black, white) = (Rgb::hex(0x000000), Rgb::hex(0xffffff));
+        let current_fg = if black.contrast(hue) >= white.contrast(hue) { black } else { white };
+        MatchColors { bg, fg: self.foreground.readable_on(bg, 4.5), current_bg: hue, current_fg }
+    }
+
     pub fn dark() -> Self {
         Self {
             dark: true,
@@ -385,6 +418,23 @@ mod tests {
             let lum = |c: Rgb| 0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32;
             assert!((lum(p.foreground) - lum(p.background)).abs() > 120.0);
             assert!((lum(p.current_match_fg) - lum(p.current_match_bg)).abs() > 60.0);
+        }
+    }
+
+    #[test]
+    fn search_colours_differ_and_stay_readable() {
+        for p in [Palette::dark(), Palette::light()] {
+            let all: Vec<MatchColors> = (0..SEARCH_COLORS).map(|i| p.search_colors(i)).collect();
+            assert_eq!(all[0].current_bg, p.current_match_bg, "colour 0 is the theme's");
+            for (i, c) in all.iter().enumerate() {
+                assert!(c.fg.contrast(c.bg) >= 4.0, "{i}: match text readable");
+                assert!(c.current_fg.contrast(c.current_bg) >= 3.0, "{i}: current match text readable");
+                assert_ne!(c.bg, c.current_bg, "{i}: current match stands out");
+                for (j, d) in all.iter().enumerate().skip(i + 1) {
+                    assert_ne!(c.current_bg, d.current_bg, "{i} and {j} differ");
+                }
+            }
+            assert_eq!(p.search_colors(SEARCH_COLORS + 2), all[2], "wraps around");
         }
     }
 
