@@ -153,10 +153,33 @@ unsafe fn draw_run(api: &Api, run: &DWRITE_GLYPH_RUN) -> Option<Mask> {
     }
 }
 
+/// The system's text settings that DirectWrite applies when it blends
+/// text: (gamma, grayscale enhanced contrast). Only checked by a test: the
+/// shader's correction was fitted to Windows Terminal's output instead.
+#[cfg(test)]
+fn text_settings() -> Option<(f32, f32)> {
+    use windows::Win32::Graphics::DirectWrite::IDWriteRenderingParams1;
+    use windows::core::Interface;
+    unsafe {
+        let factory: IDWriteFactory2 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()?;
+        let params = factory.CreateRenderingParams().ok()?;
+        let contrast = params.cast::<IDWriteRenderingParams1>().map(|p| p.GetGrayscaleEnhancedContrast()).unwrap_or(1.0);
+        Some((params.GetGamma(), contrast))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping, SwashCache};
+
+    #[test]
+    fn reads_system_text_settings() {
+        let (gamma, contrast) = text_settings().expect("DirectWrite rendering params");
+        eprintln!("system text settings: gamma {gamma}, grayscale enhanced contrast {contrast}");
+        assert!((1.0..=3.0).contains(&gamma));
+        assert!((0.0..=10.0).contains(&contrast));
+    }
 
     /// DirectWrite draws a glyph about where and as big as swash does.
     #[test]

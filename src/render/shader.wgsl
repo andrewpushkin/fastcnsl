@@ -54,11 +54,12 @@ fn vs(@builtin(vertex_index) vi: u32, i: InstanceIn) -> VOut {
 
 // Glyph coverage is blended in gamma space; uncorrected, light text on a
 // dark background looks thin and dark text on light looks heavy. Correct it
-// the way DirectWrite's grayscale text does (as Windows Terminal's shader
-// does too): enhanced contrast 1.0, reduced for light text, then the alpha
-// correction for gamma 1.8.
+// with DirectWrite's formulas: enhanced contrast, then the alpha correction
+// for gamma 1.8 (the Windows default). The contrast, 0.4 for every text
+// colour, was fitted to Windows Terminal's pixels for light-on-dark and
+// dark-on-light Cascadia Mono; it leaves no measurable bias either way.
 fn text_coverage(a: f32, rgb: vec3<f32>) -> f32 {
-    let k = 1.0 * clamp(3.0 - 4.0 * dot(rgb, vec3<f32>(0.30, 0.59, 0.11)), 0.0, 1.0);
+    let k = 0.4;
     let c = a * (k + 1.0) / (a * k + 1.0);
     let f = dot(rgb, vec3<f32>(0.25, 0.5, 0.25));
     let g = vec4<f32>(0.1469, -0.8911, 1.4644, -0.3234) / 4.0;
