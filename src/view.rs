@@ -796,7 +796,7 @@ mod tests {
         assert!(c.glyph_count(Layer::OverlayText) > 20, "menu labels");
 
         let m = Metrics { width: 900.0, height: 700.0, scale: 1.0, cw: 8.0, ch: 17.0 };
-        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true });
+        let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: crate::config::GpuBackend::Auto, gpu_pending: false });
         let about = about_panel(&m, "gpu", "300 ms", "/cfg");
         for panel in [&opts, &about] {
             let mut ch = chrome(vec!["Tab 1"]);

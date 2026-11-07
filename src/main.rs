@@ -110,12 +110,8 @@ fn run_command(inv: remote::Invocation) -> (Option<String>, Vec<String>) {
 fn main() {
     STARTED.get_or_init(std::time::Instant::now);
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let first_tab = match remote::parse_args(&args) {
-        Ok(None) => (None, Vec::new()),
-        Ok(Some(inv)) => {
-            remote::attach_console();
-            run_command(inv)
-        }
+    let parsed = match remote::parse_args(&args) {
+        Ok(a) => a,
         Err(msg) if msg == remote::USAGE => {
             remote::attach_console();
             println!("{msg}");
@@ -125,6 +121,13 @@ fn main() {
             remote::attach_console();
             eprintln!("{msg}");
             std::process::exit(2);
+        }
+    };
+    let first_tab = match parsed.invocation() {
+        None => (None, Vec::new()),
+        Some(inv) => {
+            remote::attach_console();
+            run_command(inv)
         }
     };
     render::glyphs::preload_fonts();
@@ -168,7 +171,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let mut app = app::App::new(cfg, event_loop.create_proxy(), first_tab);
+    let mut app = app::App::new(cfg, event_loop.create_proxy(), first_tab, parsed.gpu);
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("ragamuffin: {e}");
         std::process::exit(1);

@@ -123,6 +123,66 @@ pub struct Config {
     /// its contrast ratio with the background is at least this (WCAG ratio:
     /// 1 turns it off, 4.5 is the usual "readable" level, 21 is the maximum).
     pub minimum_contrast: f32,
+    /// Graphics API: "auto", "directx" (Windows), "vulkan", "opengl",
+    /// "metal" (macOS) or "software" (drawn by the CPU). Applies after a
+    /// restart; `ragamuffin --gpu NAME` overrides it for one run.
+    pub gpu: GpuBackend,
+}
+
+/// Which graphics API draws the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuBackend {
+    /// DirectX 12 on Windows, Metal on macOS, Vulkan or OpenGL on Linux.
+    #[default]
+    Auto,
+    #[serde(rename = "directx")]
+    DirectX,
+    Vulkan,
+    #[serde(rename = "opengl")]
+    OpenGl,
+    Metal,
+    /// No GPU: a CPU rasteriser (WARP on Windows, llvmpipe/lavapipe on Linux).
+    Software,
+}
+
+impl GpuBackend {
+    /// The choices that exist on this platform.
+    pub fn choices() -> &'static [GpuBackend] {
+        use GpuBackend::*;
+        if cfg!(windows) {
+            &[Auto, DirectX, Vulkan, OpenGl, Software]
+        } else if cfg!(target_os = "macos") {
+            &[Auto, Metal, Software]
+        } else {
+            &[Auto, Vulkan, OpenGl, Software]
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GpuBackend::Auto => "Auto",
+            GpuBackend::DirectX => "DirectX",
+            GpuBackend::Vulkan => "Vulkan",
+            GpuBackend::OpenGl => "OpenGL",
+            GpuBackend::Metal => "Metal",
+            GpuBackend::Software => "Software",
+        }
+    }
+
+    /// Parses a name as written in the settings file or on the command
+    /// line (any case; "dx12" and "gl" are accepted too).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "auto" => GpuBackend::Auto,
+            "directx" | "dx12" | "d3d12" => GpuBackend::DirectX,
+            "vulkan" | "vk" => GpuBackend::Vulkan,
+            "opengl" | "gl" | "gles" => GpuBackend::OpenGl,
+            "metal" => GpuBackend::Metal,
+            "software" | "cpu" => GpuBackend::Software,
+            _ => return None,
+        })
+    }
 }
 
 /// How glyph edges are smoothed.
@@ -167,6 +227,7 @@ impl Default for Config {
             display_backend: DisplayBackend::Auto,
             antialiasing: Antialiasing::Auto,
             minimum_contrast: 4.5,
+            gpu: GpuBackend::Auto,
         }
     }
 }
@@ -409,6 +470,15 @@ mod tests {
 
     #[test]
     fn values_are_clamped() {
+        let cfg: Config = toml::from_str("gpu = \"opengl\"").unwrap();
+        assert_eq!(cfg.gpu, GpuBackend::OpenGl);
+        for g in GpuBackend::choices() {
+            let text = toml::to_string(&Config { gpu: *g, ..Config::default() }).unwrap();
+            assert_eq!(toml::from_str::<Config>(&text).unwrap().gpu, *g, "{g:?} round-trips");
+            assert_eq!(GpuBackend::from_name(g.label()), Some(*g), "{g:?} parses from its label");
+        }
+        assert_eq!(GpuBackend::from_name("DX12"), Some(GpuBackend::DirectX));
+        assert_eq!(GpuBackend::from_name("nope"), None);
         let cfg: Config = toml::from_str("antialiasing = \"grayscale\"").unwrap();
         assert!(!cfg.antialiasing.subpixel(true));
         assert!(Antialiasing::Auto.subpixel(true) && !Antialiasing::Auto.subpixel(false));

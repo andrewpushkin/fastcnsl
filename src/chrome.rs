@@ -5,7 +5,7 @@
 //! draws from the layout and the app hit-tests clicks against the same
 //! layout, so they never disagree.
 
-use crate::config::ThemeMode;
+use crate::config::{GpuBackend, ThemeMode};
 use crate::shortcuts;
 use crate::ui::Rect;
 
@@ -29,6 +29,8 @@ pub enum Action {
     CodeHighlight(bool),
     /// Switch the Options panel to this page.
     OptionsPage(OptionsPage),
+    /// Graphics API for the next start.
+    Gpu(GpuBackend),
     ClosePanel,
     Quit,
 }
@@ -374,12 +376,16 @@ impl<'a> PanelBuilder<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct OptionsState {
     pub page: OptionsPage,
     pub theme: ThemeMode,
     pub font_size: f32,
     pub font_family: String,
     pub code_highlight: bool,
+    pub gpu: GpuBackend,
+    /// `gpu` differs from what this run started with.
+    pub gpu_pending: bool,
 }
 
 pub fn options_panel(m: &Metrics, s: &OptionsState) -> Panel {
@@ -393,7 +399,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState) -> Panel {
     let key_rows = if two_cols { keys.len().div_ceil(2) } else { keys.len() };
     // Placed for the taller page and cut to each page's length, so the
     // page buttons stay put when switching.
-    const GENERAL_ROWS: usize = 4;
+    const GENERAL_ROWS: usize = 6;
     let mut b = PanelBuilder::new(m, cols, 4.0 + key_rows.max(GENERAL_ROWS) as f32);
     b.close_button();
 
@@ -424,6 +430,17 @@ pub fn options_panel(m: &Metrics, s: &OptionsState) -> Panel {
             let c = b.button(label_w, "On", Action::CodeHighlight(true), s.code_highlight);
             b.button(c, "Off", Action::CodeHighlight(false), !s.code_highlight);
             b.next();
+
+            b.text(0.0, "Graphics", TextStyle::Normal);
+            let mut c = label_w;
+            for &g in GpuBackend::choices() {
+                c = b.button(c, g.label(), Action::Gpu(g), s.gpu == g);
+            }
+            b.next();
+            if s.gpu_pending {
+                b.text(label_w, "Takes effect when ragamuffin restarts", TextStyle::Dim);
+                b.next();
+            }
 
             b.text(0.0, "Settings file", TextStyle::Normal);
             b.button(label_w, "Open config.toml", Action::OpenSettingsFile, false);
@@ -615,7 +632,7 @@ mod tests {
     #[test]
     fn options_panel_fits_small_windows() {
         let small = Metrics { width: 500.0, height: 300.0, ..m() };
-        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false });
+        let p = options_panel(&small, &OptionsState { page: OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: false, gpu: GpuBackend::Auto, gpu_pending: false });
         assert!(p.rect.w <= 500.0 && p.rect.h <= 300.0);
         assert!(p.lines.iter().all(|l| l.y + small.ch <= p.rect.y + p.rect.h), "no text below the panel");
         let off = p.buttons.iter().find(|b| b.action == Action::CodeHighlight(false)).unwrap();
@@ -624,7 +641,7 @@ mod tests {
 
     #[test]
     fn options_panel_has_a_general_page_and_a_shortcuts_page() {
-        let mut s = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true };
+        let mut s = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false };
         let p = options_panel(&m(), &s);
         let dark = p.buttons.iter().find(|b| b.action == Action::Theme(ThemeMode::Dark)).unwrap();
         assert!(dark.active);
@@ -632,6 +649,15 @@ mod tests {
         let tab = p.buttons.iter().find(|b| b.action == Action::OptionsPage(OptionsPage::Shortcuts)).unwrap();
         assert!(!tab.active);
         assert!(!p.lines.iter().any(|l| l.text == "New tab"), "shortcuts are on their own page");
+
+        // Graphics: every API of this platform, the chosen one lit; a
+        // change waiting for a restart says so.
+        let gpus: Vec<_> = p.buttons.iter().filter(|b| matches!(b.action, Action::Gpu(_))).collect();
+        assert_eq!(gpus.len(), GpuBackend::choices().len());
+        assert!(gpus.iter().any(|b| b.active && b.action == Action::Gpu(GpuBackend::Auto)));
+        assert!(!p.lines.iter().any(|l| l.text.contains("restarts")));
+        let pending = options_panel(&m(), &OptionsState { gpu: GpuBackend::Software, gpu_pending: true, ..s.clone() });
+        assert!(pending.lines.iter().any(|l| l.text.contains("restarts")));
 
         s.page = OptionsPage::Shortcuts;
         // In a small window the list is cut, and says so inside the panel.

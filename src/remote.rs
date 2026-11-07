@@ -1,6 +1,7 @@
 //! Command-line control of a running ragamuffin:
 //!
 //! ```text
+//! ragamuffin [--gpu API]
 //! ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
 //! ragamuffin [--pid N] close-tab [NAME | NUMBER]
 //! ragamuffin [--pid N] quit
@@ -20,6 +21,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use winit::event_loop::EventLoopProxy;
 
+use crate::config::GpuBackend;
 use crate::session::UserEvent;
 
 /// What a window is asked to do.
@@ -36,33 +38,61 @@ pub enum Command {
 /// The answer sent back to the command line.
 pub type Reply = Result<String, String>;
 
-/// A parsed command line: None means start the terminal normally.
+/// A command for a running window, and which window.
 #[derive(Debug, PartialEq)]
 pub struct Invocation {
     pub pid: Option<u32>,
     pub command: Command,
 }
 
+/// A parsed command line.
+#[derive(Debug, PartialEq, Default)]
+pub struct Args {
+    pub pid: Option<u32>,
+    /// Graphics API for a window this process opens (not saved).
+    pub gpu: Option<GpuBackend>,
+    /// None: start the terminal.
+    pub command: Option<Command>,
+}
+
+impl Args {
+    pub fn invocation(&self) -> Option<Invocation> {
+        self.command.clone().map(|command| Invocation { pid: self.pid, command })
+    }
+}
+
 pub const USAGE: &str = "usage:
-  ragamuffin                                       start the terminal
+  ragamuffin [--gpu API]                           start the terminal; API: auto,
+                                                   directx, vulkan, opengl, metal,
+                                                   software (this run only)
   ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
   ragamuffin [--pid N] close-tab [NAME | NUMBER]   (default: the active tab)
   ragamuffin [--pid N] quit
 Without --pid the most recently started window is used.";
 
 /// Parses the arguments after the program name.
-pub fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
+pub fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut rest = args;
-    let mut pid = None;
-    if rest.first().map(String::as_str) == Some("--pid") {
-        let n = rest.get(1).ok_or("--pid needs a process id")?;
-        pid = Some(n.parse().map_err(|_| format!("--pid: not a process id: {n}"))?);
-        rest = &rest[2..];
+    let mut out = Args::default();
+    loop {
+        match rest.first().map(String::as_str) {
+            Some("--pid") => {
+                let n = rest.get(1).ok_or("--pid needs a process id")?;
+                out.pid = Some(n.parse().map_err(|_| format!("--pid: not a process id: {n}"))?);
+                rest = &rest[2..];
+            }
+            Some("--gpu") => {
+                let n = rest.get(1).ok_or("--gpu needs an API: auto, directx, vulkan, opengl, metal or software")?;
+                out.gpu = Some(GpuBackend::from_name(n).ok_or_else(|| format!("--gpu: unknown API {n}\n{USAGE}"))?);
+                rest = &rest[2..];
+            }
+            _ => break,
+        }
     }
     let Some((verb, rest)) = rest.split_first() else {
-        return if pid.is_some() { Err("--pid needs a command".into()) } else { Ok(None) };
+        return if out.pid.is_some() { Err("--pid needs a command".into()) } else { Ok(out) };
     };
-    let command = match verb.as_str() {
+    out.command = Some(match verb.as_str() {
         "new-tab" => {
             let (before, command) = match rest.iter().position(|a| a == "--") {
                 Some(i) => (&rest[..i], rest[i + 1..].to_vec()),
@@ -77,8 +107,8 @@ pub fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
         "quit" if rest.is_empty() => Command::Quit,
         "-h" | "--help" | "help" => return Err(USAGE.into()),
         _ => return Err(format!("unknown command: {}\n{USAGE}", args.join(" "))),
-    };
-    Ok(Some(Invocation { pid, command }))
+    });
+    Ok(out)
 }
 
 /// On the wire: one TOML document per connection, answered with "ok\n..."
@@ -274,32 +304,33 @@ mod tests {
 
     #[test]
     fn parses_commands() {
-        assert_eq!(parse_args(&[]).unwrap(), None);
+        let cmd = |s: &str| parse_args(&args(s)).unwrap().command;
+        assert_eq!(parse_args(&[]).unwrap(), Args::default());
+        assert_eq!(cmd("new-tab"), Some(Command::NewTab { name: None, command: vec![] }));
         assert_eq!(
-            parse_args(&args("new-tab")).unwrap().unwrap().command,
-            Command::NewTab { name: None, command: vec![] }
+            cmd("new-tab logs -- tail -f /var/log/syslog"),
+            Some(Command::NewTab { name: Some("logs".into()), command: args("tail -f /var/log/syslog") })
         );
-        assert_eq!(
-            parse_args(&args("new-tab logs -- tail -f /var/log/syslog")).unwrap().unwrap(),
-            Invocation {
-                pid: None,
-                command: Command::NewTab { name: Some("logs".into()), command: args("tail -f /var/log/syslog") }
-            }
-        );
-        assert_eq!(
-            parse_args(&args("new-tab -- htop")).unwrap().unwrap().command,
-            Command::NewTab { name: None, command: args("htop") }
-        );
-        assert_eq!(
-            parse_args(&args("--pid 42 close-tab 2")).unwrap().unwrap(),
-            Invocation { pid: Some(42), command: Command::CloseTab(Some("2".into())) }
-        );
-        assert_eq!(parse_args(&args("close-tab")).unwrap().unwrap().command, Command::CloseTab(None));
-        assert_eq!(parse_args(&args("quit")).unwrap().unwrap().command, Command::Quit);
+        assert_eq!(cmd("new-tab -- htop"), Some(Command::NewTab { name: None, command: args("htop") }));
+        let a = parse_args(&args("--pid 42 close-tab 2")).unwrap();
+        assert_eq!(a.invocation(), Some(Invocation { pid: Some(42), command: Command::CloseTab(Some("2".into())) }));
+        assert_eq!(cmd("close-tab"), Some(Command::CloseTab(None)));
+        assert_eq!(cmd("quit"), Some(Command::Quit));
         assert!(parse_args(&args("new-tab a b")).is_err(), "one name only");
         assert!(parse_args(&args("frobnicate")).is_err());
         assert!(parse_args(&args("--pid x quit")).is_err());
         assert!(parse_args(&args("--help")).unwrap_err().contains("new-tab"));
+    }
+
+    #[test]
+    fn gpu_option_starts_a_window_with_that_api() {
+        let a = parse_args(&args("--gpu software")).unwrap();
+        assert_eq!((a.gpu, a.command), (Some(GpuBackend::Software), None));
+        let a = parse_args(&args("--gpu Vulkan new-tab x")).unwrap();
+        assert_eq!(a.gpu, Some(GpuBackend::Vulkan));
+        assert!(a.command.is_some());
+        assert!(parse_args(&args("--gpu")).is_err());
+        assert!(parse_args(&args("--gpu glide")).unwrap_err().contains("unknown API"));
     }
 
     #[test]

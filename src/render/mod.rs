@@ -136,6 +136,20 @@ pub fn system_subpixel() -> bool {
     false
 }
 
+/// The wgpu backends for a chosen API, and whether to ask for a CPU
+/// adapter; None for the automatic choice.
+fn gpu_backends(gpu: crate::config::GpuBackend) -> Option<(wgpu::Backends, bool)> {
+    use crate::config::GpuBackend;
+    Some(match gpu {
+        GpuBackend::Auto => return None,
+        GpuBackend::DirectX => (wgpu::Backends::DX12, false),
+        GpuBackend::Vulkan => (wgpu::Backends::VULKAN, false),
+        GpuBackend::OpenGl => (wgpu::Backends::GL, false),
+        GpuBackend::Metal => (wgpu::Backends::METAL, false),
+        GpuBackend::Software => (wgpu::Backends::all(), true),
+    })
+}
+
 /// GPU backends tried first.
 fn preferred_backends() -> wgpu::Backends {
     if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::all() }
@@ -264,23 +278,30 @@ impl Renderer {
     pub async fn new(
         window: Arc<Window>,
         display: winit::event_loop::OwnedDisplayHandle,
-        font_family: &str, font_px: f32, line_height: f32, subpixel: bool) -> Result<Self, String> {
+        font_family: &str, font_px: f32, line_height: f32, subpixel: bool,
+        gpu: crate::config::GpuBackend) -> Result<Self, String> {
         let start = std::time::Instant::now();
         let size = window.inner_size();
-        // On Windows only DX12 is started: also bringing up Vulkan and
-        // OpenGL just to pick one costs startup time. They are tried if
-        // DX12 has no adapter. WGPU_BACKEND still overrides this.
-        let (surface, adapter) = match Self::adapter(&window, &display, preferred_backends()).await {
-            Ok(found) => found,
-            Err(e) if preferred_backends() != wgpu::Backends::all() => {
-                log::warn!("{e}; trying every GPU backend");
-                Self::adapter(&window, &display, wgpu::Backends::all()).await?
-            }
-            Err(e) => return Err(e),
+        // A chosen API that isn't available falls back to the automatic
+        // choice, so a setting can't keep the app from starting.
+        let chosen = match gpu_backends(gpu) {
+            Some((backends, software)) => match Self::adapter(&window, &display, backends, software).await {
+                Ok(found) => Some(found),
+                Err(e) => {
+                    log::warn!("gpu = {:?}: {e}; using the automatic choice", gpu.label());
+                    None
+                }
+            },
+            None => None,
+        };
+        let (surface, adapter) = match chosen {
+            Some(found) => found,
+            None => Self::auto_adapter(&window, &display).await?,
         };
         let info = adapter.get_info();
         log::info!("GPU: {info:?}");
-        let gpu = format!("{} ({:?})", info.name, info.backend);
+        let software = if info.device_type == wgpu::DeviceType::Cpu { ", software" } else { "" };
+        let gpu = format!("{} ({:?}{software})", info.name, info.backend);
         // Dual-source blending blends each colour channel with its own
         // weight, which ClearType text needs.
         let dual = adapter.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING);
@@ -439,12 +460,30 @@ impl Renderer {
         self.glyphs.set_subpixel(subpixel && self.dual);
     }
 
+    /// On Windows only DX12 is started: also bringing up Vulkan and OpenGL
+    /// just to pick one costs startup time. They are tried if DX12 has no
+    /// adapter. WGPU_BACKEND still overrides this.
+    async fn auto_adapter(
+        window: &Arc<Window>,
+        display: &winit::event_loop::OwnedDisplayHandle,
+    ) -> Result<(wgpu::Surface<'static>, wgpu::Adapter), String> {
+        match Self::adapter(window, display, preferred_backends(), false).await {
+            Ok(found) => Ok(found),
+            Err(e) if preferred_backends() != wgpu::Backends::all() => {
+                log::warn!("{e}; trying every GPU backend");
+                Self::adapter(window, display, wgpu::Backends::all(), false).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Creates an instance with `backends`, a surface for the window and
-    /// an adapter that can draw to it.
+    /// an adapter that can draw to it; with `software`, a CPU one.
     async fn adapter(
         window: &Arc<Window>,
         display: &winit::event_loop::OwnedDisplayHandle,
         backends: wgpu::Backends,
+        software: bool,
     ) -> Result<(wgpu::Surface<'static>, wgpu::Adapter), String> {
         let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
         desc.backends = backends;
@@ -454,11 +493,11 @@ impl Renderer {
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
+                force_fallback_adapter: software,
                 apply_limit_buckets: false,
             })
             .await
-            .map_err(|e| format!("no GPU adapter: {e}"))?;
+            .map_err(|e| format!("no {} adapter: {e}", if software { "software" } else { "GPU" }))?;
         Ok((surface, adapter))
     }
 

@@ -124,6 +124,19 @@ title_bar = "custom"             # "custom" (buttons in the tab bar) | "system" 
 display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to apply)
 antialiasing = "auto"            # "auto" | "subpixel" | "grayscale"
 minimum_contrast = 4.5           # text on coloured backgrounds: WCAG contrast ratio, 1 = off
+gpu = "auto"                     # "auto" | "directx" | "vulkan" | "opengl" | "metal" | "software"
+```
+
+**Graphics API.** `gpu` picks what draws the window (Options → General →
+Graphics); it takes effect when ragamuffin restarts. `software` draws on
+the CPU (Microsoft Basic Render Driver on Windows, llvmpipe on Linux), for
+machines without a working GPU driver, remote desktops and VMs. If the
+chosen API isn't available, ragamuffin falls back to the automatic choice
+and starts anyway; About shows what is in use. For one run only:
+
+```sh
+ragamuffin --gpu software
+ragamuffin --gpu opengl new-tab logs -- tail -f app.log
 ```
 
 **Text on Windows** is drawn by DirectWrite, like in other Windows apps.
@@ -146,6 +159,7 @@ Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
 The same `ragamuffin` program controls a window that is already open:
 
 ```text
+ragamuffin [--gpu API]
 ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
 ragamuffin [--pid N] close-tab [NAME | NUMBER]
 ragamuffin [--pid N] quit

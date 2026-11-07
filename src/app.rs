@@ -20,7 +20,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
 use crate::chrome::{self, Action, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
-use crate::config::{Config, ConfigWatcher, ThemeMode};
+use crate::config::{Config, ConfigWatcher, GpuBackend, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
 use crate::input::{self, MouseButton};
@@ -54,6 +54,8 @@ pub struct App {
     first_tab: (Option<String>, Vec<String>),
     /// Listens for `ragamuffin new-tab/close-tab/quit`.
     _remote: Option<remote::Server>,
+    /// Graphics API from `--gpu`, for this run only.
+    gpu_override: Option<GpuBackend>,
 }
 
 /// One shell with its own scrollback, search and code highlighting.
@@ -118,6 +120,8 @@ struct State {
     startup: String,
     /// The page the Options panel shows.
     options_page: OptionsPage,
+    /// Graphics API asked for at startup (it changes only on a restart).
+    gpu_started: GpuBackend,
 }
 
 /// Writes "Tab N: app" into `buf`, reusing its allocation.
@@ -138,7 +142,12 @@ fn shell_name(cfg: &Config) -> String {
 }
 
 impl App {
-    pub fn new(cfg: Config, proxy: EventLoopProxy<UserEvent>, first_tab: (Option<String>, Vec<String>)) -> Self {
+    pub fn new(
+        cfg: Config,
+        proxy: EventLoopProxy<UserEvent>,
+        first_tab: (Option<String>, Vec<String>),
+        gpu_override: Option<GpuBackend>,
+    ) -> Self {
         let remote = remote::serve(proxy.clone());
         Self {
             cfg,
@@ -149,6 +158,7 @@ impl App {
             error: None,
             first_tab,
             _remote: remote,
+            gpu_override,
         }
     }
 
@@ -190,6 +200,7 @@ impl App {
             font_px(cfg.font_size, scale),
             cfg.line_height,
             cfg.antialiasing.subpixel(crate::render::system_subpixel()),
+            self.gpu_override.unwrap_or(cfg.gpu),
         ))?;
 
         // Size the window to a comfortable grid now that the cell is known.
@@ -249,6 +260,7 @@ impl App {
             cursor: CursorIcon::Text,
             startup: String::new(),
             options_page: OptionsPage::General,
+            gpu_started: self.gpu_override.unwrap_or(cfg.gpu),
         };
         let (name, command) = self.first_tab.clone();
         st.new_tab_with(cfg, name, command)?;
@@ -310,7 +322,12 @@ impl App {
         let Some(st) = self.state.as_mut() else { return };
         if !matches!(
             action,
-            Action::FontBigger | Action::FontSmaller | Action::CodeHighlight(_) | Action::Theme(_) | Action::OptionsPage(_)
+            Action::FontBigger
+                | Action::FontSmaller
+                | Action::CodeHighlight(_)
+                | Action::Theme(_)
+                | Action::OptionsPage(_)
+                | Action::Gpu(_)
         )
             || matches!(st.overlay, Overlay::Menu(_))
         {
@@ -352,6 +369,7 @@ impl App {
                 self.change_config(|c| c.font_size = size);
             }
             Action::CodeHighlight(on) => self.change_config(|c| c.code_highlight = on),
+            Action::Gpu(gpu) => self.change_config(|c| c.gpu = gpu),
             Action::Options => {
                 st.overlay = Overlay::Options;
                 st.options_page = OptionsPage::General;
@@ -608,6 +626,8 @@ impl State {
                     font_size: cfg.font_size,
                     font_family: cfg.font_family.clone(),
                     code_highlight: cfg.code_highlight,
+                    gpu: cfg.gpu,
+                    gpu_pending: cfg.gpu != self.gpu_started,
                 },
             )),
             Overlay::About => {
