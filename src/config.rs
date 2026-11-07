@@ -33,6 +33,25 @@ impl ThemeMode {
     }
 }
 
+/// Line numbers in a gutter left of the text. A line is what a program
+/// printed as one line: rows that wrap share its number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LineNumbers {
+    /// Counted from the last command entered: its output starts at 1.
+    #[default]
+    Command,
+    /// Counted from the start of the tab.
+    Tab,
+    Off,
+}
+
+impl LineNumbers {
+    pub fn is_on(self) -> bool {
+        self != LineNumbers::Off
+    }
+}
+
 /// Which Linux display protocol to use. Ignored on Windows and macOS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -105,6 +124,9 @@ pub struct Config {
     /// Detect source code printed by `cat`, `head`, `tail`, `bat`, `type`,
     /// `Get-Content`, `git diff`... and colour it.
     pub code_highlight: bool,
+    /// Line numbers: "command" (from the start of each command's output),
+    /// "tab" (from the start of the tab) or "off".
+    pub line_numbers: LineNumbers,
     /// syntect theme used for code in dark mode.
     pub code_theme_dark: String,
     /// syntect theme used for code in light mode.
@@ -226,6 +248,7 @@ impl Default for Config {
             ui_idle_opacity: 0.4,
             padding: 6.0,
             code_highlight: true,
+            line_numbers: LineNumbers::Command,
             code_theme_dark: "base16-ocean.dark".to_owned(),
             code_theme_light: "InspiredGitHub".to_owned(),
             bold_is_bright: false,
@@ -443,6 +466,16 @@ mod tests {
         std::fs::write(&path, "font_size = 9.0").unwrap();
         w.mark_seen();
         assert_eq!(w.poll(), None);
+    }
+
+    #[test]
+    fn line_numbers_setting() {
+        assert_eq!(Config::default().line_numbers, LineNumbers::Command);
+        for (text, want) in [("command", LineNumbers::Command), ("tab", LineNumbers::Tab), ("off", LineNumbers::Off)] {
+            let cfg: Config = toml::from_str(&format!("line_numbers = \"{text}\"")).unwrap();
+            assert_eq!(cfg.line_numbers, want);
+        }
+        assert!(LineNumbers::Tab.is_on() && !LineNumbers::Off.is_on());
     }
 
     #[test]

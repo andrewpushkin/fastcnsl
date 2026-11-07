@@ -135,6 +135,15 @@ pub struct Grid<T> {
 
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
+
+    /// ragamuffin patch: rows that left the top of the grid (scrollback
+    /// full, history cleared or shortened, reflow), and how many of them
+    /// ended a line (no WRAPLINE on their last cell). With these, callers
+    /// can give rows and lines numbers that don't shift as history drops.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    rows_dropped: u64,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    lines_dropped: u64,
 }
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
@@ -142,6 +151,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         Grid {
             raw: Storage::with_capacity(lines, columns),
             max_scroll_limit,
+            rows_dropped: 0,
+            lines_dropped: 0,
             display_offset: 0,
             saved_cursor: Cursor::default(),
             cursor: Cursor::default(),
@@ -154,6 +165,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     pub fn update_history(&mut self, history_size: usize) {
         let current_history_size = self.history_size();
         if current_history_size > history_size {
+            self.count_dropped(current_history_size - history_size);
             self.raw.shrink_lines(current_history_size - history_size);
         }
         self.display_offset = min(self.display_offset, history_size);
@@ -270,6 +282,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Only rotate the entire history if the active region starts at the top.
         if region.start == 0 {
+            // ragamuffin patch: rows that don't fit in the history any more
+            // are recycled from its top.
+            let room = self.max_scroll_limit - self.history_size();
+            self.count_dropped(positions.saturating_sub(room));
+
             // Create scrollback for the new lines.
             self.increase_scroll_limit(positions);
 
@@ -380,7 +397,12 @@ impl<T> Grid<T> {
     }
 
     #[inline]
-    pub fn clear_history(&mut self) {
+    pub fn clear_history(&mut self)
+    where
+        T: GridCell,
+    {
+        self.count_dropped(self.history_size());
+
         // Explicitly purge all lines from history.
         self.raw.shrink_lines(self.history_size());
 
@@ -438,6 +460,46 @@ impl<T> Grid<T> {
         let point = self.cursor.point;
         &mut self[point.line][point.column]
     }
+
+    /// ragamuffin patch: rows that have left the top of the grid so far.
+    #[inline]
+    pub fn rows_dropped(&self) -> u64 {
+        self.rows_dropped
+    }
+
+    /// ragamuffin patch: lines that ended in rows that left the top of the
+    /// grid so far (rows without WRAPLINE on their last cell).
+    #[inline]
+    pub fn lines_dropped(&self) -> u64 {
+        self.lines_dropped
+    }
+}
+
+impl<T: GridCell> Grid<T> {
+    /// ragamuffin patch: records that the topmost `count` rows are about to
+    /// leave the grid.
+    fn count_dropped(&mut self, count: usize) {
+        let count = min(count, self.total_lines());
+        if count == 0 {
+            return;
+        }
+        let top = self.topmost_line();
+        let ends = (0..count)
+            .filter(|&i| ends_line(&self.raw[top + i]))
+            .count();
+        self.note_dropped(count, ends);
+    }
+
+    /// ragamuffin patch: adds to the dropped row and line counts.
+    pub(crate) fn note_dropped(&mut self, rows: usize, ends: usize) {
+        self.rows_dropped += rows as u64;
+        self.lines_dropped += ends as u64;
+    }
+}
+
+/// ragamuffin patch: true if the row ends a line (doesn't wrap onto the next).
+pub(crate) fn ends_line<T: GridCell>(row: &Row<T>) -> bool {
+    row.last().is_none_or(|c| !c.flags().contains(Flags::WRAPLINE))
 }
 
 impl<T: PartialEq> PartialEq for Grid<T> {

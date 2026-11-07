@@ -11,6 +11,7 @@ mod config;
 mod detect;
 mod highlight;
 mod input;
+mod lines;
 mod remote;
 mod render;
 mod search;
