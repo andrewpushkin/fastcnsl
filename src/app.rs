@@ -107,6 +107,8 @@ struct State {
     last_bar_click: Option<Instant>,
     /// Cursor last sent to the window system.
     cursor: CursorIcon,
+    /// Time from launch to the first frame, for the About panel.
+    startup: String,
 }
 
 /// Writes "Tab N: app" into `buf`, reusing its allocation.
@@ -135,6 +137,10 @@ impl App {
         let attrs = Window::default_attributes()
             .with_title(TITLE)
             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 600.0));
+        // Windows paints a new window white until the first frame arrives;
+        // keep it hidden until then (see `resumed`).
+        #[cfg(windows)]
+        let attrs = attrs.with_visible(false);
         // App id / WM_CLASS, matching StartupWMClass in the .desktop file.
         #[cfg(all(unix, not(target_os = "macos")))]
         let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "ragamuffin", "ragamuffin");
@@ -176,6 +182,11 @@ impl App {
             (INITIAL_LINES as f32 * cell.height + 2.0 * pad + bar).ceil() as u32,
         );
         let _ = window.request_inner_size(want);
+        // Where the new size applies at once (Windows), draw the first
+        // frame at it rather than at the creation size.
+        let now = window.inner_size();
+        let mut renderer = renderer;
+        renderer.resize(now.width, now.height);
 
         // Linux desktops (and WSL) are asked directly: winit can't see their
         // setting. Windows and macOS report it through winit.
@@ -216,6 +227,7 @@ impl App {
             custom_title_bar: custom,
             last_bar_click: None,
             cursor: CursorIcon::Text,
+            startup: String::new(),
         };
         st.new_tab(cfg)?;
         Ok(st)
@@ -509,7 +521,7 @@ impl State {
             )),
             Overlay::About => {
                 let path = Config::path().map(|p| p.display().to_string()).unwrap_or_default();
-                Some(chrome::about_panel(&m, &self.renderer.gpu, &path))
+                Some(chrome::about_panel(&m, &self.renderer.gpu, &self.startup, &path))
             }
             _ => None,
         }
@@ -1257,8 +1269,15 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         match self.create(el) {
-            Ok(st) => {
+            Ok(mut st) => {
                 crate::WINDOW_UP.store(true, std::sync::atomic::Ordering::Relaxed);
+                // Draw the first frame before showing the window, so it
+                // never appears blank.
+                st.redraw(&self.cfg);
+                st.window.set_visible(true);
+                let total = crate::STARTED.get().map(|t| t.elapsed().as_millis()).unwrap_or(0);
+                st.startup = format!("{total} ms ({})", st.renderer.startup);
+                log::info!("first frame after {}", st.startup);
                 self.state = Some(st);
             }
             Err(e) => {

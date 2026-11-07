@@ -437,8 +437,8 @@ pub fn options_panel(m: &Metrics, s: &OptionsState) -> Panel {
     b.finish()
 }
 
-pub fn about_panel(m: &Metrics, gpu: &str, config_path: &str) -> Panel {
-    let mut b = PanelBuilder::new(m, 66.0, 10.5);
+pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str) -> Panel {
+    let mut b = PanelBuilder::new(m, 66.0, 11.5);
     b.close_button();
     b.text(0.0, "Ragamuffin", TextStyle::Title);
     b.next();
@@ -453,6 +453,9 @@ pub fn about_panel(m: &Metrics, gpu: &str, config_path: &str) -> Panel {
     b.next();
     b.text(0.0, "GPU", TextStyle::Dim);
     b.text(10.0, gpu, TextStyle::Normal);
+    b.next();
+    b.text(0.0, "Startup", TextStyle::Dim);
+    b.text(10.0, startup, TextStyle::Normal);
     b.next();
     b.text(0.0, "Settings", TextStyle::Dim);
     b.text(10.0, config_path, TextStyle::Normal);
@@ -585,13 +588,14 @@ mod tests {
 
     #[test]
     fn about_panel_shows_version_gpu_and_close() {
-        let p = about_panel(&m(), "Test GPU (Vulkan)", "/home/x/.config/ragamuffin/config.toml");
+        let p = about_panel(&m(), "Test GPU (Vulkan)", "300 ms (GPU 100 ms, fonts 0 ms)", "/home/x/.config/ragamuffin/config.toml");
         let text: Vec<&str> = p.lines.iter().map(|l| l.text.as_str()).collect();
         assert!(text.iter().any(|t| t.contains(crate::VERSION) && t.contains("build")));
         assert!(text.contains(&crate::REPOSITORY));
         let actions: Vec<Action> = p.buttons.iter().map(|b| b.action).collect();
         assert!(actions.contains(&Action::OpenProjectPage) && actions.contains(&Action::OpenReleases));
         assert!(text.contains(&"Test GPU (Vulkan)"));
+        assert!(text.contains(&"300 ms (GPU 100 ms, fonts 0 ms)"));
         assert!(p.buttons.iter().filter(|b| b.action == Action::ClosePanel).count() == 2, "× and Close");
         assert!(p.rect.x >= 0.0 && p.rect.x + p.rect.w <= 1000.0);
     }

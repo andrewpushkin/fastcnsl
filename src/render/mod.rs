@@ -31,6 +31,7 @@ const KIND_RECT: u32 = 0;
 const KIND_MASK_GLYPH: u32 = 1;
 const KIND_COLOR_GLYPH: u32 = 2;
 const KIND_ROUNDED: u32 = 3;
+const KIND_CROSS: u32 = 4;
 
 #[derive(Clone, Copy)]
 pub enum Layer {
@@ -67,6 +68,13 @@ pub struct Renderer {
     pub glyphs: GlyphCache,
     /// Adapter name and backend, for the About panel.
     pub gpu: String,
+    /// Time spent on GPU setup and waiting for fonts, for the About panel.
+    pub startup: String,
+}
+
+/// GPU backends tried first.
+fn preferred_backends() -> wgpu::Backends {
+    if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::all() }
 }
 
 /// Draws into the frame's layers. Borrowed from the renderer for the
@@ -115,6 +123,19 @@ impl<'a> Painter<'a> {
         });
     }
 
+    /// An anti-aliased × filling the `size` square at (x, y), drawn with
+    /// lines `stroke` pixels wide.
+    pub fn cross(&mut self, layer: Layer, x: f32, y: f32, size: f32, stroke: f32, color: [f32; 4]) {
+        self.layers[layer as usize].push(Instance {
+            pos: [x, y],
+            size: [size, size],
+            uv: [0.0; 4],
+            color,
+            kind: KIND_CROSS,
+            radius: stroke,
+        });
+    }
+
     /// Draws `c` with its pen at (x, top-of-cell y).
     pub fn glyph(&mut self, layer: Layer, c: char, style: GlyphStyle, x: f32, y: f32, color: [f32; 4]) {
         let Some(g) = self.glyphs.get(self.queue, c, style) else { return };
@@ -159,18 +180,19 @@ impl Renderer {
         window: Arc<Window>,
         display: winit::event_loop::OwnedDisplayHandle,
         font_family: &str, font_px: f32, line_height: f32) -> Result<Self, String> {
+        let start = std::time::Instant::now();
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)));
-        let surface = instance.create_surface(window).map_err(|e| e.to_string())?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
-            .await
-            .map_err(|e| format!("no GPU adapter: {e}"))?;
+        // On Windows only DX12 is started: also bringing up Vulkan and
+        // OpenGL just to pick one costs startup time. They are tried if
+        // DX12 has no adapter. WGPU_BACKEND still overrides this.
+        let (surface, adapter) = match Self::adapter(&window, &display, preferred_backends()).await {
+            Ok(found) => found,
+            Err(e) if preferred_backends() != wgpu::Backends::all() => {
+                log::warn!("{e}; trying every GPU backend");
+                Self::adapter(&window, &display, wgpu::Backends::all()).await?
+            }
+            Err(e) => return Err(e),
+        };
         let info = adapter.get_info();
         log::info!("GPU: {info:?}");
         let gpu = format!("{} ({:?})", info.name, info.backend);
@@ -199,6 +221,7 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
+        let gpu_time = start.elapsed();
         let glyphs = GlyphCache::new(&device, font_family, font_px, line_height);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -314,9 +337,33 @@ impl Renderer {
             instances,
             instance_capacity,
             layers: Default::default(),
+            startup: format!("GPU {} ms, fonts {} ms", gpu_time.as_millis(), glyphs.font_wait.as_millis()),
             glyphs,
             gpu,
         })
+    }
+
+    /// Creates an instance with `backends`, a surface for the window and
+    /// an adapter that can draw to it.
+    async fn adapter(
+        window: &Arc<Window>,
+        display: &winit::event_loop::OwnedDisplayHandle,
+        backends: wgpu::Backends,
+    ) -> Result<(wgpu::Surface<'static>, wgpu::Adapter), String> {
+        let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
+        desc.backends = backends;
+        let instance = wgpu::Instance::new(desc.with_env());
+        let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+                apply_limit_buckets: false,
+            })
+            .await
+            .map_err(|e| format!("no GPU adapter: {e}"))?;
+        Ok((surface, adapter))
     }
 
     fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {

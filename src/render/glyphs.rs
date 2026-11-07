@@ -6,6 +6,9 @@
 //! table lookup; ASCII skips the hash map entirely.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent, Weight,
@@ -13,6 +16,26 @@ use cosmic_text::{
 use etagere::{BucketedAtlasAllocator, size2};
 
 pub const ATLAS_SIZE: u32 = 2048;
+
+/// The font database being loaded in the background (see `preload_fonts`).
+static PRELOAD: Mutex<Option<JoinHandle<FontSystem>>> = Mutex::new(None);
+
+/// Starts scanning the installed fonts on a background thread. Windows
+/// has hundreds of them and the scan takes a noticeable part of startup,
+/// so it runs while the window and GPU are being set up.
+pub fn preload_fonts() {
+    let handle = std::thread::Builder::new().name("fonts".into()).spawn(FontSystem::new).ok();
+    *PRELOAD.lock().unwrap_or_else(|e| e.into_inner()) = handle;
+}
+
+/// The preloaded font database (waiting for it if needed), or a fresh
+/// one. Also returns how long the caller had to wait.
+fn take_font_system() -> (FontSystem, Duration) {
+    let start = Instant::now();
+    let handle = PRELOAD.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let fs = handle.and_then(|h| h.join().ok()).unwrap_or_else(FontSystem::new);
+    (fs, start.elapsed())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphStyle {
@@ -71,11 +94,13 @@ pub struct GlyphCache {
     texture: wgpu::Texture,
     /// Set when the atlas filled up and was cleared mid-frame.
     pub overflowed: bool,
+    /// How long startup waited for the font database.
+    pub font_wait: Duration,
 }
 
 impl GlyphCache {
     pub fn new(device: &wgpu::Device, family: &str, font_px: f32, line_height: f32) -> Self {
-        let mut font_system = FontSystem::new();
+        let (mut font_system, font_wait) = take_font_system();
         let family = resolve_family(&mut font_system, family);
         let metrics_ct = Metrics::new(font_px, (font_px * line_height).round());
         let scratch = Buffer::new(&mut font_system, metrics_ct);
@@ -102,6 +127,7 @@ impl GlyphCache {
             upload: Vec::new(),
             texture,
             overflowed: false,
+            font_wait,
         };
         cache.metrics = cache.measure(line_height);
         cache

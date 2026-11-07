@@ -127,7 +127,7 @@ pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>,
 
 fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<'_>) {
     let bar = chrome::tab_bar(m, c.titles.len(), &c.caption);
-    let bar_bg = if pal.dark { pal.background.mix(Rgb::hex(0x000000), 0.25) } else { pal.ui_bg };
+    let bar_bg = tab_bar_background(pal);
     p.rect(Layer::UiShapes, 0.0, 0.0, m.width, bar.height, bar_bg.rgba(1.0));
     let r = m.scale * 6.0;
     let text_y = |rect: &ui::Rect| (rect.y + (rect.h - m.ch) / 2.0).round();
@@ -186,42 +186,53 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
 }
 
 /// Minimize, maximize/restore and close, for windows without an OS frame.
+/// Drawn like Windows 11's caption buttons: 10px icons with 1px lines, a
+/// faint hover, red behind close.
 fn draw_window_controls(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, bar: &chrome::TabBar, c: &ChromeView<'_>) {
     let (Some(min), Some(max), Some(close)) = (bar.minimize, bar.maximize, bar.close) else { return };
+    let bar_bg = tab_bar_background(pal);
+    let hover_bg = bar_bg.mix(pal.foreground, if pal.dark { 0.09 } else { 0.06 });
     let t = m.scale.round().max(1.0);
     let s = (10.0 * m.scale).round();
     let center = |r: &ui::Rect| ((r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round());
+    let bg = |h: Hover| if c.hover == h { hover_bg } else { bar_bg };
     for (rect, hover) in [(min, Hover::Minimize), (max, Hover::Maximize), (close, Hover::CloseWindow)] {
         if c.hover == hover {
-            let bg = if hover == Hover::CloseWindow { Rgb::hex(0xe81123).rgba(1.0) } else { pal.ui_dim.rgba(0.3) };
-            p.rect(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, bg);
+            let color = if hover == Hover::CloseWindow { Rgb::hex(0xc42b1c) } else { hover_bg };
+            p.rect(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, color.rgba(1.0));
         }
     }
-    let fg = |h: Hover| if c.hover == h && h == Hover::CloseWindow { Rgb::hex(0xffffff) } else { pal.foreground };
+    let fg = pal.foreground;
 
     let (x, y) = center(&min);
-    p.rect(Layer::UiShapes, x, y + (s / 2.0).round(), s, t, fg(Hover::Minimize).rgba(1.0));
+    p.rect(Layer::UiShapes, x, y + (s / 2.0).round(), s, t, fg.rgba(1.0));
 
+    // Outlined rounded squares: the line colour, then the background inside.
     let (x, y) = center(&max);
-    let col = fg(Hover::Maximize).rgba(1.0);
-    let outline = |p: &mut Painter<'_>, x: f32, y: f32, w: f32| {
-        p.rect(Layer::UiShapes, x, y, w, t, col);
-        p.rect(Layer::UiShapes, x, y + w - t, w, t, col);
-        p.rect(Layer::UiShapes, x, y, t, w, col);
-        p.rect(Layer::UiShapes, x + w - t, y, t, w, col);
+    let r = m.scale * 1.5;
+    let square = |p: &mut Painter<'_>, x: f32, y: f32, w: f32, inside: Rgb| {
+        p.rounded(Layer::UiShapes, x, y, w, w, r, fg.rgba(1.0));
+        p.rounded(Layer::UiShapes, x + t, y + t, w - 2.0 * t, w - 2.0 * t, (r - t).max(0.0), inside.rgba(1.0));
     };
     if c.maximized {
-        // Restore: two overlapping squares.
+        // Restore: a square with a second one peeking out behind it.
         let o = (2.0 * m.scale).round();
         let w = s - o;
-        p.rect(Layer::UiShapes, x + o, y, w, t, col);
-        p.rect(Layer::UiShapes, x + s - t, y, t, w, col);
-        outline(p, x, y + o, w);
+        square(p, x + o, y, w, bg(Hover::Maximize));
+        // Clear the back square where the front one covers it.
+        p.rect(Layer::UiShapes, x - t, y + o - t, w + 2.0 * t, w + 2.0 * t, bg(Hover::Maximize).rgba(1.0));
+        square(p, x, y + o, w, bg(Hover::Maximize));
     } else {
-        outline(p, x, y, s);
+        square(p, x, y, s, bg(Hover::Maximize));
     }
 
-    p.icon(Layer::UiText, '×', close.x + close.w / 2.0, close.y + close.h / 2.0, fg(Hover::CloseWindow).rgba(1.0));
+    let (x, y) = center(&close);
+    let white = c.hover == Hover::CloseWindow;
+    p.cross(Layer::UiShapes, x, y, s, t, if white { Rgb::hex(0xffffff) } else { fg }.rgba(1.0));
+}
+
+fn tab_bar_background(pal: &Palette) -> Rgb {
+    if pal.dark { pal.background.mix(Rgb::hex(0x000000), 0.25) } else { pal.ui_bg }
 }
 
 fn draw_menu(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, menu: &Menu) {
@@ -718,7 +729,7 @@ mod tests {
 
         let m = Metrics { width: 900.0, height: 700.0, scale: 1.0, cw: 8.0, ch: 17.0 };
         let opts = options_panel(&m, &OptionsState { theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true });
-        let about = about_panel(&m, "gpu", "/cfg");
+        let about = about_panel(&m, "gpu", "300 ms", "/cfg");
         for panel in [&opts, &about] {
             let mut ch = chrome(vec!["Tab 1"]);
             ch.panel = Some(panel);
@@ -742,14 +753,15 @@ mod tests {
         ch.hover = Hover::CloseWindow;
         c.paint(800.0, 300.0, |p| draw(p, &t, &f.view(), &ch));
         let shapes = c.layer(Layer::UiShapes);
-        // minimize line + 4-sided maximize square + red close hover.
-        assert!(shapes.len() >= plain + 6);
-        assert!(shapes.iter().any(|i| i.color == Rgb::hex(0xe81123).rgba(1.0)));
+        // Red close hover + minimize line + outlined maximize square + white ×.
+        assert!(shapes.len() >= plain + 5);
+        assert!(shapes.iter().any(|i| i.color == Rgb::hex(0xc42b1c).rgba(1.0)));
+        assert!(shapes.iter().any(|i| i.kind == 4 && i.color == Rgb::hex(0xffffff).rgba(1.0)), "white × over red");
 
         ch.maximized = true;
         c.paint(800.0, 300.0, |p| draw(p, &t, &f.view(), &ch));
-        // Restore icon: two squares, more strokes than the maximize square.
-        assert!(c.layer(Layer::UiShapes).len() > plain + 6);
+        // Restore icon: two squares, more shapes than the maximize square.
+        assert!(c.layer(Layer::UiShapes).len() > plain + 5);
     }
 
     #[test]

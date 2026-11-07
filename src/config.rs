@@ -119,7 +119,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             font_family: default_font().to_owned(),
-            font_size: 11.0,
+            font_size: default_font_size(),
             line_height: 1.2,
             theme: ThemeMode::System,
             shell: String::new(),
@@ -135,6 +135,11 @@ impl Default for Config {
             display_backend: DisplayBackend::Auto,
         }
     }
+}
+
+/// Points. 12 on Windows, like Windows Terminal; 11 elsewhere.
+fn default_font_size() -> f32 {
+    if cfg!(target_os = "windows") { 12.0 } else { 11.0 }
 }
 
 fn default_font() -> &'static str {

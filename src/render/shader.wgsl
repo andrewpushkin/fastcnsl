@@ -32,6 +32,7 @@ const KIND_RECT: u32 = 0u;
 const KIND_MASK_GLYPH: u32 = 1u;
 const KIND_COLOR_GLYPH: u32 = 2u;
 const KIND_ROUNDED: u32 = 3u;
+const KIND_CROSS: u32 = 4u;
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, i: InstanceIn) -> VOut {
@@ -49,12 +50,21 @@ fn vs(@builtin(vertex_index) vi: u32, i: InstanceIn) -> VOut {
     return out;
 }
 
+// Glyph coverage is blended in gamma space, which makes light text on a
+// dark background look thin and grey (dark text on light is unaffected).
+// Lift the coverage of light text the way DirectWrite and FreeType's gamma
+// correction do: white text gets coverage^(1/1.7), black text none.
+fn text_coverage(a: f32, rgb: vec3<f32>) -> f32 {
+    let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return pow(a, mix(1.0, 1.0 / 1.7, luma));
+}
+
 @fragment
 fn fs(v: VOut) -> @location(0) vec4<f32> {
     switch v.kind {
         case KIND_MASK_GLYPH: {
             let a = textureSampleLevel(atlas_tex, atlas_smp, v.uv, 0.0).a;
-            return vec4<f32>(v.color.rgb, v.color.a * a);
+            return vec4<f32>(v.color.rgb, v.color.a * text_coverage(a, v.color.rgb));
         }
         case KIND_COLOR_GLYPH: {
             let t = textureSampleLevel(atlas_tex, atlas_smp, v.uv, 0.0);
@@ -67,6 +77,13 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
             let q = abs(v.local - half) - (half - vec2<f32>(r, r));
             let d = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
             let a = clamp(0.5 - d, 0.0, 1.0);
+            return vec4<f32>(v.color.rgb, v.color.a * a);
+        }
+        case KIND_CROSS: {
+            // Both diagonals of the square; `radius` is the line width.
+            let s = v.size.x;
+            let d = min(abs(v.local.x - v.local.y), abs(v.local.x + v.local.y - s)) * 0.70710678;
+            let a = clamp(v.radius * 0.5 + 0.5 - d, 0.0, 1.0);
             return vec4<f32>(v.color.rgb, v.color.a * a);
         }
         default: {

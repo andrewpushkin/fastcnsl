@@ -29,6 +29,9 @@ pub const VERSION: &str = match option_env!("RAGAMUFFIN_VERSION") {
 /// The project's home page.
 pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
+/// When the process started, for the startup time in the About panel.
+pub static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 /// Set once the window exists; read by the startup watchdog.
 pub static WINDOW_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -71,6 +74,8 @@ fn x11_keyboard_library_installed() -> bool {
 }
 
 fn main() {
+    STARTED.get_or_init(std::time::Instant::now);
+    render::glyphs::preload_fonts();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     highlight::preload();
 
