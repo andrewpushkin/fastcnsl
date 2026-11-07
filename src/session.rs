@@ -87,6 +87,14 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
             escape_args: true,
         };
 
+        #[cfg(windows)]
+        if let Some(pty) = wsl_pty(cfg, &options, size) {
+            let event_loop = EventLoop::new(term.clone(), proxy, pty, options.drain_on_exit, false)?;
+            let notifier = Notifier(event_loop.channel());
+            event_loop.spawn();
+            return Ok(Self { term, notifier });
+        }
+
         let pty = tty::new(&options, size, 0)?;
         let event_loop = EventLoop::new(term.clone(), proxy, pty, options.drain_on_exit, false)?;
         let notifier = Notifier(event_loop.channel());
@@ -109,6 +117,29 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
 
     pub fn apply_config(&self, cfg: &Config) {
         self.term.lock().set_options(term_config(cfg));
+    }
+}
+
+/// A WSL shell on `ragamuffin-wsl` instead of ConPTY (see `crate::wsl`),
+/// when it is on, the shell is `wsl.exe` with plain arguments and the
+/// helper is there. Otherwise, or if it fails to start, `None`: ConPTY.
+#[cfg(windows)]
+fn wsl_pty(cfg: &Config, options: &tty::Options, size: WindowSize) -> Option<crate::wsl::WslPty> {
+    if !cfg.wsl_direct {
+        return None;
+    }
+    let (wsl_options, run) = crate::wsl::plan(&cfg.shell, &cfg.shell_args)?;
+    let relay = crate::wsl::relay_path()?;
+    let cwd = options.working_directory.as_deref();
+    match crate::wsl::WslPty::spawn(&cfg.shell, &wsl_options, &run, &relay, cwd, size) {
+        Ok(pty) => {
+            log::info!("WSL tab through {}: {wsl_options:?} {run:?}", relay.display());
+            Some(pty)
+        }
+        Err(e) => {
+            log::warn!("{}: {e}; using ConPTY", relay.display());
+            None
+        }
     }
 }
 

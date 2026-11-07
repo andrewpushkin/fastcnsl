@@ -2006,6 +2006,7 @@ dependencies = [
  "etagere",
  "jiff",
  "log",
+ "polling",
  "pollster",
  "serde",
  "syntect",

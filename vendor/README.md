@@ -3,7 +3,7 @@
 ## alacritty_terminal 0.26.0
 
 The crates.io release (Apache-2.0, see `alacritty_terminal/LICENSE-APACHE`),
-without its test recordings, plus three changes (marked "ragamuffin patch").
+without its test recordings, plus four changes (marked "ragamuffin patch").
 
 ### Dropped-line counters (`src/grid/mod.rs`, `src/grid/resize.rs`)
 
@@ -26,6 +26,14 @@ the commit message. The fix posts the event again after a read that leaves
 data behind.
 
 Drop this fix when alacritty_terminal ships one.
+
+### Public Windows pipe modules (`src/tty/windows/mod.rs`)
+
+`tty::windows::blocking` (the threaded pipe reader/writer) and
+`tty::windows::child` (the process exit watcher) are public, so that
+ragamuffin's own PTY for WSL tabs (`src/wsl.rs`), which reads a helper's
+output through a plain pipe instead of ConPTY, can use them with the
+event loop.
 
 ### Prefetching reused rows (`src/grid/mod.rs`)
 

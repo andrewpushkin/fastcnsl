@@ -22,6 +22,8 @@ mod shortcuts;
 mod theme;
 mod ui;
 mod view;
+#[cfg(windows)]
+mod wsl;
 
 use winit::event_loop::EventLoop;
 

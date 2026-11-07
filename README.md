@@ -115,10 +115,18 @@ release, numbered `0.1.<commits on main>`. Older builds:
   [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) from
   the command line: `appimageupdatetool ragamuffin-linux-x86_64.AppImage`.
 - Windows: unzip and run `ragamuffin.exe` (Windows 10 1809 or newer). Keep
-  `conpty.dll` and `OpenConsole.exe` next to it: they are Microsoft's
-  console host from Windows Terminal (MIT, see `ConPTY-LICENSE.txt`), about
-  7 times faster with large output than the one built into Windows, which
-  is used if they are missing.
+  the other files next to it:
+  - `ragamuffin-wsl` runs WSL tabs (shell `wsl.exe`) on a Linux pty and
+    passes their output to ragamuffin through a plain pipe, skipping the
+    Windows console host. Large output then comes through faster than in
+    Windows Terminal (`cat` of a 36 MB file: 0.33 s vs 0.40 s). Windows
+    programs started from such a tab (`cmd.exe`, `powershell.exe`,
+    `explorer.exe .`) work as usual. `wsl_direct = false` runs WSL tabs
+    through the console host instead, like other Windows terminals.
+  - `conpty.dll` and `OpenConsole.exe` are Microsoft's console host from
+    Windows Terminal (MIT, see `ConPTY-LICENSE.txt`), used for every other
+    tab: about 7 times faster with large output than the one built into
+    Windows, which is used if they are missing.
 - macOS: unzip and move `Ragamuffin.app` to Applications. The app is ad-hoc
   signed, not notarized, so the first launch needs right-click → Open.
 
@@ -205,6 +213,7 @@ display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to
 antialiasing = "auto"            # "auto" | "subpixel" | "grayscale"
 minimum_contrast = 4.5           # text on coloured backgrounds: WCAG contrast ratio, 1 = off
 gpu = "auto"                     # "auto" | "directx" | "vulkan" | "opengl" | "metal" | "software"
+wsl_direct = true                # Windows: WSL tabs through ragamuffin-wsl, not the console host
 log_folder = ""                  # empty: ragamuffin-logs in Documents (or home)
 log_new_tabs = false             # log every new tab to a file
 log_timestamps = false           # start each logged line with [HH:MM:SS]

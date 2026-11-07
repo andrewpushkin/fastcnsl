@@ -6,12 +6,16 @@ source "$(dirname "$0")/common.sh"
 ARCH="${1:?usage: windows.sh x86_64|arm64 build|zip}"
 STEP="${2:?usage: windows.sh x86_64|arm64 build|zip}"
 case "$ARCH" in
-    x86_64) TRIPLE=x86_64-pc-windows-gnu;     OBJDUMP=x86_64-w64-mingw32-objdump; SYSROOT=/usr/x86_64-w64-mingw32 ;;
-    arm64)  TRIPLE=aarch64-pc-windows-gnullvm; OBJDUMP=llvm-objdump;               SYSROOT=/opt/llvm-mingw/aarch64-w64-mingw32 ;;
+    x86_64) TRIPLE=x86_64-pc-windows-gnu;     OBJDUMP=x86_64-w64-mingw32-objdump; SYSROOT=/usr/x86_64-w64-mingw32
+            LINUX=x86_64-unknown-linux-musl ;;
+    arm64)  TRIPLE=aarch64-pc-windows-gnullvm; OBJDUMP=llvm-objdump;               SYSROOT=/opt/llvm-mingw/aarch64-w64-mingw32
+            LINUX=aarch64-unknown-linux-musl ;;
     *) echo "unknown arch $ARCH" >&2; exit 1 ;;
 esac
 
 EXE="$TARGET_DIR/$TRIPLE/release/ragamuffin.exe"
+# The static Linux helper for WSL tabs (wsl-relay/, see src/wsl.rs).
+RELAY="$TARGET_DIR/$LINUX/release/ragamuffin-wsl"
 # Microsoft's ConPTY, downloaded into the image by docker/conpty.sh.
 CONPTY=/opt/conpty
 
@@ -28,6 +32,9 @@ add_conpty() {
 if [[ "$STEP" == build ]]; then
     say "compiling ragamuffin $VERSION for $TRIPLE"
     cargo build --release --locked --target "$TRIPLE"
+    say "compiling ragamuffin-wsl for $LINUX"
+    cargo build --release --locked --target "$LINUX" --manifest-path wsl-relay/Cargo.toml
+    cp "$RELAY" "$(dirname "$EXE")/"
     add_conpty "$(dirname "$EXE")"
     echo "-> ${EXE#$ROOT/}"
     exit 0
@@ -38,7 +45,7 @@ say "packaging .zip"
 
 STAGE="$TARGET_DIR/package-windows-$ARCH/ragamuffin"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-cp "$EXE" "$STAGE/"
+cp "$EXE" "$RELAY" "$STAGE/"
 cp README.md "$STAGE/" 2>/dev/null || true
 cp LICENSE "$STAGE/" 2>/dev/null || true
 add_conpty "$STAGE"

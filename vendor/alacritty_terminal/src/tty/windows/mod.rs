@@ -9,8 +9,10 @@ use crate::event::{OnResize, WindowSize};
 use crate::tty::windows::child::ChildExitWatcher;
 use crate::tty::{ChildEvent, EventedPty, EventedReadWrite, Options, Shell};
 
-mod blocking;
-mod child;
+// ragamuffin patch: `blocking` and `child` are public, for ragamuffin's
+// own pipe-based PTY (WSL tabs without ConPTY).
+pub mod blocking;
+pub mod child;
 mod conpty;
 
 use blocking::{UnblockedReader, UnblockedWriter};
