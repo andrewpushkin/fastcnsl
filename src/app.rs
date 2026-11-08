@@ -1042,6 +1042,21 @@ impl State {
         BookmarkMenu { target, any: tab.lines.has_bookmarks(grid) }
     }
 
+    /// The bookmark key: adds or removes a bookmark without a clicked row
+    /// (see `lines::key_bookmark_row`).
+    fn toggle_bookmark_by_key(&mut self, cfg: &Config) {
+        let offset = self.tab().session.term.lock().grid().display_offset();
+        let (_, _, _, pointer_row) = self.mouse_cell(cfg, offset);
+        let tab = &mut self.tabs[self.active];
+        let term = tab.session.term.lock();
+        let grid = term.grid();
+        if let Some((line, _)) = tab.lines.bookmark_target(grid, lines::key_bookmark_row(grid, pointer_row)) {
+            tab.lines.toggle_bookmark(line);
+        }
+        drop(term);
+        self.window.request_redraw();
+    }
+
     /// Scrolls to the next bookmark down (or up) in the active tab.
     fn jump_to_bookmark(&mut self, down: bool) {
         let tab = &mut self.tabs[self.active];
@@ -1184,6 +1199,10 @@ impl State {
                 Command::Copy => return Some(Action::Copy),
                 Command::Paste => return Some(Action::Paste),
                 Command::Options => return Some(Action::Options),
+                Command::ToggleBookmark if !alt_screen => {
+                    self.toggle_bookmark_by_key(cfg);
+                    return None;
+                }
                 Command::PreviousBookmark if !alt_screen => return Some(Action::PreviousBookmark),
                 Command::NextBookmark if !alt_screen => return Some(Action::NextBookmark),
                 Command::CycleTheme => return Some(Action::Theme(self.theme_mode.next())),

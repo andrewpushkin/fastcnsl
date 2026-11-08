@@ -45,9 +45,11 @@ release, numbered `0.1.<commits on main>`. Older builds:
   command starts again at 1. They can count from the start of the tab
   instead, or be turned off (Options → General). A line that wraps keeps
   one number; the numbers hold as old lines leave the scrollback.
-- **Bookmarks**: right-click a line, or its number, and pick Add bookmark.
-  The line is tinted and stays marked as it scrolls and rewraps;
-  Ctrl+Shift+↑ / ↓ (Cmd+↑ / ↓ on macOS) jump between a tab's bookmarks.
+- **Bookmarks**: right-click a line, or its number, and pick Add bookmark,
+  or press Ctrl+Shift+B (Cmd+B on macOS) to mark the cursor's line, or the
+  line under the mouse when scrolled back. The line is tinted and stays
+  marked as it scrolls and rewraps; Ctrl+Shift+↑ / ↓ (Cmd+↑ / ↓ on macOS)
+  jump between a tab's bookmarks.
 - **Logging**: right-click a tab to copy all its text, save it to a file,
   or log it to a file that keeps growing as output arrives (a red dot
   marks the tab). Options → Logging sets logging for every new tab and
@@ -160,7 +162,7 @@ find = ""                          # no shortcut
 Command names: `new_tab`, `close_tab`, `next_tab`, `previous_tab`, `find`,
 `copy`, `paste`, `options`, `cycle_theme`, `font_bigger`, `font_smaller`,
 `font_reset`, `scroll_page_up`, `scroll_page_down`, `scroll_top`,
-`scroll_bottom`, `previous_bookmark`, `next_bookmark`. Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`); keys:
+`scroll_bottom`, `toggle_bookmark`, `previous_bookmark`, `next_bookmark`. Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`); keys:
 a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 `Up`/`Down`/`Left`/`Right`, `F1`–`F12`, and similar.
 
@@ -179,6 +181,7 @@ a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 | Ctrl+= / Ctrl+- / Ctrl+0    | larger / smaller / default font          |
 | Ctrl+Shift+L                | cycle theme: system → dark → light       |
 | Shift+PgUp / PgDn / Home / End | scroll the scrollback                 |
+| Ctrl+Shift+B                | add / remove bookmark                    |
 | Ctrl+Shift+↑ / ↓            | previous / next bookmark                 |
 
 Mouse: drag to select, double-click selects a word, triple-click a line,

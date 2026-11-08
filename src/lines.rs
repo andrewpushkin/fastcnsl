@@ -107,6 +107,16 @@ pub fn scroll_to_show(grid: &Grid<Cell>, abs: usize) -> i32 {
     (hist - top) as i32 - grid.display_offset() as i32
 }
 
+/// The absolute row the bookmark key acts on: the cursor's at the bottom of
+/// the scrollback; when scrolled back, screen row `pointer_row`, the one
+/// under the mouse pointer.
+pub fn key_bookmark_row(grid: &Grid<Cell>, pointer_row: usize) -> usize {
+    match grid.display_offset() {
+        0 => cursor_row(grid),
+        offset => grid.history_size() - offset + pointer_row,
+    }
+}
+
 /// First row of global line `line`, if it still is in the grid. Walks the
 /// whole scrollback: this is for a key press, not for every frame.
 fn first_row_of(grid: &Grid<Cell>, line: u64) -> Option<usize> {
@@ -551,6 +561,25 @@ mod tests {
         // l0, l1, then the cursor's empty row.
         assert!(t.index.bookmark_target(t.term.grid(), 2).is_some());
         assert!(t.index.bookmark_target(t.term.grid(), 3).is_none());
+    }
+
+    #[test]
+    fn at_the_bottom_the_bookmark_key_means_the_cursor_line() {
+        let mut t = T::numbered(20, 6, 100, 30);
+        t.feed("$ ls");
+        assert_eq!(key_bookmark_row(t.term.grid(), 2), t.row("$ ls"));
+    }
+
+    #[test]
+    fn scrolled_back_the_bookmark_key_means_the_row_under_the_pointer() {
+        let mut t = T::numbered(20, 6, 100, 30);
+        t.feed("$ ls");
+        t.term.scroll_display(alacritty_terminal::grid::Scroll::Delta(10));
+        let grid = t.term.grid();
+        let top = grid.history_size() - grid.display_offset();
+        assert_eq!(key_bookmark_row(grid, 2), top + 2);
+        t.term.scroll_display(alacritty_terminal::grid::Scroll::Top);
+        assert_eq!(key_bookmark_row(t.term.grid(), 2), t.row("l2"));
     }
 
     #[test]

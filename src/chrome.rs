@@ -893,6 +893,14 @@ mod tests {
     }
 
     #[test]
+    fn the_add_bookmark_item_shows_its_shortcut_for_any_line() {
+        let keys = Keymap::default();
+        let menu = Menu::context(0.0, 0.0, false, BookmarkMenu { target: Some((42, false)), any: false }, &keys);
+        let item = menu.items.iter().find(|i| i.action == Some(Action::ToggleBookmark(42))).unwrap();
+        assert!(!item.hint.is_empty());
+    }
+
+    #[test]
     fn jump_items_show_their_shortcuts() {
         let keys = Keymap::default();
         let menu = Menu::context(0.0, 0.0, false, BookmarkMenu { target: None, any: true }, &keys);

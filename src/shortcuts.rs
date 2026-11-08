@@ -30,13 +30,14 @@ pub enum Command {
     ScrollPageDown,
     ScrollTop,
     ScrollBottom,
+    ToggleBookmark,
     PreviousBookmark,
     NextBookmark,
 }
 
 impl Command {
     /// Every command, in the order the Options panel lists them.
-    pub const ALL: [Command; 18] = [
+    pub const ALL: [Command; 19] = [
         Command::NewTab,
         Command::CloseTab,
         Command::NextTab,
@@ -53,6 +54,7 @@ impl Command {
         Command::ScrollPageDown,
         Command::ScrollTop,
         Command::ScrollBottom,
+        Command::ToggleBookmark,
         Command::PreviousBookmark,
         Command::NextBookmark,
     ];
@@ -76,6 +78,7 @@ impl Command {
             Command::ScrollPageDown => "scroll_page_down",
             Command::ScrollTop => "scroll_top",
             Command::ScrollBottom => "scroll_bottom",
+            Command::ToggleBookmark => "toggle_bookmark",
             Command::PreviousBookmark => "previous_bookmark",
             Command::NextBookmark => "next_bookmark",
         }
@@ -100,6 +103,7 @@ impl Command {
             Command::ScrollPageDown => "Scroll a page down",
             Command::ScrollTop => "Scroll to top",
             Command::ScrollBottom => "Scroll to bottom",
+            Command::ToggleBookmark => "Add / remove bookmark",
             Command::PreviousBookmark => "Previous bookmark",
             Command::NextBookmark => "Next bookmark",
         }
@@ -141,6 +145,8 @@ impl Command {
             Command::ScrollPageDown => &["Shift+PageDown"],
             Command::ScrollTop => &["Shift+Home"],
             Command::ScrollBottom => &["Shift+End"],
+            Command::ToggleBookmark if mac => &["Cmd+B"],
+            Command::ToggleBookmark => &["Ctrl+Shift+B"],
             Command::PreviousBookmark if mac => &["Cmd+Up"],
             Command::PreviousBookmark => &["Ctrl+Shift+Up"],
             Command::NextBookmark if mac => &["Cmd+Down"],
@@ -161,6 +167,15 @@ impl Command {
             Command::NextBookmark => Action::NextBookmark,
             _ => return None,
         })
+    }
+
+    /// This command does what the menu action does. The menu's bookmark
+    /// item carries its line, so it can't be compared with `action`.
+    fn runs(self, action: Action) -> bool {
+        match (self, action) {
+            (Command::ToggleBookmark, Action::ToggleBookmark(_)) => true,
+            _ => self.action() == Some(action),
+        }
     }
 }
 
@@ -366,7 +381,7 @@ impl Keymap {
     pub fn hint(&self, action: Action) -> String {
         Command::ALL
             .into_iter()
-            .find(|c| c.action() == Some(action))
+            .find(|c| c.runs(action))
             .and_then(|c| self.combos(c).first())
             .map(Combo::to_string)
             .unwrap_or_default()
