@@ -30,11 +30,13 @@ pub enum Command {
     ScrollPageDown,
     ScrollTop,
     ScrollBottom,
+    PreviousBookmark,
+    NextBookmark,
 }
 
 impl Command {
     /// Every command, in the order the Options panel lists them.
-    pub const ALL: [Command; 16] = [
+    pub const ALL: [Command; 18] = [
         Command::NewTab,
         Command::CloseTab,
         Command::NextTab,
@@ -51,6 +53,8 @@ impl Command {
         Command::ScrollPageDown,
         Command::ScrollTop,
         Command::ScrollBottom,
+        Command::PreviousBookmark,
+        Command::NextBookmark,
     ];
 
     /// The name in the settings file's `[keys]` table.
@@ -72,6 +76,8 @@ impl Command {
             Command::ScrollPageDown => "scroll_page_down",
             Command::ScrollTop => "scroll_top",
             Command::ScrollBottom => "scroll_bottom",
+            Command::PreviousBookmark => "previous_bookmark",
+            Command::NextBookmark => "next_bookmark",
         }
     }
 
@@ -94,6 +100,8 @@ impl Command {
             Command::ScrollPageDown => "Scroll a page down",
             Command::ScrollTop => "Scroll to top",
             Command::ScrollBottom => "Scroll to bottom",
+            Command::PreviousBookmark => "Previous bookmark",
+            Command::NextBookmark => "Next bookmark",
         }
     }
 
@@ -133,6 +141,10 @@ impl Command {
             Command::ScrollPageDown => &["Shift+PageDown"],
             Command::ScrollTop => &["Shift+Home"],
             Command::ScrollBottom => &["Shift+End"],
+            Command::PreviousBookmark if mac => &["Cmd+Up"],
+            Command::PreviousBookmark => &["Ctrl+Shift+Up"],
+            Command::NextBookmark if mac => &["Cmd+Down"],
+            Command::NextBookmark => &["Ctrl+Shift+Down"],
         }
     }
 
@@ -145,6 +157,8 @@ impl Command {
             Command::Copy => Action::Copy,
             Command::Paste => Action::Paste,
             Command::Options => Action::Options,
+            Command::PreviousBookmark => Action::PreviousBookmark,
+            Command::NextBookmark => Action::NextBookmark,
             _ => return None,
         })
     }
@@ -407,7 +421,7 @@ pub fn fixed() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+R (in search)", "Toggle regex search"),
         ("Tab (in search)", "Next search box"),
         ("Esc", "Close search, menu or panel"),
-        ("Right click", "Copy / paste menu"),
+        ("Right click", "Copy / paste / bookmark menu"),
         ("Middle click", "Paste; close tab on tab bar"),
         ("Shift+drag", "Select inside mouse apps (vim, htop)"),
     ]

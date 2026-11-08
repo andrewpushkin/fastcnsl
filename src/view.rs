@@ -41,6 +41,9 @@ pub struct View<'a> {
     /// The numbers beside the rows on screen, top to bottom (see
     /// `LineIndex::numbers`).
     pub line_numbers: &'a [Option<u64>],
+    /// The screen rows of bookmarked lines, ascending (see
+    /// `LineIndex::bookmarked_rows`).
+    pub bookmarks: &'a [usize],
 }
 
 /// What the pointer is over, for hover highlights.
@@ -123,6 +126,7 @@ fn span_at(spans: &[Span], col: u16) -> Option<Rgb> {
 
 pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>, c: &ChromeView<'_>) {
     draw_grid(p, term, v);
+    draw_bookmarks(p, v);
     draw_line_numbers(p, v);
     draw_scrollbar(p, term, v);
     if v.search.open {
@@ -412,16 +416,32 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
     }
 }
 
+/// Bookmarked rows: a tint across the window over the cell backgrounds and
+/// under the text, and a bar at the left edge. They show with line numbers
+/// off and on lines that have no number.
+fn draw_bookmarks(p: &mut Painter<'_>, v: &View<'_>) {
+    let accent = v.palette.ui_accent;
+    let bar = (3.0 * v.scale).round();
+    let (w, ch) = (p.width, p.cell.height);
+    for &row in v.bookmarks {
+        let y = v.top + v.padding + row as f32 * ch;
+        p.rect(Layer::Background, 0.0, y, w, ch, accent.rgba(0.18));
+        p.rect(Layer::Background, 0.0, y, bar, ch, accent.rgba(1.0));
+    }
+}
+
 /// Line numbers, right-aligned in the gutter left of the text.
 fn draw_line_numbers(p: &mut Painter<'_>, v: &View<'_>) {
     if v.gutter <= 0.0 {
         return;
     }
-    let color = v.palette.ui_dim.rgba(1.0);
+    let dim = v.palette.ui_dim.rgba(1.0);
+    let accent = v.palette.ui_accent.rgba(1.0);
     let mut buf = String::new();
     for (row, n) in v.line_numbers.iter().enumerate() {
         let Some(n) = n else { continue };
         crate::lines::format_number(*n, &mut buf);
+        let color = if v.bookmarks.binary_search(&row).is_ok() { accent } else { dim };
         p.text(Layer::Text, &buf, v.padding, v.top + v.padding + row as f32 * p.cell.height, color);
     }
 }
@@ -755,6 +775,7 @@ mod tests {
                 min_contrast: 4.5,
                 gutter: 0.0,
                 line_numbers: &[],
+                bookmarks: &[],
             }
         }
     }
@@ -852,6 +873,39 @@ mod tests {
         // Without a gutter nothing is numbered and the text starts at the edge.
         c.paint(400.0, 300.0, |p| draw(p, &t, &View { line_numbers: &numbers, ..f.view() }, &chrome(vec![])));
         assert_eq!(c.glyph_count(Layer::Text), 4);
+    }
+
+    #[test]
+    fn bookmarked_rows_are_marked_across_the_window() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("ab\r\ncd");
+        let f = Fixture::new();
+        let v = View { padding: 6.0, bookmarks: &[1], ..f.view() };
+        let mut ch = 0.0;
+        c.paint(400.0, 300.0, |p| {
+            ch = p.cell.height;
+            draw(p, &t, &v, &chrome(vec![]));
+        });
+        let accent = f.palette.ui_accent;
+        let (r, g, b) = (accent.rgba(1.0)[0], accent.rgba(1.0)[1], accent.rgba(1.0)[2]);
+        let marks: Vec<_> = c.layer(Layer::Background).iter().filter(|i| i.color[..3] == [r, g, b]).collect();
+        assert!(!marks.is_empty(), "something drawn in the accent colour");
+        // Second row only: below the tab bar (30), the padding and row 0.
+        assert!(marks.iter().all(|i| i.pos[1] == 30.0 + 6.0 + ch), "{:?}", marks.iter().map(|i| i.pos).collect::<Vec<_>>());
+        assert!(marks.iter().any(|i| i.pos[0] == 0.0 && i.size[0] >= 400.0), "a tint across the row");
+        assert!(marks.iter().any(|i| i.pos[0] == 0.0 && i.size[0] < 6.0 && i.color[3] == 1.0), "a solid bar in the padding");
+    }
+
+    #[test]
+    fn a_bookmarked_rows_number_is_in_the_accent_colour() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("ab\r\ncd");
+        let f = Fixture::new();
+        let numbers = [Some(1), Some(2)];
+        let v = View { gutter: 60.0, line_numbers: &numbers, bookmarks: &[1], ..f.view() };
+        c.paint(400.0, 300.0, |p| draw(p, &t, &v, &chrome(vec![])));
+        let colors: Vec<_> = c.layer(Layer::Text).iter().filter(|i| i.kind != 0 && i.pos[0] < 60.0).map(|i| i.color).collect();
+        assert_eq!(colors, [f.palette.ui_dim.rgba(1.0), f.palette.ui_accent.rgba(1.0)]);
     }
 
     #[test]

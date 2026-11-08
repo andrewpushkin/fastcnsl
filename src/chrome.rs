@@ -51,6 +51,10 @@ pub enum Action {
     CloseTabAt(usize),
     /// Open the folder saved and logged text goes to.
     OpenLogFolder,
+    /// Add or remove the bookmark on this global line (see `lines`).
+    ToggleBookmark(u64),
+    PreviousBookmark,
+    NextBookmark,
     /// Options → Logging.
     LogNewTabs(bool),
     LogTimestamps(bool),
@@ -196,6 +200,16 @@ impl MenuItem {
     }
 }
 
+/// What the right-click menu can do with bookmarks.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BookmarkMenu {
+    /// The line under the pointer and whether it is bookmarked; None if
+    /// there is no line to bookmark there.
+    pub target: Option<(u64, bool)>,
+    /// The tab has bookmarks to jump to.
+    pub any: bool,
+}
+
 pub struct Menu {
     pub items: Vec<MenuItem>,
     /// Anchor point; the menu opens below it.
@@ -232,13 +246,19 @@ impl Menu {
     }
 
     /// The right-click menu.
-    pub fn context(x: f32, y: f32, has_selection: bool, keys: &Keymap) -> Self {
+    pub fn context(x: f32, y: f32, has_selection: bool, bookmarks: BookmarkMenu, keys: &Keymap) -> Self {
+        let (line, marked) = bookmarks.target.unwrap_or_default();
+        let toggle = if marked { "Remove bookmark" } else { "Add bookmark" };
         let items = vec![
             MenuItem::new("Copy", Action::Copy).enabled(has_selection),
             MenuItem::new("Paste", Action::Paste),
             MenuItem::new("Select all", Action::SelectAll),
             MenuItem::separator(),
             MenuItem::new("Find…", Action::Find),
+            MenuItem::separator(),
+            MenuItem::new(toggle, Action::ToggleBookmark(line)).enabled(bookmarks.target.is_some()),
+            MenuItem::new("Previous bookmark", Action::PreviousBookmark).enabled(bookmarks.any),
+            MenuItem::new("Next bookmark", Action::NextBookmark).enabled(bookmarks.any),
         ];
         Self { items, x, y, align_right: false, hover: None }.with_hints(keys)
     }
@@ -763,7 +783,7 @@ mod tests {
 
     #[test]
     fn keyboard_navigation_skips_separators_and_disabled() {
-        let mut menu = Menu::context(10.0, 10.0, false, &Keymap::default());
+        let mut menu = Menu::context(10.0, 10.0, false, BookmarkMenu::default(), &Keymap::default());
         menu.step(true);
         assert_eq!(menu.hover, Some(1)); // Copy disabled → Paste
         menu.step(true);
@@ -822,7 +842,7 @@ mod tests {
     #[test]
     fn menus_open_inside_the_window() {
         // Right-click near the bottom-right corner: shifted up and left.
-        let menu = Menu::context(995.0, 695.0, true, &Keymap::default());
+        let menu = Menu::context(995.0, 695.0, true, BookmarkMenu::default(), &Keymap::default());
         let l = menu.layout(&m());
         assert!(l.rect.x + l.rect.w <= 1000.0);
         assert!(l.rect.y + l.rect.h <= 700.0);
@@ -839,9 +859,46 @@ mod tests {
     #[test]
     fn copy_is_enabled_only_with_a_selection() {
         for sel in [false, true] {
-            let menu = Menu::context(0.0, 0.0, sel, &Keymap::default());
+            let menu = Menu::context(0.0, 0.0, sel, BookmarkMenu::default(), &Keymap::default());
             let copy = menu.items.iter().find(|i| i.action == Some(Action::Copy)).unwrap();
             assert_eq!(copy.enabled, sel);
+        }
+    }
+
+    fn bookmark_items(b: BookmarkMenu) -> Vec<(String, Option<Action>, bool)> {
+        let menu = Menu::context(0.0, 0.0, false, b, &Keymap::default());
+        let items = menu.items.iter().filter(|i| matches!(i.action, Some(Action::ToggleBookmark(_) | Action::PreviousBookmark | Action::NextBookmark)));
+        items.map(|i| (i.label.clone(), i.action, i.enabled)).collect()
+    }
+
+    #[test]
+    fn the_context_menu_adds_a_bookmark_on_the_line_clicked() {
+        let items = bookmark_items(BookmarkMenu { target: Some((42, false)), any: false });
+        assert_eq!(items[0], ("Add bookmark".to_owned(), Some(Action::ToggleBookmark(42)), true));
+    }
+
+    #[test]
+    fn the_context_menu_removes_a_bookmark_already_there() {
+        let items = bookmark_items(BookmarkMenu { target: Some((42, true)), any: true });
+        assert_eq!(items[0], ("Remove bookmark".to_owned(), Some(Action::ToggleBookmark(42)), true));
+    }
+
+    #[test]
+    fn nothing_to_bookmark_or_jump_to_disables_the_items() {
+        let items = bookmark_items(BookmarkMenu::default());
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().all(|(_, _, enabled)| !enabled));
+        let items = bookmark_items(BookmarkMenu { target: None, any: true });
+        assert!(!items[0].2 && items[1].2 && items[2].2);
+    }
+
+    #[test]
+    fn jump_items_show_their_shortcuts() {
+        let keys = Keymap::default();
+        let menu = Menu::context(0.0, 0.0, false, BookmarkMenu { target: None, any: true }, &keys);
+        for action in [Action::PreviousBookmark, Action::NextBookmark] {
+            let item = menu.items.iter().find(|i| i.action == Some(action)).unwrap();
+            assert!(!item.hint.is_empty(), "{action:?}");
         }
     }
 
@@ -862,6 +919,8 @@ mod tests {
     #[test]
     fn panels_move_by_their_header_and_stay_in_the_window() {
         let st = OptionsState { page: OptionsPage::General, theme: ThemeMode::Dark, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None, ..OptionsState::default() };
+        // Tall enough for the panel to have room to move in.
+        let m = || Metrics { height: 900.0, ..m() };
         let centred = options_panel(&m(), &st, (0.0, 0.0));
         let h = centred.header;
         assert!(h.w == centred.rect.w && h.y == centred.rect.y && h.h > 0.0, "header across the top");

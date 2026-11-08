@@ -19,7 +19,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
-use crate::chrome::{self, Action, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
+use crate::chrome::{self, Action, BookmarkMenu, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
 use crate::config::{Config, ConfigWatcher, GpuBackend, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
@@ -69,10 +69,12 @@ struct Tab {
     session: Session,
     search: Search,
     code: CodeHighlighter,
-    /// Command lines, for line numbers.
+    /// Command lines and bookmarks, for line numbers and jumps.
     lines: LineIndex,
     /// The line numbers on screen, rebuilt each frame.
     numbers: Vec<Option<u64>>,
+    /// The screen rows of bookmarked lines, rebuilt each frame.
+    bookmarked: Vec<usize>,
     /// Last program started in this tab (the shell's name until then).
     app: String,
     /// Name given with `ragamuffin new-tab NAME`; shown instead of `app`.
@@ -501,6 +503,9 @@ impl App {
                 }
             }
             Action::CopyTabText(_) | Action::SaveTabText(_) | Action::ToggleTabLog(_) => {}
+            Action::ToggleBookmark(line) => st.tab_mut().lines.toggle_bookmark(line),
+            Action::PreviousBookmark => st.jump_to_bookmark(false),
+            Action::NextBookmark => st.jump_to_bookmark(true),
             Action::Gpu(gpu) => self.change_config(|c| c.gpu = gpu),
             Action::Rebind(cmd) => st.capturing = if st.capturing == Some(cmd) { None } else { Some(cmd) },
             Action::ResetKey(cmd) => {
@@ -668,6 +673,7 @@ impl State {
             code: CodeHighlighter::new(cfg.code_highlight, code_theme),
             lines: LineIndex::new(),
             numbers: Vec::new(),
+            bookmarked: Vec::new(),
             app: shell_name(cfg),
             name,
             label: String::new(),
@@ -955,9 +961,11 @@ impl State {
             if !term.mode().contains(TermMode::ALT_SCREEN) {
                 tab.code.update(term.grid());
                 tab.lines.numbers(term.grid(), cfg.line_numbers, &mut tab.numbers);
+                tab.lines.bookmarked_rows(term.grid(), &mut tab.bookmarked);
             } else {
                 // Full-screen programs (vim, less) number their own lines.
                 tab.numbers.clear();
+                tab.bookmarked.clear();
             }
             if tab.search.open {
                 tab.search.refresh(&term);
@@ -977,6 +985,7 @@ impl State {
                 min_contrast: cfg.minimum_contrast,
                 gutter: gutter_px(cfg, self.renderer.cell().width),
                 line_numbers: &tab.numbers,
+                bookmarks: &tab.bookmarked,
             };
             let c = ChromeView {
                 caption: self.caption(),
@@ -1014,6 +1023,41 @@ impl State {
         let (pad, gutter) = (padding_px(cfg, self.scale()), gutter_px(cfg, cell.width));
         let (col, row, side) = cell_at(self.mouse, self.top(), pad, gutter, (cell.width, cell.height), self.grid);
         (Point::new(Line(row as i32 - display_offset as i32), Column(col)), side, col, row)
+    }
+
+    /// What the right-click menu at the pointer offers for bookmarks.
+    /// Lines are only numbered on the normal screen.
+    fn bookmark_menu(&mut self, cfg: &Config) -> BookmarkMenu {
+        let offset = self.tab().session.term.lock().grid().display_offset();
+        let (_, _, _, row) = self.mouse_cell(cfg, offset);
+        let over_text = self.mouse.1 >= self.top();
+        let tab = &mut self.tabs[self.active];
+        let term = tab.session.term.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return BookmarkMenu::default();
+        }
+        let grid = term.grid();
+        let abs = grid.history_size() - offset + row;
+        let target = if over_text { tab.lines.bookmark_target(grid, abs) } else { None };
+        BookmarkMenu { target, any: tab.lines.has_bookmarks(grid) }
+    }
+
+    /// Scrolls to the next bookmark down (or up) in the active tab.
+    fn jump_to_bookmark(&mut self, down: bool) {
+        let tab = &mut self.tabs[self.active];
+        let mut term = tab.session.term.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        let Some(abs) = tab.lines.step_bookmark(term.grid(), down) else {
+            drop(term);
+            self.show("No bookmarks in this tab".to_owned());
+            return;
+        };
+        let delta = lines::scroll_to_show(term.grid(), abs);
+        term.scroll_display(Scroll::Delta(delta));
+        drop(term);
+        self.scrolled();
     }
 
     fn has_selection(&self) -> bool {
@@ -1140,6 +1184,8 @@ impl State {
                 Command::Copy => return Some(Action::Copy),
                 Command::Paste => return Some(Action::Paste),
                 Command::Options => return Some(Action::Options),
+                Command::PreviousBookmark if !alt_screen => return Some(Action::PreviousBookmark),
+                Command::NextBookmark if !alt_screen => return Some(Action::NextBookmark),
                 Command::CycleTheme => return Some(Action::Theme(self.theme_mode.next())),
                 Command::NextTab | Command::PreviousTab => {
                     self.cycle_tab(cmd == Command::NextTab);
@@ -1399,7 +1445,10 @@ impl State {
                 // Right-click elsewhere reopens the menu of what is there.
                 self.overlay = Overlay::Menu(match self.chrome_hover(cfg, x, y) {
                     Hover::Tab(i) | Hover::TabClose(i) => Menu::tab(x, y, i, self.tabs[i].log.is_some(), &self.keymap),
-                    _ => Menu::context(x, y, self.has_selection(), &self.keymap),
+                    _ => {
+                        let marks = self.bookmark_menu(cfg);
+                        Menu::context(x, y, self.has_selection(), marks, &self.keymap)
+                    }
                 });
             }
             return picked;
@@ -1577,7 +1626,8 @@ impl State {
             (WinitButton::Right, true) => {
                 let sel = term.selection.as_ref().is_some_and(|s| !s.is_empty());
                 drop(term);
-                self.overlay = Overlay::Menu(Menu::context(x, y, sel, &self.keymap));
+                let marks = self.bookmark_menu(cfg);
+                self.overlay = Overlay::Menu(Menu::context(x, y, sel, marks, &self.keymap));
             }
             (WinitButton::Middle, true) => {
                 drop(term);

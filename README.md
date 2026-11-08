@@ -45,6 +45,9 @@ release, numbered `0.1.<commits on main>`. Older builds:
   command starts again at 1. They can count from the start of the tab
   instead, or be turned off (Options → General). A line that wraps keeps
   one number; the numbers hold as old lines leave the scrollback.
+- **Bookmarks**: right-click a line, or its number, and pick Add bookmark.
+  The line is tinted and stays marked as it scrolls and rewraps;
+  Ctrl+Shift+↑ / ↓ (Cmd+↑ / ↓ on macOS) jump between a tab's bookmarks.
 - **Logging**: right-click a tab to copy all its text, save it to a file,
   or log it to a file that keeps growing as output arrives (a red dot
   marks the tab). Options → Logging sets logging for every new tab and
@@ -56,7 +59,8 @@ release, numbered `0.1.<commits on main>`. Older builds:
   next to ⋮ (on macOS the native buttons move into it). Drag the empty part
   of the bar to move the window; double-click it to maximize.
 - **⋮ menu** for tabs, find, copy and paste, Options and About, plus a
-  right-click menu for copy, paste and select all, and one on each tab.
+  right-click menu for copy, paste, select all and bookmarks, and one on
+  each tab.
 - **Options panel** with three pages: General (theme, font size, code
   highlighting, line numbers, graphics API), Keyboard shortcuts and
   Logging. Drag its title to
@@ -156,7 +160,7 @@ find = ""                          # no shortcut
 Command names: `new_tab`, `close_tab`, `next_tab`, `previous_tab`, `find`,
 `copy`, `paste`, `options`, `cycle_theme`, `font_bigger`, `font_smaller`,
 `font_reset`, `scroll_page_up`, `scroll_page_down`, `scroll_top`,
-`scroll_bottom`. Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`); keys:
+`scroll_bottom`, `previous_bookmark`, `next_bookmark`. Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`); keys:
 a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 `Up`/`Down`/`Left`/`Right`, `F1`–`F12`, and similar.
 
@@ -175,9 +179,10 @@ a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 | Ctrl+= / Ctrl+- / Ctrl+0    | larger / smaller / default font          |
 | Ctrl+Shift+L                | cycle theme: system → dark → light       |
 | Shift+PgUp / PgDn / Home / End | scroll the scrollback                 |
+| Ctrl+Shift+↑ / ↓            | previous / next bookmark                 |
 
 Mouse: drag to select, double-click selects a word, triple-click a line,
-right-click opens the copy/paste menu, and middle-click pastes. On the tab
+right-click opens the copy/paste/bookmark menu, and middle-click pastes. On the tab
 bar, middle-click closes a tab. Drag the scrollbar, or click the track to page. Hold
 Shift to select text in programs that capture the mouse (vim, htop).
 
