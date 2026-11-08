@@ -68,6 +68,7 @@ pub const USAGE: &str = "usage:
   ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
   ragamuffin [--pid N] close-tab [NAME | NUMBER]   (default: the active tab)
   ragamuffin [--pid N] quit
+  ragamuffin -V | --version                        print the version
 Without --pid the most recently started window is used.";
 
 /// Parses the arguments after the program name.
@@ -106,6 +107,7 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
         "close-tab" if rest.len() <= 1 => Command::CloseTab(rest.first().cloned()),
         "quit" if rest.is_empty() => Command::Quit,
         "-h" | "--help" | "help" => return Err(USAGE.into()),
+        "-V" | "--version" => return Err(crate::VERSION.into()),
         _ => return Err(format!("unknown command: {}\n{USAGE}", args.join(" "))),
     });
     Ok(out)
@@ -320,6 +322,12 @@ mod tests {
         assert!(parse_args(&args("frobnicate")).is_err());
         assert!(parse_args(&args("--pid x quit")).is_err());
         assert!(parse_args(&args("--help")).unwrap_err().contains("new-tab"));
+    }
+
+    #[test]
+    fn version_flags_answer_with_just_the_version() {
+        assert_eq!(parse_args(&args("-V")).unwrap_err(), crate::VERSION);
+        assert_eq!(parse_args(&args("--version")).unwrap_err(), crate::VERSION);
     }
 
     #[test]

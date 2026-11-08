@@ -117,7 +117,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let parsed = match remote::parse_args(&args) {
         Ok(a) => a,
-        Err(msg) if msg == remote::USAGE => {
+        Err(msg) if msg == remote::USAGE || msg == VERSION => {
             remote::attach_console();
             println!("{msg}");
             std::process::exit(0);

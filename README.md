@@ -283,6 +283,7 @@ ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
 ragamuffin [--pid N] close-tab [NAME | NUMBER]
 ragamuffin [--pid N] quit
 ragamuffin --help
+ragamuffin -V | --version
 ```
 
 | Command | What it does |
