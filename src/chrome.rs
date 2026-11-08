@@ -14,6 +14,8 @@ use crate::ui::Rect;
 pub enum Action {
     NewTab,
     CloseTab,
+    NextTab,
+    PreviousTab,
     Find,
     Copy,
     Paste,
@@ -180,7 +182,7 @@ pub fn resize_edge(x: f32, y: f32, width: f32, height: f32, border: f32) -> Opti
 pub struct MenuItem {
     pub label: String,
     pub hint: String,
-    /// None draws a separator.
+    /// None draws a separator, or a grey caption if there is a label.
     pub action: Option<Action>,
     pub enabled: bool,
 }
@@ -192,6 +194,15 @@ impl MenuItem {
 
     pub fn separator() -> Self {
         Self { label: String::new(), hint: String::new(), action: None, enabled: false }
+    }
+
+    /// A grey line of text that can't be picked.
+    pub fn caption(label: &str, hint: String) -> Self {
+        Self { label: label.to_owned(), hint, action: None, enabled: false }
+    }
+
+    pub fn is_separator(&self) -> bool {
+        self.action.is_none() && self.label.is_empty()
     }
 
     pub fn enabled(mut self, on: bool) -> Self {
@@ -263,10 +274,16 @@ impl Menu {
         Self { items, x, y, align_right: false, hover: None }.with_hints(keys)
     }
 
-    /// The right-click menu of tab `index`; `logging` if it is being logged.
-    pub fn tab(x: f32, y: f32, index: usize, logging: bool, keys: &Keymap) -> Self {
+    /// The right-click menu of tab `index`, headed by its `title`; `logging`
+    /// if it is being logged, `tabs` how many tabs are open.
+    pub fn tab(x: f32, y: f32, index: usize, title: &str, logging: bool, tabs: usize, keys: &Keymap) -> Self {
         let log = if logging { "Stop logging" } else { "Log to file" };
         let items = vec![
+            MenuItem::caption(title, keys.tab_hint(index)),
+            MenuItem::separator(),
+            MenuItem::new("Previous tab", Action::PreviousTab).enabled(tabs > 1),
+            MenuItem::new("Next tab", Action::NextTab).enabled(tabs > 1),
+            MenuItem::separator(),
             MenuItem::new("Copy all text", Action::CopyTabText(index)),
             MenuItem::new("Save text to file", Action::SaveTabText(index)),
             MenuItem::new(log, Action::ToggleTabLog(index)),
@@ -295,7 +312,7 @@ impl Menu {
         let hint = self.items.iter().map(|i| i.hint.chars().count()).max().unwrap_or(0) as f32;
         // margin, label, hint, margin
         let w = (2.0 + label + if hint > 0.0 { 3.0 + hint } else { 1.0 }) * m.cw + 2.0 * pad;
-        let h: f32 = self.items.iter().map(|i| if i.action.is_some() { row_h } else { sep_h }).sum::<f32>() + 2.0 * pad;
+        let h: f32 = self.items.iter().map(|i| if i.is_separator() { sep_h } else { row_h }).sum::<f32>() + 2.0 * pad;
 
         let mut x = if self.align_right { self.x - w } else { self.x };
         x = x.clamp(0.0, (m.width - w).max(0.0));
@@ -306,7 +323,7 @@ impl Menu {
         let mut rows = Vec::with_capacity(self.items.len());
         let mut ry = y + pad;
         for item in &self.items {
-            let rh = if item.action.is_some() { row_h } else { sep_h };
+            let rh = if item.is_separator() { sep_h } else { row_h };
             rows.push(Rect { x: x + pad / 2.0, y: ry, w: w - pad, h: rh });
             ry += rh;
         }
@@ -989,17 +1006,67 @@ mod tests {
 
     #[test]
     fn tab_menu_saves_logs_and_closes_that_tab() {
-        let menu = Menu::tab(50.0, 30.0, 2, false, &Keymap::default());
+        let menu = Menu::tab(50.0, 30.0, 2, "Tab 3: fish", false, 4, &Keymap::default());
         let actions: Vec<_> = menu.items.iter().filter_map(|i| i.action).collect();
         assert_eq!(
             actions,
-            [Action::CopyTabText(2), Action::SaveTabText(2), Action::ToggleTabLog(2), Action::OpenLogFolder, Action::CloseTabAt(2)]
+            [
+                Action::PreviousTab,
+                Action::NextTab,
+                Action::CopyTabText(2),
+                Action::SaveTabText(2),
+                Action::ToggleTabLog(2),
+                Action::OpenLogFolder,
+                Action::CloseTabAt(2)
+            ]
         );
         assert!(menu.items.iter().any(|i| i.label == "Log to file"));
-        let logging = Menu::tab(50.0, 30.0, 2, true, &Keymap::default());
+        let logging = Menu::tab(50.0, 30.0, 2, "Tab 3: fish", true, 4, &Keymap::default());
         assert!(logging.items.iter().any(|i| i.label == "Stop logging"));
         let l = menu.layout(&m());
         assert_eq!((l.rect.x, l.rect.y), (50.0, 30.0), "opens below the pointer");
+    }
+
+    #[test]
+    fn tab_menu_is_headed_by_a_caption_that_cant_be_picked() {
+        let keys = Keymap::default();
+        let mut menu = Menu::tab(50.0, 30.0, 2, "Tab 3: fish", false, 4, &keys);
+        let caption = &menu.items[0];
+        assert_eq!((caption.label.as_str(), caption.action, caption.enabled), ("Tab 3: fish", None, false));
+        assert_eq!(caption.hint, keys.tab_hint(2));
+        assert!(!caption.hint.is_empty() && !caption.is_separator() && menu.items[1].is_separator());
+
+        let l = menu.layout(&m());
+        assert_eq!(l.rows[0].h, l.rows[2].h, "as tall as a normal row");
+        assert!(l.rows[1].h < l.rows[0].h, "separators stay thin");
+        assert_eq!(menu.hit(&l, l.rows[0].x + 1.0, l.rows[0].y + 1.0), None);
+
+        // The keyboard skips it too: up from the first item wraps to the last.
+        menu.hover = Some(2);
+        menu.step(false);
+        assert_eq!(menu.items[menu.hover.unwrap()].action, Some(Action::CloseTabAt(2)));
+    }
+
+    #[test]
+    fn tab_menu_previous_and_next_show_keys_and_need_another_tab() {
+        let keys = Keymap::default();
+        let item = |menu: &Menu, a: Action| {
+            let i = menu.items.iter().find(|i| i.action == Some(a)).unwrap();
+            (i.hint.clone(), i.enabled)
+        };
+        let menu = Menu::tab(0.0, 0.0, 0, "Tab 1: fish", false, 2, &keys);
+        assert_eq!(item(&menu, Action::PreviousTab), (keys.hint(Action::PreviousTab), true));
+        assert_eq!(item(&menu, Action::NextTab), (keys.hint(Action::NextTab), true));
+        assert!(!keys.hint(Action::NextTab).is_empty());
+        let alone = Menu::tab(0.0, 0.0, 0, "Tab 1: fish", false, 1, &keys);
+        assert!(!item(&alone, Action::PreviousTab).1 && !item(&alone, Action::NextTab).1);
+    }
+
+    #[test]
+    fn tabs_past_the_tenth_have_a_caption_without_a_key() {
+        let keys = Keymap::default();
+        let menu = Menu::tab(0.0, 0.0, 10, "Tab 11: fish", false, 11, &keys);
+        assert_eq!((menu.items[0].label.as_str(), menu.items[0].hint.as_str()), ("Tab 11: fish", ""));
     }
 
     #[test]

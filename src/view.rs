@@ -312,7 +312,7 @@ fn draw_menu(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, menu: &Menu) {
     p.rounded(Layer::OverlayShapes, l.rect.x - b, l.rect.y - b, l.rect.w + 2.0 * b, l.rect.h + 2.0 * b, r + b, pal.ui_dim.rgba(0.6));
     p.rounded(Layer::OverlayShapes, l.rect.x, l.rect.y, l.rect.w, l.rect.h, r, pal.ui_bg.rgba(1.0));
     for (i, (item, row)) in menu.items.iter().zip(&l.rows).enumerate() {
-        if item.action.is_none() {
+        if item.is_separator() {
             let y = (row.y + row.h / 2.0).round();
             p.rect(Layer::OverlayShapes, row.x + l.pad, y, row.w - 2.0 * l.pad, b, pal.ui_dim.rgba(0.4));
             continue;

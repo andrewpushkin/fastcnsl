@@ -141,13 +141,15 @@ Fedora 32 and anything newer.
 
 ## Shortcuts
 
-On macOS, use Cmd where the table says Ctrl+Shift. These are the defaults:
+On macOS, use Cmd where the table says Ctrl+Shift, and for the tab number
+keys (Cmd+1 … Cmd+0); font reset is Cmd+Shift+0. These are the defaults:
 change them in Options (⋮ → Options… → Keyboard shortcuts): click a
 command's keys and press the new ones (Esc cancels, Backspace removes the
 shortcut, ↺ next to a changed command restores just its default keys,
 Reset all restores every default). A key taken from another command
-is removed there. The search keys (Enter, F3, Ctrl+R, Tab, Esc) and the mouse
-can't be changed.
+is removed there. The search keys (Enter, F3, Ctrl+R, Tab, Esc), the tab
+number keys and the mouse can't be changed; a tab number key given to a
+command in Options does that command instead.
 
 Changes are saved in the settings file's `[keys]` table, which lists only
 what differs from the defaults:
@@ -170,6 +172,7 @@ a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 |-----------------------------|------------------------------------------|
 | Ctrl+Shift+T / Ctrl+Shift+W | new tab / close tab                      |
 | Ctrl+Tab, Ctrl+PgDn         | next tab (with Shift, or PgUp: previous) |
+| Ctrl+1 … Ctrl+9, Ctrl+0     | go to tab 1 … 9, tab 10                  |
 | Ctrl+Shift+,                | Options                                  |
 | Ctrl+Shift+F                | open or focus search                     |
 | Enter / Shift+Enter, F3     | previous (older) / next match            |
@@ -178,7 +181,7 @@ a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 | Tab / Shift+Tab in search   | next / previous search box               |
 | Esc in search               | close search (all boxes)                 |
 | Ctrl+Shift+C / Ctrl+Shift+V | copy / paste                             |
-| Ctrl+= / Ctrl+- / Ctrl+0    | larger / smaller / default font          |
+| Ctrl+= / Ctrl+- / Ctrl+Shift+Backspace | larger / smaller / default font |
 | Ctrl+Shift+L                | cycle theme: system → dark → light       |
 | Shift+PgUp / PgDn / Home / End | scroll the scrollback                 |
 | Ctrl+Shift+B                | add / remove bookmark                    |
@@ -186,7 +189,8 @@ a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 
 Mouse: drag to select, double-click selects a word, triple-click a line,
 right-click opens the copy/paste/bookmark menu, and middle-click pastes. On the tab
-bar, middle-click closes a tab. Drag the scrollbar, or click the track to page. Hold
+bar, middle-click closes a tab; right-click shows the tab's name and number key, with
+Previous tab, Next tab and the saving and logging items below. Drag the scrollbar, or click the track to page. Hold
 Shift to select text in programs that capture the mouse (vim, htop).
 
 Search ignores case unless the query contains a capital letter.

@@ -489,6 +489,7 @@ impl App {
                     st.start_log(&self.cfg, i, false);
                 }
             }
+            Action::NextTab | Action::PreviousTab => st.cycle_tab(action == Action::NextTab),
             Action::CloseTabAt(i) => {
                 if st.close_tab(i) {
                     el.exit();
@@ -865,6 +866,11 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// The right-click menu of tab `i`.
+    fn tab_menu(&self, x: f32, y: f32, i: usize) -> Menu {
+        Menu::tab(x, y, i, &self.tabs[i].label, self.tabs[i].log.is_some(), self.tabs.len(), &self.keymap)
+    }
+
     fn cycle_tab(&mut self, forward: bool) {
         let n = self.tabs.len();
         let i = if forward { (self.active + 1) % n } else { (self.active + n - 1) % n };
@@ -1214,6 +1220,15 @@ impl State {
             }
         }
 
+        // Ctrl+1 … Ctrl+0. Without such a tab the key does nothing, rather
+        // than reaching the shell only while there are few tabs.
+        if let Some(i) = Combo::from_event(&event, m).and_then(|c| self.keymap.tab_number(&c)) {
+            if i < self.tabs.len() {
+                self.select_tab(i);
+            }
+            return None;
+        }
+
         let tab = &mut self.tabs[self.active];
         if tab.search.open && matches!(event.logical_key, Key::Named(NamedKey::F3)) {
             let dir = if m.shift_key() { Direction::Right } else { Direction::Left };
@@ -1463,7 +1478,7 @@ impl State {
             if picked.is_none() && !on_menu_button && !l.rect.contains(x, y) && button == WinitButton::Right {
                 // Right-click elsewhere reopens the menu of what is there.
                 self.overlay = Overlay::Menu(match self.chrome_hover(cfg, x, y) {
-                    Hover::Tab(i) | Hover::TabClose(i) => Menu::tab(x, y, i, self.tabs[i].log.is_some(), &self.keymap),
+                    Hover::Tab(i) | Hover::TabClose(i) => self.tab_menu(x, y, i),
                     _ => {
                         let marks = self.bookmark_menu(cfg);
                         Menu::context(x, y, self.has_selection(), marks, &self.keymap)
@@ -1539,7 +1554,7 @@ impl State {
                 }
                 (Hover::Tab(i), WinitButton::Left) => self.select_tab(i),
                 (Hover::Tab(i) | Hover::TabClose(i), WinitButton::Right) => {
-                    self.overlay = Overlay::Menu(Menu::tab(x, y, i, self.tabs[i].log.is_some(), &self.keymap));
+                    self.overlay = Overlay::Menu(self.tab_menu(x, y, i));
                     self.window.request_redraw();
                 }
                 _ => {}

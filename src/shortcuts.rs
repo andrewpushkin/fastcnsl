@@ -139,8 +139,10 @@ impl Command {
             Command::FontBigger => &["Ctrl+=", "Ctrl+Shift+=", "Ctrl++"],
             Command::FontSmaller if mac => &["Cmd+-"],
             Command::FontSmaller => &["Ctrl+-"],
-            Command::FontReset if mac => &["Cmd+0"],
-            Command::FontReset => &["Ctrl+0"],
+            // Not Ctrl+0: that is tab 10. Not Ctrl+Shift+0 either: Windows can
+            // take it for switching keyboard layouts.
+            Command::FontReset if mac => &["Cmd+Shift+0"],
+            Command::FontReset => &["Ctrl+Shift+Backspace"],
             Command::ScrollPageUp => &["Shift+PageUp"],
             Command::ScrollPageDown => &["Shift+PageDown"],
             Command::ScrollTop => &["Shift+Home"],
@@ -159,6 +161,8 @@ impl Command {
         Some(match self {
             Command::NewTab => Action::NewTab,
             Command::CloseTab => Action::CloseTab,
+            Command::NextTab => Action::NextTab,
+            Command::PreviousTab => Action::PreviousTab,
             Command::Find => Action::Find,
             Command::Copy => Action::Copy,
             Command::Paste => Action::Paste,
@@ -387,6 +391,17 @@ impl Keymap {
             .unwrap_or_default()
     }
 
+    /// The index of the tab a key press goes to. A key the user bound to
+    /// a command stays with that command.
+    pub fn tab_number(&self, combo: &Combo) -> Option<usize> {
+        (0..10).find(|&i| tab_combo(i).as_ref() == Some(combo)).filter(|_| self.command(combo).is_none())
+    }
+
+    /// The key that goes to tab `index`, as a menu hint; empty if it has none.
+    pub fn tab_hint(&self, index: usize) -> String {
+        tab_combo(index).filter(|c| self.tab_number(c).is_some()).map(|c| c.to_string()).unwrap_or_default()
+    }
+
     /// The `[keys]` table after binding `cmd` to just `combo` (or to
     /// nothing): other commands lose that combo, and entries equal to the
     /// defaults are dropped.
@@ -423,6 +438,18 @@ impl Keymap {
     }
 }
 
+/// The fixed key of tab `index`: Ctrl+1 to Ctrl+9, then Ctrl+0 for the
+/// tenth (Cmd on macOS). Later tabs have none.
+fn tab_combo(index: usize) -> Option<Combo> {
+    let digit = match index {
+        0..=8 => index + 1,
+        9 => 0,
+        _ => return None,
+    };
+    let mac = cfg!(target_os = "macos");
+    Some(Combo { ctrl: !mac, shift: false, alt: false, logo: mac, key: digit.to_string() })
+}
+
 fn default_combos(cmd: Command) -> Vec<Combo> {
     cmd.defaults().iter().filter_map(|t| Combo::parse(t)).collect()
 }
@@ -430,7 +457,9 @@ fn default_combos(cmd: Command) -> Vec<Combo> {
 /// Keys that can't be changed, for the Options panel: they only mean
 /// something in one place (search) or are mouse actions.
 pub fn fixed() -> Vec<(&'static str, &'static str)> {
+    let tab_keys = if cfg!(target_os = "macos") { "Cmd+1…9, Cmd+0" } else { "Ctrl+1…9, Ctrl+0" };
     vec![
+        (tab_keys, "Go to tab 1…9, tab 10"),
         ("Enter / Shift+Enter", "Previous / next match"),
         ("F3 / Shift+F3", "Previous / next match"),
         ("Ctrl+R (in search)", "Toggle regex search"),
@@ -474,9 +503,56 @@ mod tests {
             let c = Combo::from_key(&Key::Character("t".into()), shift_ctrl).unwrap();
             assert_eq!(k.command(&c), Some(Command::NewTab));
         }
-        let c = Combo::from_key(&Key::Character("0".into()), ctrl).unwrap();
-        assert_eq!(k.command(&c), Some(Command::FontReset));
+        let c = Combo::from_key(&Key::Character("-".into()), ctrl).unwrap();
+        assert_eq!(k.command(&c), Some(Command::FontSmaller));
         assert!(Combo::from_key(&Key::Named(NamedKey::Shift), ModifiersState::SHIFT).is_none(), "modifiers alone");
+    }
+
+    /// The modifier of the tab keys on this platform.
+    fn tab_mod() -> &'static str {
+        if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" }
+    }
+
+    #[test]
+    fn number_keys_go_to_tabs_one_to_ten() {
+        let k = Keymap::default();
+        let m = tab_mod();
+        for (key, index) in [("1", 0), ("2", 1), ("9", 8), ("0", 9)] {
+            assert_eq!(k.command(&combo(&format!("{m}+{key}"))), None, "{key} isn't a command");
+            assert_eq!(k.tab_number(&combo(&format!("{m}+{key}"))), Some(index), "{key}");
+        }
+        assert_eq!(k.tab_number(&combo(&format!("{m}+Shift+1"))), None, "exact modifiers only");
+        assert_eq!(k.tab_number(&combo(&format!("{m}+a"))), None);
+        assert_eq!(k.tab_number(&combo("1")), None, "plain digits are typing");
+    }
+
+    #[test]
+    fn tab_hints_name_the_key_of_the_first_ten_tabs() {
+        let k = Keymap::default();
+        let m = tab_mod();
+        assert_eq!(k.tab_hint(0), format!("{m}+1"));
+        assert_eq!(k.tab_hint(8), format!("{m}+9"));
+        assert_eq!(k.tab_hint(9), format!("{m}+0"));
+        assert_eq!(k.tab_hint(10), "", "no key past the tenth tab");
+    }
+
+    #[test]
+    fn a_number_key_bound_to_a_command_stays_with_it() {
+        let m = tab_mod();
+        let mut o = BTreeMap::new();
+        o.insert("font_reset".to_owned(), format!("{m}+3"));
+        let k = Keymap::new(&o);
+        assert_eq!(k.command(&combo(&format!("{m}+3"))), Some(Command::FontReset));
+        assert_eq!(k.tab_number(&combo(&format!("{m}+3"))), None);
+        assert_eq!(k.tab_hint(2), "", "the menu doesn't promise a key that does something else");
+        assert_eq!(k.tab_number(&combo(&format!("{m}+4"))), Some(3), "the others still work");
+    }
+
+    #[test]
+    fn next_and_previous_tab_have_menu_hints() {
+        let k = Keymap::default();
+        assert_eq!(k.hint(Action::NextTab), k.combos(Command::NextTab)[0].to_string());
+        assert_eq!(k.hint(Action::PreviousTab), k.combos(Command::PreviousTab)[0].to_string());
     }
 
     #[test]
