@@ -556,6 +556,18 @@ fn gutter_px(cfg: &Config, cell_width: f32) -> f32 {
     if cfg.line_numbers.is_on() { (lines::GUTTER_CELLS as f32 * cell_width).round() } else { 0.0 }
 }
 
+/// Viewport cell at a window position: (col, row, side of the cell). The
+/// gutter is left of the text, so it moves columns and not rows.
+fn cell_at(pos: (f32, f32), top: f32, pad: f32, gutter: f32, cell: (f32, f32), grid: WindowSize) -> (usize, usize, Side) {
+    let (cw, ch) = cell;
+    let x = (pos.0 - pad - gutter).max(0.0);
+    let y = (pos.1 - top - pad).max(0.0);
+    let col = ((x / cw) as usize).min(grid.num_cols as usize - 1);
+    let row = ((y / ch) as usize).min(grid.num_lines as usize - 1);
+    let side = if x - col as f32 * cw > cw / 2.0 { Side::Right } else { Side::Left };
+    (col, row, side)
+}
+
 fn grid_size(r: &Renderer, cfg: &Config, scale: f64) -> WindowSize {
     let (w, h) = r.size();
     let cell = r.cell();
@@ -999,12 +1011,8 @@ impl State {
     /// Viewport cell under the pointer: (grid point, side, col, row).
     fn mouse_cell(&self, cfg: &Config, display_offset: usize) -> (Point, Side, usize, usize) {
         let cell = self.renderer.cell();
-        let pad = padding_px(cfg, self.scale()) + gutter_px(cfg, cell.width);
-        let x = (self.mouse.0 - pad).max(0.0);
-        let y = (self.mouse.1 - self.top() - pad).max(0.0);
-        let col = ((x / cell.width) as usize).min(self.grid.num_cols as usize - 1);
-        let row = ((y / cell.height) as usize).min(self.grid.num_lines as usize - 1);
-        let side = if x - col as f32 * cell.width > cell.width / 2.0 { Side::Right } else { Side::Left };
+        let (pad, gutter) = (padding_px(cfg, self.scale()), gutter_px(cfg, cell.width));
+        let (col, row, side) = cell_at(self.mouse, self.top(), pad, gutter, (cell.width, cell.height), self.grid);
         (Point::new(Line(row as i32 - display_offset as i32), Column(col)), side, col, row)
     }
 
@@ -1863,6 +1871,24 @@ impl ApplicationHandler<UserEvent> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gutter_only_shifts_columns() {
+        let grid = WindowSize { num_cols: 80, num_lines: 24, cell_width: 9, cell_height: 18 };
+        let (top, pad, gutter, cell) = (32.0, 6.0, 54.0, (9.0, 18.0));
+        // Middle of the left half of column 12 in row 3, where draw_grid puts it.
+        let pos = (pad + gutter + 12.0 * 9.0 + 2.0, top + pad + 3.0 * 18.0 + 9.0);
+        assert_eq!(cell_at(pos, top, pad, gutter, cell, grid), (12, 3, Side::Left));
+        // Right half of the same cell.
+        assert_eq!(cell_at((pos.0 + 5.0, pos.1), top, pad, gutter, cell, grid), (12, 3, Side::Right));
+        // The first row starts right under the padding, gutter or not.
+        assert_eq!(cell_at((pos.0, top + pad + 1.0), top, pad, gutter, cell, grid), (12, 0, Side::Left));
+        assert_eq!(cell_at((pos.0 - gutter, top + pad + 1.0), top, pad, 0.0, cell, grid), (12, 0, Side::Left));
+        // Off the edges: clamped into the grid.
+        assert_eq!(cell_at((0.0, 0.0), top, pad, gutter, cell, grid), (0, 0, Side::Left));
+        assert_eq!(cell_at((5000.0, 5000.0), top, pad, gutter, cell, grid).0, 79);
+        assert_eq!(cell_at((5000.0, 5000.0), top, pad, gutter, cell, grid).1, 23);
+    }
 
     #[test]
     fn font_points_to_pixels() {
