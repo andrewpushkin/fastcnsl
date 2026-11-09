@@ -141,6 +141,15 @@ click 483 81
 shot options_logging
 xdotool key Escape
 
+# Output while tab 1 is in the background: a bell on it, gone when selected.
+click 100 15
+type_line "sleep 1.5; echo done"
+click 320 15
+sleep 2.5
+shot tab_activity
+click 100 15
+shot tab_activity_cleared
+
 LOGS="$HOME/ragamuffin-logs"
 [ -d "$HOME/Documents" ] && LOGS="$HOME/Documents/ragamuffin-logs"
 for f in "$LOGS"/*; do echo "== $f"; cat "$f"; done

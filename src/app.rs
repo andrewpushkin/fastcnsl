@@ -42,6 +42,9 @@ const CONFIG_POLL: Duration = Duration::from_secs(1);
 const MULTI_CLICK: Duration = Duration::from_millis(400);
 /// How long a notice ("Saved to ...") stays up.
 const TOAST_FOR: Duration = Duration::from_secs(5);
+/// How long after a resize output is taken for shells repainting their
+/// prompts for the new size, so it doesn't mark background tabs as active.
+const RESIZE_REPAINT: Duration = Duration::from_secs(1);
 
 /// Font size in points → pixels at the given DPI scale.
 fn font_px(points: f32, scale: f64) -> f32 {
@@ -61,6 +64,12 @@ pub struct App {
     _remote: Option<remote::Server>,
     /// Graphics API from `--gpu`, for this run only.
     gpu_override: Option<GpuBackend>,
+}
+
+/// Whether output at `now` is still shells repainting after the resize at
+/// `resized_at`, rather than something a program printed.
+fn repainting_after_resize(resized_at: Option<Instant>, now: Instant) -> bool {
+    resized_at.is_some_and(|t| now.duration_since(t) < RESIZE_REPAINT)
 }
 
 /// One shell with its own scrollback, search and code highlighting.
@@ -85,6 +94,8 @@ struct Tab {
     shell_title: Option<String>,
     /// The file this tab is being logged to.
     log: Option<TabLog>,
+    /// Printed something since it was last the selected tab (a bell on it).
+    activity: bool,
 }
 
 enum Overlay {
@@ -107,6 +118,8 @@ struct State {
     os_dark: bool,
     theme_mode: ThemeMode,
     scrollbar: Scrollbar,
+    /// When the grid last changed size, see `RESIZE_REPAINT`.
+    resized_at: Option<Instant>,
     search_fade: Fade,
     search_hover: bool,
     mods: ModifiersState,
@@ -329,6 +342,7 @@ impl App {
             os_dark,
             theme_mode: cfg.theme,
             scrollbar: Scrollbar::new(cfg.ui_idle_opacity),
+            resized_at: None,
             search_fade: Fade::new(1.0),
             search_hover: false,
             mods: ModifiersState::empty(),
@@ -680,6 +694,7 @@ impl State {
             label: String::new(),
             shell_title: None,
             log: None,
+            activity: false,
         });
         self.relabel();
         self.select_tab(self.tabs.len() - 1);
@@ -870,6 +885,7 @@ impl State {
 
     fn select_tab(&mut self, i: usize) {
         self.active = i.min(self.tabs.len() - 1);
+        self.tabs[self.active].activity = false;
         self.selecting = false;
         self.reported_button = None;
         self.update_window_title();
@@ -905,6 +921,16 @@ impl State {
             }
         }
         self.grid = size;
+        self.resized_at = Some(Instant::now());
+    }
+
+    /// Background tab `i` printed something: puts a bell on it.
+    fn mark_activity(&mut self, i: usize) {
+        if self.tabs[i].activity || repainting_after_resize(self.resized_at, Instant::now()) {
+            return;
+        }
+        self.tabs[i].activity = true;
+        self.window.request_redraw();
     }
 
     fn reload_font(&mut self, cfg: &Config) {
@@ -1017,6 +1043,7 @@ impl State {
                 },
                 panel: panel.as_ref(),
                 logging: self.tabs.iter().map(|t| t.log.is_some()).collect(),
+                activity: self.tabs.iter().map(|t| t.activity).collect(),
                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
             };
             self.renderer.build(|p| view::draw(p, &term, &v, &c));
@@ -1756,6 +1783,8 @@ impl State {
                 self.write_log(i);
                 if active {
                     self.redraw_for_output();
+                } else {
+                    self.mark_activity(i);
                 }
             }
             TermEvent::Title(t) => {
@@ -1967,6 +1996,14 @@ impl ApplicationHandler<UserEvent> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_right_after_a_resize_is_not_activity() {
+        let t = Instant::now();
+        assert!(!repainting_after_resize(None, t));
+        assert!(repainting_after_resize(Some(t), t + RESIZE_REPAINT / 2));
+        assert!(!repainting_after_resize(Some(t), t + RESIZE_REPAINT));
+    }
 
     #[test]
     fn the_gutter_only_shifts_columns() {

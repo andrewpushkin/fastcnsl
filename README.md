@@ -56,7 +56,8 @@ release, numbered `0.1.<commits on main>`. Older builds:
   timestamps on each line.
 - **Tabs** labelled with the last program run in them (`Tab 1: vim`), each
   with its own shell, scrollback and search. With many tabs the labels
-  shorten to `1: vim`, then just the number.
+  shorten to `1: vim`, then just the number. A bell on a tab means it
+  printed something since you last looked at it.
 - **One-line title bar**: minimize, maximize and close sit in the tab bar
   next to ⋮ (on macOS the native buttons move into it). Drag the empty part
   of the bar to move the window; double-click it to maximize.

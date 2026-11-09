@@ -77,6 +77,8 @@ pub struct ChromeView<'a> {
     pub panel: Option<&'a Panel>,
     /// Which tabs are being logged to a file (a dot on the tab).
     pub logging: Vec<bool>,
+    /// Which tabs printed something since they were last selected (a bell).
+    pub activity: Vec<bool>,
     /// A short notice at the bottom of the window ("Saved to ...").
     pub toast: Option<&'a str>,
 }
@@ -191,12 +193,21 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
         let lead = if logging { 2.0 * m.cw } else { m.cw };
         let room = ((slot.close.x - t.x - lead) / m.cw).floor().max(0.0) as usize;
         let shown = fit_tab_title(i, title, room);
-        let color = if active { pal.foreground } else { pal.ui_dim };
         // A lone number is centred: the tab is too narrow for anything else.
         let tx = if shown.chars().count() > room || room <= 3 {
             (t.x + (t.w - shown.chars().count() as f32 * m.cw) / 2.0).round()
         } else {
             t.x + lead
+        };
+        // The bell takes the place of the close button, which only the
+        // selected or hovered tab shows. On a tab so narrow that the place
+        // is under the number, the number is coloured instead.
+        let activity = !active && c.activity.get(i).copied().unwrap_or(false);
+        let bell_fits = tx + shown.chars().count() as f32 * m.cw <= slot.close.x;
+        let color = match (active, activity && !bell_fits) {
+            (true, _) => pal.foreground,
+            (false, true) => pal.ui_accent,
+            (false, false) => pal.ui_dim,
         };
         p.text(Layer::UiText, &shown, tx, text_y(&t), color.rgba(1.0));
         if logging {
@@ -210,6 +221,8 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
                 p.rounded(Layer::UiShapes, cl.x, cl.y, cl.w, cl.h, m.scale * 3.0, pal.ui_dim.rgba(0.35));
             }
             p.icon(Layer::UiText, '×', cl.x + cl.w / 2.0, cl.y + cl.h / 2.0, pal.ui_dim.rgba(1.0));
+        } else if activity && bell_fits {
+            draw_bell(p, &slot.close, pal.ui_accent);
         }
     }
 
@@ -235,6 +248,24 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
     }
 
     draw_window_controls(p, pal, m, &bar, c);
+}
+
+/// A bell centred in `r`, built from shapes because the font may not have one.
+fn draw_bell(p: &mut Painter<'_>, r: &ui::Rect, color: Rgb) {
+    let s = (r.w.min(r.h) * 0.8).round();
+    let (x, y) = ((r.x + (r.w - s) / 2.0).round(), (r.y + (r.h - s) / 2.0).round());
+    let c = color.rgba(1.0);
+    let at = |f: f32| (s * f).round();
+    // The dome, then straight sides down to the brim.
+    let (body_x, body_w) = (x + at(0.16), s - 2.0 * at(0.16));
+    let brim_y = y + at(0.68);
+    p.rounded(Layer::UiShapes, body_x, y + at(0.06), body_w, at(0.5), body_w / 2.0, c);
+    p.rect(Layer::UiShapes, body_x, y + at(0.32), body_w, brim_y - y - at(0.32), c);
+    let brim_h = at(0.14).max(1.0);
+    p.rounded(Layer::UiShapes, x, brim_y, s, brim_h, brim_h / 2.0, c);
+    // The clapper, just clear of the brim.
+    let d = at(0.2).max(2.0);
+    p.rounded(Layer::UiShapes, x + ((s - d) / 2.0).round(), y + s - d, d, d, d / 2.0, c);
 }
 
 /// A tab's title for `room` characters: "Tab 3: vim", then "3: vim" (cut
@@ -800,6 +831,7 @@ mod tests {
             menu: None,
             panel: None,
             logging: Vec::new(),
+            activity: Vec::new(),
             toast: None,
         }
     }
@@ -951,6 +983,47 @@ mod tests {
         let toast = ChromeView { toast: Some(&long), ..chrome(vec![]) };
         c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &toast));
         assert!(c.layer(Layer::OverlayShapes).iter().all(|i| i.pos[0] >= 0.0 && i.pos[0] < 600.0));
+    }
+
+    #[test]
+    fn bell_marks_background_tabs_with_activity() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("");
+        let f = Fixture::new();
+        let accent = f.palette.ui_accent.rgba(1.0);
+        let shapes = |c: &Canvas| c.layer(Layer::UiShapes).iter().filter(|i| i.color == accent).count();
+        let titles = || vec!["Tab 1: sh", "Tab 2: sh"];
+
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(titles())));
+        assert_eq!(shapes(&c), 0, "no activity, no bell");
+
+        // The bell is drawn on the unselected tab, and only there.
+        let quiet_active = ChromeView { activity: vec![true, false], ..chrome(titles()) };
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &quiet_active));
+        assert_eq!(shapes(&c), 0, "the selected tab never shows one");
+        let background = ChromeView { activity: vec![false, true], ..chrome(titles()) };
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &background));
+        assert!(shapes(&c) > 0, "the background tab shows one");
+
+        // Hovering swaps it for the close button.
+        let hovered = ChromeView { activity: vec![false, true], hover: Hover::Tab(1), ..chrome(titles()) };
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &hovered));
+        assert_eq!(shapes(&c), 0);
+    }
+
+    #[test]
+    fn narrow_tab_with_activity_colours_its_number() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("");
+        let f = Fixture::new();
+        let accent = f.palette.ui_accent.rgba(1.0);
+        let titles: Vec<&str> = vec!["Tab 1: sh"; 30];
+        let mut activity = vec![false; 30];
+        activity[1] = true;
+        let v = ChromeView { activity, ..chrome(titles) };
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &v));
+        assert_eq!(c.layer(Layer::UiShapes).iter().filter(|i| i.color == accent).count(), 0);
+        assert_eq!(c.layer(Layer::UiText).iter().filter(|i| i.kind != 0 && i.color == accent).count(), 1, "just the number");
     }
 
     #[test]
