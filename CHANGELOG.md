@@ -20,6 +20,7 @@ releases have a section.
   (Cmd+B on macOS). Marked lines are tinted and stay marked as they scroll
   and rewrap; Ctrl+Shift+↑ / ↓ (Cmd+↑ / ↓) jump between them.
 - Ctrl+1…Ctrl+0 go to tabs 1-10, and the tab menu lists the tabs.
+- A bell on a tab means it printed something since you last had it selected.
 - `ragamuffin -V` and `--version` print the version.
 
 ### Fixed
