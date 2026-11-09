@@ -41,9 +41,8 @@ release, numbered `0.1.<commits on main>`. Older builds:
   lines, `#include`, `fn main`...) when there is no extension. Text a program
   colours itself is never touched.
 - **Times beside the text**, per command by default: a command's line shows
-  the local minutes and seconds it was entered at, and each line of its
-  output how long after that it appeared (`01:05`, then `01h40` past 99
-  minutes). Options → General switches to line numbers from the start of
+  the local time it was entered at, and each line of its output how long
+  after that it appeared, both as `HH:MM:SS`. Options → General switches to line numbers from the start of
   the tab, or turns the gutter off. A line that wraps keeps one number;
   the numbers hold as old lines leave the scrollback.
 - **Bookmarks**: right-click a line, or its number, and pick Add bookmark,

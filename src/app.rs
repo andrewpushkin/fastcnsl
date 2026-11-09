@@ -559,7 +559,7 @@ fn padding_px(cfg: &Config, scale: f32) -> f32 {
 
 /// Width of the line-number gutter in whole pixels (0 without numbers).
 fn gutter_px(cfg: &Config, cell_width: f32) -> f32 {
-    if cfg.line_numbers.is_on() { (lines::GUTTER_CELLS as f32 * cell_width).round() } else { 0.0 }
+    if cfg.line_numbers.is_on() { (lines::gutter_cells(cfg.line_numbers) as f32 * cell_width).round() } else { 0.0 }
 }
 
 /// Viewport cell at a window position: (col, row, side of the cell). The

@@ -9,9 +9,9 @@ releases have a section.
 ### Changed
 
 - **The gutter's "Per command" mode, the default, now shows times instead of
-  line numbers.** A command's line shows the local minutes and seconds it was
-  entered at, and each line of its output how long after that it appeared
-  (`01:05`, then `01h40` past 99 minutes). For line numbers, choose "Per tab"
+  line numbers.** A command's line shows the local time it was entered at,
+  and each line of its output how long after that it appeared, both as
+  `HH:MM:SS`. For line numbers, choose "Per tab"
   in Options → General (`line_numbers = "tab"`).
 
 ### Added

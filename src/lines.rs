@@ -18,10 +18,21 @@ use alacritty_terminal::term::cell::{Cell, Flags};
 
 use crate::config::LineNumbers;
 
-/// Characters shown in the gutter; bigger numbers show "…" and their last digits.
+/// Digits shown in the gutter; bigger numbers show "…" and their last digits.
 pub const DIGITS: usize = 5;
-/// Width of the gutter in cells: the digits and a gap before the text.
-pub const GUTTER_CELLS: usize = DIGITS + 1;
+/// Characters in a time shown in the gutter: `HH:MM:SS`.
+pub const TIME_CHARS: usize = 8;
+
+/// Width of the gutter in cells: what it shows and a gap before the text.
+pub fn gutter_cells(mode: LineNumbers) -> usize {
+    1 + if mode == LineNumbers::Command { TIME_CHARS } else { DIGITS }
+}
+
+/// The local time of day, in seconds.
+fn clock_now() -> u64 {
+    let now = jiff::Zoned::now();
+    now.hour() as u64 * 3600 + now.minute() as u64 * 60 + now.second() as u64
+}
 
 /// `ends` lines ended before the row with global id `row` (rows dropped
 /// so far + absolute row). Only rows above it count, so it stays right
@@ -163,8 +174,8 @@ fn next_bookmark(marks: &[u64], here: Option<u64>, first: u64, last: u64, down: 
 /// One tab's command lines, bookmarks, line times and its numbering position.
 pub struct LineIndex {
     /// The lines commands were entered on, ascending: `(global index,
-    /// milliseconds since the tab started)`.
-    marks: Vec<(u64, u64)>,
+    /// milliseconds since the tab started, local time of day in seconds)`.
+    marks: Vec<(u64, u64, u64)>,
     /// Global indices of the bookmarked lines, ascending.
     bookmarks: Vec<u64>,
     /// The bookmark last jumped to.
@@ -173,7 +184,7 @@ pub struct LineIndex {
     view: Option<Pos>,
     /// When the tab started.
     started: Instant,
-    /// The local time it started, in milliseconds into the hour.
+    /// The local time of day it started, in seconds.
     clock: u64,
     /// `(line, milliseconds since the tab started)`, ascending: the lines
     /// from `line` up to the next entry appeared then.
@@ -186,14 +197,13 @@ pub struct LineIndex {
 
 impl LineIndex {
     pub fn new() -> Self {
-        let now = jiff::Zoned::now();
         Self {
             marks: Vec::new(),
             bookmarks: Vec::new(),
             jumped: None,
             view: None,
             started: Instant::now(),
-            clock: (now.minute() as u64 * 60 + now.second() as u64) * 1000 + now.millisecond() as u64,
+            clock: clock_now(),
             times: Vec::new(),
             timed: 0,
             cursor: None,
@@ -245,18 +255,18 @@ impl LineIndex {
     /// Records the cursor's line as a command. Call when Enter is pressed
     /// on the normal screen, before the key reaches the shell.
     pub fn on_enter(&mut self, grid: &Grid<Cell>) {
-        self.on_enter_at(grid, self.millis());
+        self.on_enter_at(grid, self.millis(), clock_now());
     }
 
-    fn on_enter_at(&mut self, grid: &Grid<Cell>, ms: u64) {
+    fn on_enter_at(&mut self, grid: &Grid<Cell>, ms: u64, clock: u64) {
         let start = line_start(grid, cursor_row(grid));
         let line = ends_before(grid, &mut self.view, start);
-        if self.marks.last().is_none_or(|&(m, _)| m < line) {
-            self.marks.push((line, ms));
+        if self.marks.last().is_none_or(|&(m, ..)| m < line) {
+            self.marks.push((line, ms, clock));
         }
         // Commands whose output is gone entirely aren't needed any more.
         let gone = grid.lines_dropped();
-        let unused = self.marks.partition_point(|&(m, _)| m <= gone).saturating_sub(1);
+        let unused = self.marks.partition_point(|&(m, ..)| m <= gone).saturating_sub(1);
         self.marks.drain(..unused);
     }
 
@@ -357,14 +367,13 @@ impl LineIndex {
     }
 
     /// The time shown for global line `line`, in seconds: a command's line
-    /// has the local time (minutes and seconds) it was entered, its output
-    /// the time since then. Before the first command the tab's start counts
+    /// has the local time it was entered, its output the time since then. Before the first command the tab's start counts
     /// as one, its first line being the command's.
     fn time(&self, line: u64) -> Option<u64> {
-        let i = self.marks.partition_point(|&(m, _)| m <= line);
-        let (start, at) = i.checked_sub(1).map_or((0, 0), |i| self.marks[i]);
+        let i = self.marks.partition_point(|&(m, ..)| m <= line);
+        let (start, at, clock) = i.checked_sub(1).map_or((0, 0, self.clock), |i| self.marks[i]);
         if line == start {
-            return Some((self.clock + at) / 1000 % 3600);
+            return Some(clock);
         }
         if line >= self.timed {
             return None;
@@ -396,18 +405,16 @@ pub fn format_number(n: u64, buf: &mut String) {
     }
 }
 
-/// `secs` as `MM:SS`, in [`DIGITS`] characters: `HHhMM` from 100 minutes
-/// on and whole hours from 100 hours on, so it always fits the gutter.
+/// `secs` as `HH:MM:SS`, in [`TIME_CHARS`] characters: whole hours from
+/// 100 hours on, so it always fits the gutter.
 pub fn format_time(secs: u64, buf: &mut String) {
     use std::fmt::Write;
     buf.clear();
-    let (mins, hours) = (secs / 60, secs / 3600);
-    let _ = if mins < 100 {
-        write!(buf, "{mins:02}:{:02}", secs % 60)
-    } else if hours < 100 {
-        write!(buf, "{hours:02}h{:02}", mins % 60)
+    let hours = secs / 3600;
+    let _ = if hours < 100 {
+        write!(buf, "{hours:02}:{:02}:{:02}", secs / 60 % 60, secs % 60)
     } else {
-        write!(buf, "{:>w$}h", hours.min(9999), w = DIGITS - 1)
+        write!(buf, "{:>w$}h", hours.min(9_999_999), w = TIME_CHARS - 1)
     };
 }
 
@@ -744,13 +751,13 @@ mod tests {
         assert!(!t.index.has_bookmarks(t.term.grid()));
     }
 
-    /// Seconds in `T`'s tab at 14:32.
-    const CLOCK: u64 = 14 * 60 + 32;
+    /// A tab that started at 09:14:32, in seconds.
+    const CLOCK: u64 = 9 * 3600 + 14 * 60 + 32;
 
     impl T {
         fn timed(cols: usize, lines: usize, history: usize) -> Self {
             let mut t = Self::new(cols, lines, history);
-            t.index.clock = CLOCK * 1000;
+            t.index.clock = CLOCK;
             t
         }
 
@@ -763,7 +770,7 @@ mod tests {
         /// A command entered `secs` after the tab started.
         fn enter(&mut self, secs: u64, cmd: &str) {
             self.output(secs, &format!("$ {cmd}"));
-            self.index.on_enter_at(self.term.grid(), secs * 1000);
+            self.index.on_enter_at(self.term.grid(), secs * 1000, CLOCK + secs);
             self.output(secs, "\n");
         }
 
@@ -794,17 +801,10 @@ mod tests {
     }
 
     #[test]
-    fn a_commands_start_time_wraps_at_the_hour() {
-        let mut t = T::timed(20, 10, 100);
-        t.enter(3000, "x");
-        assert_eq!(t.times()[0], Some(CLOCK + 3000 - 3600));
-    }
-
-    #[test]
     fn output_right_after_a_command_is_at_zero_across_a_second_boundary() {
         let mut t = T::timed(20, 10, 100);
         t.feed("$ x");
-        t.index.on_enter_at(t.term.grid(), 10_900);
+        t.index.on_enter_at(t.term.grid(), 10_900, CLOCK + 10);
         t.feed("\nfast\n");
         t.index.record_times_at(t.term.grid(), 11_050);
         assert_eq!(t.times(), [Some(CLOCK + 10), Some(0), None]);
@@ -891,18 +891,20 @@ mod tests {
     fn times_fit_the_gutter() {
         let mut b = String::new();
         for (secs, want) in [
-            (0, "00:00"),
-            (65, "01:05"),
-            (99 * 60 + 59, "99:59"),
-            (100 * 60, "01h40"),
-            (99 * 3600 + 59 * 60, "99h59"),
-            (100 * 3600, " 100h"),
-            (u64::MAX, "9999h"),
+            (0, "00:00:00"),
+            (65, "00:01:05"),
+            (9 * 3600 + 14 * 60 + 32, "09:14:32"),
+            (100 * 60, "01:40:00"),
+            (99 * 3600 + 59 * 60 + 59, "99:59:59"),
+            (100 * 3600, "    100h"),
+            (u64::MAX, "9999999h"),
         ] {
             format_time(secs, &mut b);
             assert_eq!(b, want);
-            assert_eq!(b.chars().count(), DIGITS, "{want}");
+            assert_eq!(b.chars().count(), TIME_CHARS, "{want}");
         }
+        assert_eq!(gutter_cells(LineNumbers::Command), TIME_CHARS + 1);
+        assert_eq!(gutter_cells(LineNumbers::Tab), DIGITS + 1);
     }
 
     #[test]

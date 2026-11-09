@@ -885,16 +885,16 @@ mod tests {
     }
 
     #[test]
-    fn times_are_drawn_in_the_gutter_as_minutes_and_seconds() {
+    fn times_are_drawn_in_the_gutter_with_hours_minutes_and_seconds() {
         let Some(mut c) = Canvas::new() else { return };
         let t = term("ab\r\ncd");
         let f = Fixture::new();
-        let numbers = [Some(872), Some(5)];
+        let numbers = [Some(33272), Some(5)];
         let v = View { gutter: 60.0, line_numbers: &numbers, line_number_mode: LineNumbers::Command, ..f.view() };
         c.paint(400.0, 300.0, |p| draw(p, &t, &v, &chrome(vec![])));
         let dim = f.palette.ui_dim.rgba(1.0);
         let shown = c.layer(Layer::Text).iter().filter(|i| i.kind != 0 && i.color == dim).count();
-        assert_eq!(shown, 10, "14:32 and 00:05");
+        assert_eq!(shown, 16, "09:14:32 and 00:00:05");
     }
 
     #[test]

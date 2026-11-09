@@ -38,8 +38,8 @@ impl ThemeMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LineNumbers {
-    /// A command's line shows the local time it was entered (minutes and
-    /// seconds), its output how long after that each line appeared.
+    /// A command's line shows the local time it was entered, its output
+    /// how long after that each line appeared.
     #[default]
     #[serde(alias = "time")]
     Command,
