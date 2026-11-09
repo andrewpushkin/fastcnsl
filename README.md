@@ -371,7 +371,7 @@ targets. It doesn't run the unit tests; run `make tests` before pushing.
 macOS is built on GitHub's Apple Silicon runner with Apple's own SDK.
 
 Every push to `main` becomes a release. The version is
-`<major>.<minor>.<commits on main>` (`scripts/version.sh`): `0.1` comes from
+`<major>.<minor>.<commits on main>` (`scripts/get_version.sh`): `0.1` comes from
 `Cargo.toml`, so bump it there for a new minor version. Local builds use
 the same numbering, and `make VERSION=1.2.3 ...` overrides it.
 

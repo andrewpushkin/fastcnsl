@@ -24,13 +24,12 @@ user how to reconcile them.
 
 ## 2. Work out the version
 
-The version is `0.1.<commits>` (`scripts/version.sh`). The changelog commit made
-in step 4 is one more commit, so the version of this push is the count + 1.
-Count after the pull, because the pull can add commits.
+The version is `0.1.<commits>` (`scripts/get_version.sh`). The changelog commit
+made in step 4 is one more commit, so the version of this push is what `--next`
+prints. Count after the pull, because the pull can add commits.
 
 ```sh
-current=$(scripts/version.sh)
-version="${current%.*}.$(( ${current##*.} + 1 ))"
+version=$(scripts/get_version.sh --next)
 ```
 
 CI numbers releases by the commits on `main`, so the number only matches if

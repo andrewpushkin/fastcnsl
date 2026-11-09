@@ -28,7 +28,7 @@ mod wsl;
 use winit::event_loop::EventLoop;
 
 /// Version shown to users: 0.1.<commits on main>, set by the build
-/// (scripts/version.sh through the Makefile or CI), else Cargo's version.
+/// (scripts/get_version.sh through the Makefile or CI), else Cargo's version.
 pub const VERSION: &str = match option_env!("RAGAMUFFIN_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),

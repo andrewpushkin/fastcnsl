@@ -31,19 +31,18 @@ missing. It comes before step 3 because its commit counts towards the version.
 
 ## 3. Work out the version
 
-The stamp in step 4 is one more commit, so the version of this push is the
-count + 1. `HEAD` holds everything that will be on `main`, because step 1 passed.
+The stamp in step 4 is one more commit, so the version of this push is what
+`--next` prints. `HEAD` holds everything that will be on `main`, because step 1 passed.
 
 ```sh
-current=$(scripts/version.sh)
-version="${current%.*}.$(( ${current##*.} + 1 ))"
+version=$(scripts/get_version.sh --next)
 ```
 
 ## 4. Stamp and commit
 
 If `CHANGELOG.md` has no `## Unreleased` section with an entry under it, there
 is nothing to stamp: skip to step 5, and say so in the report. Pushing this way
-adds no commit, so the release is numbered `$current`.
+adds no commit, so the release is numbered what `scripts/get_version.sh` prints.
 
 Otherwise stamp it, and commit only the changelog, as exactly one commit. Other
 uncommitted work stays out of it, and any second commit would make the version

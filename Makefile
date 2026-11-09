@@ -42,8 +42,8 @@
 #   make distclean        also remove the crate cache and the Docker images
 
 CARGO_CACHE  := $(CURDIR)/.cache/cargo
-# 0.1.<commits>; see scripts/version.sh. Override with make VERSION=...
-VERSION      ?= $(shell scripts/version.sh)
+# 0.1.<commits>; see scripts/get_version.sh. Override with make VERSION=...
+VERSION      ?= $(shell scripts/get_version.sh)
 PLATFORMS    := linux-x86_64 windows-x86_64 windows-arm64 macos-arm64
 PACKAGES     := linux-x86_64-deb linux-x86_64-rpm linux-x86_64-appimage windows-x86_64-zip windows-arm64-zip macos-arm64-zip
 # Optional overrides for the macOS SDK download (see docker/macos-arm64.Dockerfile).

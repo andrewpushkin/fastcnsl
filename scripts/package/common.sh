@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 ROOT="$(pwd)"
 # 0.1.<commits on main>, passed in by the Makefile or CI; computed here otherwise.
-VERSION="${RAGAMUFFIN_VERSION:-$(scripts/version.sh)}"
+VERSION="${RAGAMUFFIN_VERSION:-$(scripts/get_version.sh)}"
 export RAGAMUFFIN_VERSION="$VERSION"
 DIST="$ROOT/dist"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"

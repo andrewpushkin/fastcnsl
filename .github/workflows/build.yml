@@ -2,7 +2,7 @@
 # them locally with `make tests`.
 #
 # - Push to main: lints, all packages, then a GitHub release. Every run
-#   on main is a release: version 0.1.<commits on main> (scripts/version.sh),
+#   on main is a release: version 0.1.<commits on main> (scripts/get_version.sh),
 #   tag v0.1.<commits>, marked "latest". The .deb then also goes to the
 #   apt and rpm repositories on GitHub Pages (job repos).
 # - Pull requests: lints + all packages, uploaded as workflow artifacts.
@@ -117,7 +117,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Version
-        run: echo "VERSION=$(scripts/version.sh)" >> "$GITHUB_ENV"
+        run: echo "VERSION=$(scripts/get_version.sh)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           path: dist
