@@ -4,7 +4,7 @@ Notable changes to ragamuffin, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
-## Unreleased
+## 0.1.84 (2026-11-09)
 
 ### Changed
 
