@@ -40,13 +40,12 @@ release, numbered `0.1.<commits on main>`. Older builds:
   coloured. The language comes from the file name, or from the content (`#!`
   lines, `#include`, `fn main`...) when there is no extension. Text a program
   colours itself is never touched.
-- **Line numbers** beside the text, counted from each command by default:
-  the output of `cat hello.c` is numbered like the file, and the next
-  command starts again at 1. A line that wraps keeps one number; the
-  numbers hold as old lines leave the scrollback. They can be turned off,
-  or replaced by times (Options → General): the tab's first line shows the
-  local minutes and seconds it started at, and every other line how long
-  after the start it appeared (`01:05`, then `01h40` past 99 minutes).
+- **Times beside the text**, per command by default: a command's line shows
+  the local minutes and seconds it was entered at, and each line of its
+  output how long after that it appeared (`01:05`, then `01h40` past 99
+  minutes). Options → General switches to line numbers from the start of
+  the tab, or turns the gutter off. A line that wraps keeps one number;
+  the numbers hold as old lines leave the scrollback.
 - **Bookmarks**: right-click a line, or its number, and pick Add bookmark,
   or press Ctrl+Shift+B (Cmd+B on macOS) to mark the cursor's line, or the
   line under the mouse when scrolled back. The line is tinted and stays
@@ -218,7 +217,7 @@ scrollback = 10000
 ui_idle_opacity = 0.4            # scrollbar/search bar opacity when idle
 padding = 6.0
 code_highlight = true
-line_numbers = "command"         # "command" (from each command) | "time" (since the tab started) | "off"
+line_numbers = "command"         # "command" (time since each command) | "tab" (line numbers) | "off"
 code_theme_dark = "base16-ocean.dark"
 code_theme_light = "InspiredGitHub"
 bold_is_bright = false

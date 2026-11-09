@@ -42,7 +42,8 @@ pub struct View<'a> {
     /// The numbers beside the rows on screen, top to bottom (see
     /// `LineIndex::numbers`).
     pub line_numbers: &'a [Option<u64>],
-    /// What `line_numbers` hold: numbers, or seconds to show as times.
+    /// What `line_numbers` hold: per command seconds to show as times,
+    /// otherwise numbers.
     pub line_number_mode: LineNumbers,
     /// The screen rows of bookmarked lines, ascending (see
     /// `LineIndex::bookmarked_rows`).
@@ -443,7 +444,7 @@ fn draw_line_numbers(p: &mut Painter<'_>, v: &View<'_>) {
     let mut buf = String::new();
     for (row, n) in v.line_numbers.iter().enumerate() {
         let Some(n) = n else { continue };
-        if v.line_number_mode == LineNumbers::Time {
+        if v.line_number_mode == LineNumbers::Command {
             crate::lines::format_time(*n, &mut buf);
         } else {
             crate::lines::format_number(*n, &mut buf);
@@ -782,7 +783,7 @@ mod tests {
                 min_contrast: 4.5,
                 gutter: 0.0,
                 line_numbers: &[],
-                line_number_mode: LineNumbers::Command,
+                line_number_mode: LineNumbers::Tab,
                 bookmarks: &[],
             }
         }
@@ -889,7 +890,7 @@ mod tests {
         let t = term("ab\r\ncd");
         let f = Fixture::new();
         let numbers = [Some(872), Some(5)];
-        let v = View { gutter: 60.0, line_numbers: &numbers, line_number_mode: LineNumbers::Time, ..f.view() };
+        let v = View { gutter: 60.0, line_numbers: &numbers, line_number_mode: LineNumbers::Command, ..f.view() };
         c.paint(400.0, 300.0, |p| draw(p, &t, &v, &chrome(vec![])));
         let dim = f.palette.ui_dim.rgba(1.0);
         let shown = c.layer(Layer::Text).iter().filter(|i| i.kind != 0 && i.color == dim).count();

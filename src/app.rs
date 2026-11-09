@@ -754,8 +754,8 @@ impl State {
         self.window.request_redraw();
     }
 
-    /// Notes when tab `i`'s new lines appeared. Always on, so turning the
-    /// times on shows them for what is already in the tab.
+    /// Notes when tab `i`'s new lines appeared. Always on, so switching to
+    /// times shows them for what is already in the tab.
     fn record_line_times(&mut self, i: usize) {
         let tab = &mut self.tabs[i];
         let term = tab.session.term.lock();

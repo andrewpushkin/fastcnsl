@@ -162,8 +162,9 @@ fn next_bookmark(marks: &[u64], here: Option<u64>, first: u64, last: u64, down: 
 
 /// One tab's command lines, bookmarks, line times and its numbering position.
 pub struct LineIndex {
-    /// Global indices of the lines commands were entered on, ascending.
-    marks: Vec<u64>,
+    /// The lines commands were entered on, ascending: `(global index,
+    /// milliseconds since the tab started)`.
+    marks: Vec<(u64, u64)>,
     /// Global indices of the bookmarked lines, ascending.
     bookmarks: Vec<u64>,
     /// The bookmark last jumped to.
@@ -172,10 +173,10 @@ pub struct LineIndex {
     view: Option<Pos>,
     /// When the tab started.
     started: Instant,
-    /// The minutes and seconds of the local time it started, in seconds.
+    /// The local time it started, in milliseconds into the hour.
     clock: u64,
-    /// `(line, seconds since the start)`, ascending: the lines from `line`
-    /// up to the next entry appeared then.
+    /// `(line, milliseconds since the tab started)`, ascending: the lines
+    /// from `line` up to the next entry appeared then.
     times: Vec<(u64, u64)>,
     /// Lines before this global index have a time.
     timed: u64,
@@ -192,7 +193,7 @@ impl LineIndex {
             jumped: None,
             view: None,
             started: Instant::now(),
-            clock: now.minute() as u64 * 60 + now.second() as u64,
+            clock: (now.minute() as u64 * 60 + now.second() as u64) * 1000 + now.millisecond() as u64,
             times: Vec::new(),
             timed: 0,
             cursor: None,
@@ -209,7 +210,7 @@ impl LineIndex {
     /// Notes the time of the lines that appeared since the last call. Call
     /// when output arrives; pass the normal screen's grid.
     pub fn record_times(&mut self, grid: &Grid<Cell>) {
-        self.record_times_at(grid, self.started.elapsed().as_secs());
+        self.record_times_at(grid, self.millis());
     }
 
     /// A line gets its time when text appears on it, so output that takes a
@@ -217,7 +218,7 @@ impl LineIndex {
     /// Output is seen as it arrives, not character by character. If the
     /// cursor is found back on an earlier line, the lines from there on are
     /// being written again and are timed again.
-    fn record_times_at(&mut self, grid: &Grid<Cell>, secs: u64) {
+    fn record_times_at(&mut self, grid: &Grid<Cell>, ms: u64) {
         let row = cursor_row(grid);
         let start = line_start(grid, row);
         // The rows above the screen don't change: keep the position there
@@ -232,9 +233,7 @@ impl LineIndex {
             self.times.truncate(self.times.partition_point(|&(l, _)| l < end));
             self.timed = end;
         } else if end > self.timed {
-            if self.times.last().is_none_or(|&(_, s)| s != secs) {
-                self.times.push((self.timed, secs));
-            }
+            self.times.push((self.timed, ms));
             self.timed = end;
         }
 
@@ -246,22 +245,25 @@ impl LineIndex {
     /// Records the cursor's line as a command. Call when Enter is pressed
     /// on the normal screen, before the key reaches the shell.
     pub fn on_enter(&mut self, grid: &Grid<Cell>) {
+        self.on_enter_at(grid, self.millis());
+    }
+
+    fn on_enter_at(&mut self, grid: &Grid<Cell>, ms: u64) {
         let start = line_start(grid, cursor_row(grid));
         let line = ends_before(grid, &mut self.view, start);
-        if self.marks.last().is_none_or(|&m| m < line) {
-            self.marks.push(line);
+        if self.marks.last().is_none_or(|&(m, _)| m < line) {
+            self.marks.push((line, ms));
         }
         // Commands whose output is gone entirely aren't needed any more.
         let gone = grid.lines_dropped();
-        let unused = self.marks.partition_point(|&m| m <= gone).saturating_sub(1);
+        let unused = self.marks.partition_point(|&(m, _)| m <= gone).saturating_sub(1);
         self.marks.drain(..unused);
     }
 
-    /// What to show beside the rows on screen, top to bottom: numbers, or
-    /// seconds for [`format_time`] in `LineNumbers::Time`. None for rows that
-    /// continue a wrapped line, for the command line itself when counting
-    /// per command, and for lines with no time yet. Rows below the cursor
-    /// have no entry. Pass the normal screen's grid.
+    /// What to show beside the rows on screen, top to bottom: line numbers,
+    /// or seconds for [`format_time`] in `LineNumbers::Command`. None for
+    /// rows that continue a wrapped line and for lines with no time yet.
+    /// Rows below the cursor have no entry. Pass the normal screen's grid.
     pub fn numbers(&mut self, grid: &Grid<Cell>, mode: LineNumbers, out: &mut Vec<Option<u64>>) {
         out.clear();
         if !mode.is_on() {
@@ -349,31 +351,34 @@ impl LineIndex {
         first_row_of(grid, line)
     }
 
-    /// The time shown for global line `line`: the first line has the local
-    /// time the tab started, the others the time since then.
+    /// Milliseconds since the tab started.
+    fn millis(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    /// The time shown for global line `line`, in seconds: a command's line
+    /// has the local time (minutes and seconds) it was entered, its output
+    /// the time since then. Before the first command the tab's start counts
+    /// as one, its first line being the command's.
     fn time(&self, line: u64) -> Option<u64> {
-        if line == 0 {
-            return Some(self.clock);
+        let i = self.marks.partition_point(|&(m, _)| m <= line);
+        let (start, at) = i.checked_sub(1).map_or((0, 0), |i| self.marks[i]);
+        if line == start {
+            return Some((self.clock + at) / 1000 % 3600);
         }
         if line >= self.timed {
             return None;
         }
         let i = self.times.partition_point(|&(l, _)| l <= line);
-        i.checked_sub(1).map(|i| self.times[i].1)
+        i.checked_sub(1).map(|i| self.times[i].1.saturating_sub(at) / 1000)
     }
 
     /// What is shown for global line `line`.
     fn number(&self, mode: LineNumbers, line: u64) -> Option<u64> {
         match mode {
             LineNumbers::Off => None,
-            LineNumbers::Time => self.time(line),
-            LineNumbers::Command => match self.marks.partition_point(|&m| m <= line) {
-                0 => Some(line + 1),
-                i => {
-                    let cmd = self.marks[i - 1];
-                    (line > cmd).then(|| line - cmd)
-                }
-            },
+            LineNumbers::Tab => Some(line + 1),
+            LineNumbers::Command => self.time(line),
         }
     }
 }
@@ -516,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn output_is_numbered_from_each_command() {
+    fn lines_are_numbered_from_the_start_of_the_tab() {
         let mut t = T::new(20, 10, 100);
         t.feed("welcome\n");
         t.command("ls");
@@ -524,8 +529,8 @@ mod tests {
         t.command("pwd");
         t.feed("/home\n$ ");
         assert_eq!(
-            t.shown(LineNumbers::Command),
-            ["  1 welcome", "    $ ls", "  1 a", "  2 b", "  3 c", "    $ pwd", "  1 /home", "  2 $"]
+            t.shown(LineNumbers::Tab),
+            ["  1 welcome", "  2 $ ls", "  3 a", "  4 b", "  5 c", "  6 $ pwd", "  7 /home", "  8 $"]
         );
         assert!(t.numbers(LineNumbers::Off).is_empty());
     }
@@ -538,8 +543,8 @@ mod tests {
         t.feed("0123456789abcdefghijXY\n");
         t.feed("end\n");
         assert_eq!(
-            t.shown(LineNumbers::Command),
-            ["    $ cat x", "  1 short", "  2 0123456789", "    abcdefghij", "    XY", "  3 end", "  4"]
+            t.shown(LineNumbers::Tab),
+            ["  1 $ cat x", "  2 short", "  3 0123456789", "    abcdefghij", "    XY", "  4 end", "  5"]
         );
     }
 
@@ -547,21 +552,20 @@ mod tests {
     fn numbers_hold_when_history_overflows() {
         // 20 lines of history, 5 on screen: most of the output drops out.
         let mut t = T::new(20, 5, 20);
-        t.command("seq 100");
         for i in 1..=100 {
             t.feed(&format!("{i}\n"));
             // Draw now and then, as the app does.
             if i % 7 == 0 {
-                t.numbers(LineNumbers::Command);
+                t.numbers(LineNumbers::Tab);
             }
         }
         let grid = t.term.grid();
         assert!(grid.lines_dropped() > 70, "{}", grid.lines_dropped());
-        assert_eq!(t.shown(LineNumbers::Command), [" 97 97", " 98 98", " 99 99", "100 100", "101"]);
+        assert_eq!(t.shown(LineNumbers::Tab), [" 97 97", " 98 98", " 99 99", "100 100", "101"]);
 
         // Scrolled to the top of what is left.
         t.term.scroll_display(alacritty_terminal::grid::Scroll::Top);
-        let first = t.shown(LineNumbers::Command)[0].clone();
+        let first = t.shown(LineNumbers::Tab)[0].clone();
         let n: u64 = first.split_whitespace().next().unwrap().parse().unwrap();
         assert_eq!(first, format!("{n:>3} {n}"), "numbers still match the text");
     }
@@ -574,12 +578,12 @@ mod tests {
         // Wider: the long line unwraps; the numbers stay.
         t.term.resize(TermSize::new(20, 6));
         t.index.invalidate();
-        assert_eq!(t.shown(LineNumbers::Command), ["    $ cat", "  1 aaaaaaaaaaaaaaa", "  2 b", "  3"]);
+        assert_eq!(t.shown(LineNumbers::Tab), ["  1 $ cat", "  2 aaaaaaaaaaaaaaa", "  3 b", "  4"]);
         // `clear` empties the screen and the history; counting goes on.
         t.command("clear");
         t.feed("\x1b[H\x1b[2J\x1b[3J");
         t.feed("x\n");
-        assert_eq!(t.numbers(LineNumbers::Command), [Some(1), Some(2)]);
+        assert_eq!(t.numbers(LineNumbers::Tab), [Some(5), Some(6)]);
     }
 
     #[test]
@@ -606,8 +610,7 @@ mod tests {
             t.command(&format!("echo {i}"));
             t.feed(&format!("{i}\n"));
         }
-        assert!(t.index.marks.len() <= 6, "{}", t.index.marks.len());
-        assert_eq!(t.shown(LineNumbers::Command), ["    $ echo 49", "  1 49", "  2"]);
+        assert!((1..=6).contains(&t.index.marks.len()), "{}", t.index.marks.len());
     }
 
     #[test]
@@ -747,18 +750,25 @@ mod tests {
     impl T {
         fn timed(cols: usize, lines: usize, history: usize) -> Self {
             let mut t = Self::new(cols, lines, history);
-            t.index.clock = CLOCK;
+            t.index.clock = CLOCK * 1000;
             t
         }
 
         /// Output arriving `secs` after the tab started.
         fn output(&mut self, secs: u64, s: &str) {
             self.feed(s);
-            self.index.record_times_at(self.term.grid(), secs);
+            self.index.record_times_at(self.term.grid(), secs * 1000);
+        }
+
+        /// A command entered `secs` after the tab started.
+        fn enter(&mut self, secs: u64, cmd: &str) {
+            self.output(secs, &format!("$ {cmd}"));
+            self.index.on_enter_at(self.term.grid(), secs * 1000);
+            self.output(secs, "\n");
         }
 
         fn times(&mut self) -> Vec<Option<u64>> {
-            self.numbers(LineNumbers::Time)
+            self.numbers(LineNumbers::Command)
         }
     }
 
@@ -769,6 +779,35 @@ mod tests {
         t.output(3, "a\n");
         t.output(65, "b\nc\n");
         assert_eq!(t.times(), [Some(CLOCK), Some(3), Some(65), Some(65), None]);
+    }
+
+    #[test]
+    fn a_command_shows_when_it_started_and_its_output_the_time_since() {
+        let mut t = T::timed(20, 10, 100);
+        t.output(0, "welcome\n");
+        t.enter(100, "sleep 3");
+        t.output(103, "a\n");
+        t.enter(200, "ls");
+        t.output(200, "b\n");
+        let (sleep, ls) = (CLOCK + 100, CLOCK + 200);
+        assert_eq!(t.times(), [Some(CLOCK), Some(sleep), Some(3), Some(ls), Some(0), None]);
+    }
+
+    #[test]
+    fn a_commands_start_time_wraps_at_the_hour() {
+        let mut t = T::timed(20, 10, 100);
+        t.enter(3000, "x");
+        assert_eq!(t.times()[0], Some(CLOCK + 3000 - 3600));
+    }
+
+    #[test]
+    fn output_right_after_a_command_is_at_zero_across_a_second_boundary() {
+        let mut t = T::timed(20, 10, 100);
+        t.feed("$ x");
+        t.index.on_enter_at(t.term.grid(), 10_900);
+        t.feed("\nfast\n");
+        t.index.record_times_at(t.term.grid(), 11_050);
+        assert_eq!(t.times(), [Some(CLOCK + 10), Some(0), None]);
     }
 
     #[test]
