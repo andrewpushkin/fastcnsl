@@ -42,9 +42,11 @@ release, numbered `0.1.<commits on main>`. Older builds:
   colours itself is never touched.
 - **Line numbers** beside the text, counted from each command by default:
   the output of `cat hello.c` is numbered like the file, and the next
-  command starts again at 1. They can count from the start of the tab
-  instead, or be turned off (Options → General). A line that wraps keeps
-  one number; the numbers hold as old lines leave the scrollback.
+  command starts again at 1. A line that wraps keeps one number; the
+  numbers hold as old lines leave the scrollback. They can be turned off,
+  or replaced by times (Options → General): the tab's first line shows the
+  local minutes and seconds it started at, and every other line how long
+  after the start it appeared (`01:05`, then `01h40` past 99 minutes).
 - **Bookmarks**: right-click a line, or its number, and pick Add bookmark,
   or press Ctrl+Shift+B (Cmd+B on macOS) to mark the cursor's line, or the
   line under the mouse when scrolled back. The line is tinted and stays
@@ -216,7 +218,7 @@ scrollback = 10000
 ui_idle_opacity = 0.4            # scrollbar/search bar opacity when idle
 padding = 6.0
 code_highlight = true
-line_numbers = "command"         # "command" (from each command) | "tab" | "off"
+line_numbers = "command"         # "command" (from each command) | "time" (since the tab started) | "off"
 code_theme_dark = "base16-ocean.dark"
 code_theme_light = "InspiredGitHub"
 bold_is_bright = false

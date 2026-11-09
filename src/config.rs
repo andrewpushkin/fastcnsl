@@ -33,16 +33,19 @@ impl ThemeMode {
     }
 }
 
-/// Line numbers in a gutter left of the text. A line is what a program
-/// printed as one line: rows that wrap share its number.
+/// Line numbers or times in a gutter left of the text. A line is what a
+/// program printed as one line: rows that wrap share its number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LineNumbers {
     /// Counted from the last command entered: its output starts at 1.
     #[default]
     Command,
-    /// Counted from the start of the tab.
-    Tab,
+    /// The first line shows the local time the tab started (minutes and
+    /// seconds), the others how long after that they appeared. Configs from
+    /// when this was line numbers per tab say "tab".
+    #[serde(alias = "tab")]
+    Time,
     Off,
 }
 
@@ -124,8 +127,8 @@ pub struct Config {
     /// Detect source code printed by `cat`, `head`, `tail`, `bat`, `type`,
     /// `Get-Content`, `git diff`... and colour it.
     pub code_highlight: bool,
-    /// Line numbers: "command" (from the start of each command's output),
-    /// "tab" (from the start of the tab) or "off".
+    /// Gutter: "command" (line numbers from the start of each command's
+    /// output), "time" (time since the tab started) or "off".
     pub line_numbers: LineNumbers,
     /// syntect theme used for code in dark mode.
     pub code_theme_dark: String,
@@ -504,11 +507,11 @@ mod tests {
     #[test]
     fn line_numbers_setting() {
         assert_eq!(Config::default().line_numbers, LineNumbers::Command);
-        for (text, want) in [("command", LineNumbers::Command), ("tab", LineNumbers::Tab), ("off", LineNumbers::Off)] {
+        for (text, want) in [("command", LineNumbers::Command), ("time", LineNumbers::Time), ("tab", LineNumbers::Time), ("off", LineNumbers::Off)] {
             let cfg: Config = toml::from_str(&format!("line_numbers = \"{text}\"")).unwrap();
             assert_eq!(cfg.line_numbers, want);
         }
-        assert!(LineNumbers::Tab.is_on() && !LineNumbers::Off.is_on());
+        assert!(LineNumbers::Time.is_on() && !LineNumbers::Off.is_on());
     }
 
     #[test]

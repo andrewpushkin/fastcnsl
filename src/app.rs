@@ -69,9 +69,9 @@ struct Tab {
     session: Session,
     search: Search,
     code: CodeHighlighter,
-    /// Command lines and bookmarks, for line numbers and jumps.
+    /// Command lines, bookmarks and line times, for the gutter and jumps.
     lines: LineIndex,
-    /// The line numbers on screen, rebuilt each frame.
+    /// The gutter's numbers or times on screen, rebuilt each frame.
     numbers: Vec<Option<u64>>,
     /// The screen rows of bookmarked lines, rebuilt each frame.
     bookmarked: Vec<usize>,
@@ -754,6 +754,16 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Notes when tab `i`'s new lines appeared. Always on, so turning the
+    /// times on shows them for what is already in the tab.
+    fn record_line_times(&mut self, i: usize) {
+        let tab = &mut self.tabs[i];
+        let term = tab.session.term.lock();
+        if !term.mode().contains(TermMode::ALT_SCREEN) {
+            tab.lines.record_times(term.grid());
+        }
+    }
+
     /// Writes tab `i`'s new complete lines to its log, if it has one. A
     /// full-screen program's screen isn't logged; its output is, after it.
     fn write_log(&mut self, i: usize) {
@@ -991,6 +1001,7 @@ impl State {
                 min_contrast: cfg.minimum_contrast,
                 gutter: gutter_px(cfg, self.renderer.cell().width),
                 line_numbers: &tab.numbers,
+                line_number_mode: cfg.line_numbers,
                 bookmarks: &tab.bookmarked,
             };
             let c = ChromeView {
@@ -1741,6 +1752,7 @@ impl State {
             TermEvent::Wakeup => {
                 self.frames.wakeup();
                 self.tabs[i].search.content_changed();
+                self.record_line_times(i);
                 self.write_log(i);
                 if active {
                     self.redraw_for_output();

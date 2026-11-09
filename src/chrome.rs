@@ -632,7 +632,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
             if b.fits_rows(1) {
                 b.text(0.0, "Line numbers", TextStyle::Normal);
                 let mut c = label_w;
-                for (name, mode) in [("Per command", LineNumbers::Command), ("Per tab", LineNumbers::Tab), ("Off", LineNumbers::Off)] {
+                for (name, mode) in [("Per command", LineNumbers::Command), ("Time", LineNumbers::Time), ("Off", LineNumbers::Off)] {
                     c = b.button(c, name, Action::LineNumbers(mode), s.line_numbers == mode);
                 }
                 b.next();

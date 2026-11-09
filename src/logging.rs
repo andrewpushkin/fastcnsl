@@ -12,7 +12,6 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use alacritty_terminal::grid::{Dimensions, Grid};
-use alacritty_terminal::index::Column;
 use alacritty_terminal::term::cell::Cell;
 
 use crate::lines::{self, Pos};
@@ -145,14 +144,7 @@ pub fn all_text(grid: &Grid<Cell>) -> String {
 
 /// The last row with any text on it, or 0.
 fn last_text_row(grid: &Grid<Cell>) -> usize {
-    let cols = grid.columns();
-    (0..grid.total_lines())
-        .rev()
-        .find(|&r| {
-            let row = &grid[lines::line_of(grid, r)];
-            (0..cols).any(|c| row[Column(c)].c != ' ')
-        })
-        .unwrap_or(0)
+    (0..grid.total_lines()).rev().find(|&r| lines::row_has_text(grid, r)).unwrap_or(0)
 }
 
 /// Writes all of a tab's text to a new file.

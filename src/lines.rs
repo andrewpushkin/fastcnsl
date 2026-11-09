@@ -1,4 +1,4 @@
-//! Line numbers, and where each line of a tab's text is.
+//! Line numbers and times, and where each line of a tab's text is.
 //!
 //! A *line* is what a program printed as one line: rows joined while they
 //! wrap, so the numbers match `cat -n`. Every line gets a global index
@@ -10,13 +10,15 @@
 //! viewport, so a frame only counts the rows that moved since the last
 //! one, not the whole scrollback.
 
+use std::time::Instant;
+
 use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 
 use crate::config::LineNumbers;
 
-/// Digits shown in the gutter; bigger numbers show "…" and their last digits.
+/// Characters shown in the gutter; bigger numbers show "…" and their last digits.
 pub const DIGITS: usize = 5;
 /// Width of the gutter in cells: the digits and a gap before the text.
 pub const GUTTER_CELLS: usize = DIGITS + 1;
@@ -83,6 +85,12 @@ pub fn ends_before(grid: &Grid<Cell>, pos: &mut Option<Pos>, abs: usize) -> u64 
         *pos = Some(Pos { row: dropped + abs as u64, ends });
     }
     ends
+}
+
+/// Row `abs` has something other than blanks on it.
+pub fn row_has_text(grid: &Grid<Cell>, abs: usize) -> bool {
+    let row = &grid[line_of(grid, abs)];
+    (0..grid.columns()).any(|c| row[Column(c)].c != ' ')
 }
 
 /// Appends the text of row `abs`, wide-character spacers left out.
@@ -152,7 +160,7 @@ fn next_bookmark(marks: &[u64], here: Option<u64>, first: u64, last: u64, down: 
     }
 }
 
-/// One tab's command lines, bookmarks and its numbering position.
+/// One tab's command lines, bookmarks, line times and its numbering position.
 pub struct LineIndex {
     /// Global indices of the lines commands were entered on, ascending.
     marks: Vec<u64>,
@@ -162,17 +170,77 @@ pub struct LineIndex {
     jumped: Option<u64>,
     /// Position at the top of the viewport (see [`Pos`]).
     view: Option<Pos>,
+    /// When the tab started.
+    started: Instant,
+    /// The minutes and seconds of the local time it started, in seconds.
+    clock: u64,
+    /// `(line, seconds since the start)`, ascending: the lines from `line`
+    /// up to the next entry appeared then.
+    times: Vec<(u64, u64)>,
+    /// Lines before this global index have a time.
+    timed: u64,
+    /// Position near the cursor, for timing lines (see [`Pos`]).
+    cursor: Option<Pos>,
 }
 
 impl LineIndex {
     pub fn new() -> Self {
-        Self { marks: Vec::new(), bookmarks: Vec::new(), jumped: None, view: None }
+        let now = jiff::Zoned::now();
+        Self {
+            marks: Vec::new(),
+            bookmarks: Vec::new(),
+            jumped: None,
+            view: None,
+            started: Instant::now(),
+            clock: now.minute() as u64 * 60 + now.second() as u64,
+            times: Vec::new(),
+            timed: 0,
+            cursor: None,
+        }
     }
 
     /// Forgets the counting position; call after the grid is resized,
     /// which can move rows between the history and the screen.
     pub fn invalidate(&mut self) {
         self.view = None;
+        self.cursor = None;
+    }
+
+    /// Notes the time of the lines that appeared since the last call. Call
+    /// when output arrives; pass the normal screen's grid.
+    pub fn record_times(&mut self, grid: &Grid<Cell>) {
+        self.record_times_at(grid, self.started.elapsed().as_secs());
+    }
+
+    /// A line gets its time when text appears on it, so output that takes a
+    /// while shows when it came and not when the cursor reached its row.
+    /// Output is seen as it arrives, not character by character. If the
+    /// cursor is found back on an earlier line, the lines from there on are
+    /// being written again and are timed again.
+    fn record_times_at(&mut self, grid: &Grid<Cell>, secs: u64) {
+        let row = cursor_row(grid);
+        let start = line_start(grid, row);
+        // The rows above the screen don't change: keep the position there
+        // so this doesn't count the whole scrollback each time.
+        ends_before(grid, &mut self.cursor, start.min(grid.history_size()));
+        let line = ends_before(grid, &mut self.cursor, start);
+        // All its rows: a shell wrapping what is typed leaves the cursor on
+        // a blank row of a line that has text.
+        let end = line + u64::from((start..=row).any(|r| row_has_text(grid, r)));
+
+        if end < self.timed {
+            self.times.truncate(self.times.partition_point(|&(l, _)| l < end));
+            self.timed = end;
+        } else if end > self.timed {
+            if self.times.last().is_none_or(|&(_, s)| s != secs) {
+                self.times.push((self.timed, secs));
+            }
+            self.timed = end;
+        }
+
+        let gone = grid.lines_dropped();
+        let unused = self.times.partition_point(|&(l, _)| l <= gone).saturating_sub(1);
+        self.times.drain(..unused);
     }
 
     /// Records the cursor's line as a command. Call when Enter is pressed
@@ -189,10 +257,11 @@ impl LineIndex {
         self.marks.drain(..unused);
     }
 
-    /// The numbers to show beside the rows on screen, top to bottom: None
-    /// for rows that continue a wrapped line and, counting per command, for
-    /// the command line itself. Rows below the cursor have no entry. Pass
-    /// the normal screen's grid.
+    /// What to show beside the rows on screen, top to bottom: numbers, or
+    /// seconds for [`format_time`] in `LineNumbers::Time`. None for rows that
+    /// continue a wrapped line, for the command line itself when counting
+    /// per command, and for lines with no time yet. Rows below the cursor
+    /// have no entry. Pass the normal screen's grid.
     pub fn numbers(&mut self, grid: &Grid<Cell>, mode: LineNumbers, out: &mut Vec<Option<u64>>) {
         out.clear();
         if !mode.is_on() {
@@ -280,11 +349,24 @@ impl LineIndex {
         first_row_of(grid, line)
     }
 
-    /// The number shown for global line `line`.
+    /// The time shown for global line `line`: the first line has the local
+    /// time the tab started, the others the time since then.
+    fn time(&self, line: u64) -> Option<u64> {
+        if line == 0 {
+            return Some(self.clock);
+        }
+        if line >= self.timed {
+            return None;
+        }
+        let i = self.times.partition_point(|&(l, _)| l <= line);
+        i.checked_sub(1).map(|i| self.times[i].1)
+    }
+
+    /// What is shown for global line `line`.
     fn number(&self, mode: LineNumbers, line: u64) -> Option<u64> {
         match mode {
             LineNumbers::Off => None,
-            LineNumbers::Tab => Some(line + 1),
+            LineNumbers::Time => self.time(line),
             LineNumbers::Command => match self.marks.partition_point(|&m| m <= line) {
                 0 => Some(line + 1),
                 i => {
@@ -307,6 +389,21 @@ pub fn format_number(n: u64, buf: &mut String) {
     } else {
         let _ = write!(buf, "{n:>DIGITS$}");
     }
+}
+
+/// `secs` as `MM:SS`, in [`DIGITS`] characters: `HHhMM` from 100 minutes
+/// on and whole hours from 100 hours on, so it always fits the gutter.
+pub fn format_time(secs: u64, buf: &mut String) {
+    use std::fmt::Write;
+    buf.clear();
+    let (mins, hours) = (secs / 60, secs / 3600);
+    let _ = if mins < 100 {
+        write!(buf, "{mins:02}:{:02}", secs % 60)
+    } else if hours < 100 {
+        write!(buf, "{hours:02}h{:02}", mins % 60)
+    } else {
+        write!(buf, "{:>w$}h", hours.min(9999), w = DIGITS - 1)
+    };
 }
 
 #[cfg(test)]
@@ -430,8 +527,6 @@ mod tests {
             t.shown(LineNumbers::Command),
             ["  1 welcome", "    $ ls", "  1 a", "  2 b", "  3 c", "    $ pwd", "  1 /home", "  2 $"]
         );
-        let tab: Vec<_> = t.numbers(LineNumbers::Tab).into_iter().map(Option::unwrap).collect();
-        assert_eq!(tab, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert!(t.numbers(LineNumbers::Off).is_empty());
     }
 
@@ -463,7 +558,6 @@ mod tests {
         let grid = t.term.grid();
         assert!(grid.lines_dropped() > 70, "{}", grid.lines_dropped());
         assert_eq!(t.shown(LineNumbers::Command), [" 97 97", " 98 98", " 99 99", "100 100", "101"]);
-        assert_eq!(t.numbers(LineNumbers::Tab), [98, 99, 100, 101, 102].map(Some));
 
         // Scrolled to the top of what is left.
         t.term.scroll_display(alacritty_terminal::grid::Scroll::Top);
@@ -486,7 +580,6 @@ mod tests {
         t.feed("\x1b[H\x1b[2J\x1b[3J");
         t.feed("x\n");
         assert_eq!(t.numbers(LineNumbers::Command), [Some(1), Some(2)]);
-        assert_eq!(t.numbers(LineNumbers::Tab), [Some(5), Some(6)]);
     }
 
     #[test]
@@ -646,6 +739,131 @@ mod tests {
         t.toggle("l3");
         t.feed("\x1bc");
         assert!(!t.index.has_bookmarks(t.term.grid()));
+    }
+
+    /// Seconds in `T`'s tab at 14:32.
+    const CLOCK: u64 = 14 * 60 + 32;
+
+    impl T {
+        fn timed(cols: usize, lines: usize, history: usize) -> Self {
+            let mut t = Self::new(cols, lines, history);
+            t.index.clock = CLOCK;
+            t
+        }
+
+        /// Output arriving `secs` after the tab started.
+        fn output(&mut self, secs: u64, s: &str) {
+            self.feed(s);
+            self.index.record_times_at(self.term.grid(), secs);
+        }
+
+        fn times(&mut self) -> Vec<Option<u64>> {
+            self.numbers(LineNumbers::Time)
+        }
+    }
+
+    #[test]
+    fn the_first_line_has_the_start_time_and_the_rest_the_time_since() {
+        let mut t = T::timed(20, 10, 100);
+        t.output(0, "welcome\n");
+        t.output(3, "a\n");
+        t.output(65, "b\nc\n");
+        assert_eq!(t.times(), [Some(CLOCK), Some(3), Some(65), Some(65), None]);
+    }
+
+    #[test]
+    fn a_line_is_timed_when_its_text_appears() {
+        let mut t = T::timed(20, 10, 100);
+        t.output(0, "$ sleep 5\n");
+        // The cursor is on the next row, with nothing printed there yet.
+        t.output(1, "");
+        t.output(6, "done");
+        t.output(9, " more\n");
+        assert_eq!(t.times(), [Some(CLOCK), Some(6), None]);
+    }
+
+    #[test]
+    fn wrapped_rows_share_their_time() {
+        let mut t = T::timed(10, 8, 100);
+        t.output(0, "start\n");
+        t.output(4, "0123456789abcdefghijXY\n");
+        assert_eq!(t.times(), [Some(CLOCK), Some(4), None, None, None]);
+    }
+
+    #[test]
+    fn a_line_keeps_its_time_when_the_cursor_wraps_onto_a_blank_row() {
+        let mut t = T::timed(10, 8, 100);
+        t.output(0, "start\n");
+        // What readline does at the edge: force the wrap, back to column 0.
+        t.output(3, "$ 01234567 \r");
+        t.output(8, "more\n");
+        assert_eq!(t.times(), [Some(CLOCK), Some(3), None, None]);
+    }
+
+    #[test]
+    fn times_hold_when_history_overflows() {
+        let mut t = T::timed(20, 5, 20);
+        for i in 0..100 {
+            t.output(i, &format!("{i}\n"));
+        }
+        assert_eq!(t.times(), [96, 97, 98, 99].map(Some).into_iter().chain([None]).collect::<Vec<_>>());
+        assert!(t.index.times.len() <= 26, "{}", t.index.times.len());
+        t.term.scroll_display(alacritty_terminal::grid::Scroll::Top);
+        let mut text = String::new();
+        let top = t.term.grid().history_size() - t.term.grid().display_offset();
+        push_row(&mut text, t.term.grid(), top);
+        assert_eq!(t.times()[0], Some(text.trim_end().parse().unwrap()), "times still match the text");
+    }
+
+    #[test]
+    fn times_survive_reflow_and_clear() {
+        let mut t = T::timed(10, 6, 100);
+        t.output(0, "start\n");
+        t.output(2, "aaaaaaaaaaaaaaa\n");
+        t.term.resize(TermSize::new(20, 6));
+        t.index.invalidate();
+        assert_eq!(t.times(), [Some(CLOCK), Some(2), None]);
+        t.output(5, "\x1b[H\x1b[2J\x1b[3J");
+        t.output(7, "x\n");
+        assert_eq!(t.times(), [Some(7), None]);
+    }
+
+    #[test]
+    fn lines_the_cursor_goes_back_over_are_timed_again() {
+        let mut t = T::timed(20, 10, 100);
+        t.output(0, "start\n");
+        t.output(1, "one\ntwo\n");
+        t.output(8, "\x1b[2A\r\x1b[K");
+        t.output(9, "three\n");
+        // The cursor is on "two" now, the last line that has an entry.
+        assert_eq!(t.times(), [Some(CLOCK), Some(9), Some(9)]);
+    }
+
+    #[test]
+    fn a_terminal_reset_forgets_the_times_of_the_lines_it_wiped() {
+        let mut t = T::timed(20, 8, 100);
+        t.output(0, "a\nb\nc\n");
+        t.output(4, "\x1bc");
+        t.output(9, "x\ny\n");
+        assert_eq!(t.times(), [Some(CLOCK), Some(9), None]);
+    }
+
+    #[test]
+    fn times_fit_the_gutter() {
+        let mut b = String::new();
+        for (secs, want) in [
+            (0, "00:00"),
+            (65, "01:05"),
+            (99 * 60 + 59, "99:59"),
+            (100 * 60, "01h40"),
+            (99 * 3600 + 59 * 60, "99h59"),
+            (100 * 3600, " 100h"),
+            (u64::MAX, "9999h"),
+        ] {
+            format_time(secs, &mut b);
+            assert_eq!(b, want);
+            assert_eq!(b.chars().count(), DIGITS, "{want}");
+        }
     }
 
     #[test]
