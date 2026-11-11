@@ -116,8 +116,9 @@ pub struct Config {
     pub shell: String,
     /// Arguments passed to the shell.
     pub shell_args: Vec<String>,
-    /// Lines of scrollback history.
-    pub scrollback: usize,
+    /// RAM per tab for its text, in MB. The scrollback is unlimited:
+    /// older lines go to a temporary file, deleted when the tab closes.
+    pub memory_per_tab_mb: usize,
     /// Opacity (0.0–1.0) of the scrollbar and search bar while they are idle.
     /// They become fully opaque while hovered, dragged or typed into.
     pub ui_idle_opacity: f32,
@@ -261,7 +262,7 @@ impl Default for Config {
             theme: ThemeMode::System,
             shell: String::new(),
             shell_args: Vec::new(),
-            scrollback: 10_000,
+            memory_per_tab_mb: 500,
             ui_idle_opacity: 0.4,
             padding: 6.0,
             code_highlight: true,
@@ -384,7 +385,7 @@ impl Config {
         self.ui_idle_opacity = self.ui_idle_opacity.clamp(0.0, 1.0);
         self.padding = self.padding.clamp(0.0, 64.0);
         self.minimum_contrast = self.minimum_contrast.clamp(1.0, 21.0);
-        self.scrollback = self.scrollback.min(1_000_000);
+        self.memory_per_tab_mb = self.memory_per_tab_mb.clamp(64, 16384);
         self
     }
 }
@@ -443,7 +444,21 @@ mod tests {
         let cfg: Config = toml::from_str("font_size = 20.0\ntheme = \"light\"").unwrap();
         assert_eq!(cfg.font_size, 20.0);
         assert_eq!(cfg.theme, ThemeMode::Light);
-        assert_eq!(cfg.scrollback, Config::default().scrollback);
+        assert_eq!(cfg.memory_per_tab_mb, Config::default().memory_per_tab_mb);
+    }
+
+    #[test]
+    fn old_scrollback_key_still_loads() {
+        let cfg: Config = toml::from_str("scrollback = 5000\nfont_size = 20.0").unwrap();
+        assert_eq!(cfg.font_size, 20.0);
+        assert_eq!(cfg.memory_per_tab_mb, 500);
+    }
+
+    #[test]
+    fn memory_is_clamped() {
+        let low = Config { memory_per_tab_mb: 10, ..Config::default() }.sanitized();
+        let high = Config { memory_per_tab_mb: 1_000_000, ..Config::default() }.sanitized();
+        assert_eq!((low.memory_per_tab_mb, high.memory_per_tab_mb), (64, 16384));
     }
 
     #[test]

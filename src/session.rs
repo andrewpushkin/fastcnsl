@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use alacritty_terminal::event::{Event, EventListener, Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Notifier};
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{self, Term};
@@ -25,6 +26,7 @@ use alacritty_terminal::tty;
 use winit::event_loop::EventLoopProxy;
 
 use crate::config::Config;
+use crate::history::{self, Budget, History};
 
 /// Events delivered to the winit event loop from other threads.
 #[derive(Debug, Clone)]
@@ -64,6 +66,9 @@ impl EventListener for EventProxy {
 /// [`EventProxy`] in the app, a channel in tests.
 pub struct Session<L: EventListener = EventProxy> {
     pub term: Arc<FairMutex<Term<L>>>,
+    /// The lines that left the grid (see `crate::history`).
+    pub history: history::Shared,
+    budget: Budget,
     notifier: Notifier,
 }
 
@@ -72,9 +77,13 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
         static ENV: std::sync::Once = std::sync::Once::new();
         ENV.call_once(tty::setup_env);
 
-        let term_cfg = term_config(cfg);
-        let dims = TermSize::new(size.num_cols as usize, size.num_lines as usize);
-        let term = Arc::new(FairMutex::new(Term::new(term_cfg, &dims, proxy.clone())));
+        let budget = Budget::from_mb(cfg.memory_per_tab_mb);
+        let columns = size.num_cols as usize;
+        let dims = TermSize::new(columns, size.num_lines as usize);
+        let mut term = Term::new(term_config(&budget, columns), &dims, proxy.clone());
+        let history = Arc::new(std::sync::Mutex::new(History::new(budget.history_ram(), history::history_dir())));
+        term.grid_mut().set_row_sink(Box::new(history::Sink(history.clone())));
+        let term = Arc::new(FairMutex::new(term));
 
         let shell = (!cfg.shell.is_empty())
             .then(|| tty::Shell::new(cfg.shell.clone(), cfg.shell_args.clone()));
@@ -92,7 +101,7 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
             let event_loop = EventLoop::new(term.clone(), proxy, pty, options.drain_on_exit, false)?;
             let notifier = Notifier(event_loop.channel());
             event_loop.spawn();
-            return Ok(Self { term, notifier });
+            return Ok(Self { term, history, budget, notifier });
         }
 
         let pty = tty::new(&options, size, 0)?;
@@ -100,7 +109,7 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
         let notifier = Notifier(event_loop.channel());
         event_loop.spawn();
 
-        Ok(Self { term, notifier })
+        Ok(Self { term, history, budget, notifier })
     }
 
     /// Sends bytes to the shell. Pass `&'static [u8]` for fixed sequences to
@@ -110,13 +119,30 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
     }
 
     pub fn resize(&mut self, size: WindowSize) {
-        let dims = TermSize::new(size.num_cols as usize, size.num_lines as usize);
-        self.term.lock().resize(dims);
+        let columns = size.num_cols as usize;
+        let dims = TermSize::new(columns, size.num_lines as usize);
+        {
+            let mut term = self.term.lock();
+            let resized = columns != term.grid().columns();
+            term.resize(dims);
+            // Wider rows cost more: the live grid keeps fewer of them.
+            if resized {
+                term.set_options(term_config(&self.budget, columns));
+            }
+        }
         self.notifier.on_resize(size);
     }
 
-    pub fn apply_config(&self, cfg: &Config) {
-        self.term.lock().set_options(term_config(cfg));
+    pub fn budget(&self) -> Budget {
+        self.budget
+    }
+
+    pub fn apply_config(&mut self, cfg: &Config) {
+        self.budget = Budget::from_mb(cfg.memory_per_tab_mb);
+        let mut term = self.term.lock();
+        let columns = term.grid().columns();
+        term.set_options(term_config(&self.budget, columns));
+        self.history.lock().unwrap_or_else(|e| e.into_inner()).set_ram_limit(self.budget.history_ram());
     }
 }
 
@@ -143,8 +169,8 @@ fn wsl_pty(cfg: &Config, options: &tty::Options, size: WindowSize) -> Option<cra
     }
 }
 
-fn term_config(cfg: &Config) -> term::Config {
-    term::Config { scrolling_history: cfg.scrollback, ..Default::default() }
+fn term_config(budget: &Budget, columns: usize) -> term::Config {
+    term::Config { scrolling_history: budget.live_rows(columns), ..Default::default() }
 }
 
 impl<L: EventListener> Drop for Session<L> {
@@ -248,11 +274,28 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_setting_applies_live() {
-        let (s, rx) = spawn("/bin/sh", &["-c", "for i in $(seq 1 100); do echo line$i; done; sleep 2"]);
-        wait_for(&s, &rx, "line100");
-        assert!(s.term.lock().grid().history_size() > 50);
-        s.apply_config(&Config { scrollback: 10, ..Config::default() });
-        assert!(s.term.lock().grid().history_size() <= 10);
+    fn memory_setting_applies_live() {
+        let cfg = Config { shell: "/bin/sh".into(), shell_args: vec!["-c".into(), "seq 1 30000; sleep 2".into()], memory_per_tab_mb: 64, ..Config::default() };
+        let (tx, rx) = mpsc::channel();
+        let mut s = Session::spawn(&cfg, size(60, 10), Events(tx)).expect("spawn shell");
+        wait_for(&s, &rx, "30000");
+        {
+            let term = s.term.lock();
+            // 64 MB: a quarter for the live grid, which holds at most 10 000 rows.
+            assert_eq!(term.grid().history_size(), 10_000);
+            let h = s.history.lock().unwrap();
+            assert_eq!(h.end_line(), term.grid().lines_dropped());
+            assert!(h.end_line() > 0);
+            assert_eq!(h.ram_limit(), 32 << 20);
+        }
+        // Wide rows cost more: fewer stay in the live grid, the rest go to history.
+        s.resize(size(1000, 10));
+        {
+            let term = s.term.lock();
+            assert_eq!(term.grid().history_size(), (16 << 20) / (1000 * crate::history::CELL_BYTES));
+            assert_eq!(s.history.lock().unwrap().end_line(), term.grid().lines_dropped());
+        }
+        s.apply_config(&Config { memory_per_tab_mb: 128, ..cfg });
+        assert_eq!(s.history.lock().unwrap().ram_limit(), 64 << 20);
     }
 }

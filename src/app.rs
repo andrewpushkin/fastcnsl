@@ -402,7 +402,7 @@ impl App {
         }
         for tab in &mut st.tabs {
             tab.code.enabled = cfg.code_highlight;
-            if old.scrollback != cfg.scrollback {
+            if old.memory_per_tab_mb != cfg.memory_per_tab_mb {
                 tab.session.apply_config(cfg);
             }
         }

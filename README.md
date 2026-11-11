@@ -162,12 +162,21 @@ last program run in it (`Tab 1: vim`). A bell on a tab means it printed
 something since you last looked at it, handy for a long build in the
 background. Ctrl+1 … Ctrl+9 jump to a tab.
 
+A tab's scrollback has no limit: it keeps everything the tab printed while
+the tab is open. Each tab keeps up to 500 MB of its text in memory
+(`memory_per_tab_mb`) and older lines in a temporary file in the cache
+folder (`~/.cache/fastcnsl/history` on Linux, `%LOCALAPPDATA%\fastcnsl\history`
+on Windows, `~/Library/Caches/fastcnsl/history` on macOS). Scrolling,
+search, line numbers and bookmarks work the same on those lines. The file
+is deleted when the tab closes or fastcnsl exits, even if it crashes.
+
 ### Save and log a tab's text
 
 Right-click a tab:
 
-- **Copy all text** puts the tab's whole scrollback on the clipboard.
-- **Save text to file** writes it to a `.txt` file.
+- **Copy all text** puts the tab's text on the clipboard, at most its
+  last 100 000 lines.
+- **Save text to file** writes the whole scrollback to a `.txt` file.
 - **Log to file** writes what the tab already has to a `.log` file, then
   keeps adding lines as they arrive, until you choose **Stop logging** or
   close the tab. A red dot marks a tab that is being logged.
@@ -294,7 +303,7 @@ line_height = 1.2
 theme = "system"                 # "system" | "dark" | "light"
 shell = ""                       # empty: $SHELL, or PowerShell/cmd on Windows
 shell_args = []
-scrollback = 10000               # lines kept per tab
+memory_per_tab_mb = 500          # RAM per tab for its text; older lines go to a temporary file
 ui_idle_opacity = 0.4            # scrollbar/search bar opacity when not in use
 padding = 6.0
 code_highlight = true

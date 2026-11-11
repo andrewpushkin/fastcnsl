@@ -23,6 +23,14 @@ use alacritty_terminal::term::cell::Cell;
 use self::disk::DiskFile;
 use self::line::Encoder;
 
+/// Where history files go: the user's cache folder, not the temp folder,
+/// which is often kept in RAM.
+pub fn history_dir() -> PathBuf {
+    dirs::cache_dir()
+        .map(|d| d.join("fastcnsl").join("history"))
+        .unwrap_or_else(|| std::env::temp_dir().join("fastcnsl-history"))
+}
+
 /// Bytes of one grid cell.
 pub const CELL_BYTES: usize = std::mem::size_of::<Cell>();
 
@@ -154,6 +162,10 @@ impl History {
     pub fn with_chunk_bytes(mut self, n: usize) -> Self {
         self.chunk_bytes = n;
         self
+    }
+
+    pub fn ram_limit(&self) -> usize {
+        self.ram_limit
     }
 
     pub fn set_ram_limit(&mut self, bytes: usize) {
