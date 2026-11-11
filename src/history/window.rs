@@ -177,7 +177,9 @@ impl<L: EventListener> Window<L> {
                 }
             }
             ats.extend((0..rows.len() - before).map(|i| At { line: end, sub: (from + i) as u32 }));
-            let total = live.total_lines();
+            // Only rows above the screen: those on it may still change, and
+            // further down is the live terminal's to show.
+            let total = live.history_size();
             let (mut line, mut sub) = (end, partial_rows as u32);
             let mut abs = 0;
             while abs < total && rows.len() < max_rows {
@@ -191,7 +193,7 @@ impl<L: EventListener> Window<L> {
                 }
                 abs += 1;
             }
-            reaches_end = abs == total;
+            reaches_end = false;
         }
         while rows.len() < screen {
             rows.push(Row::new(columns));

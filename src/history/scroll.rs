@@ -360,8 +360,12 @@ mod tests {
     impl T {
         /// A 20×10 terminal with 50 rows of live history and windows of 200 rows.
         fn new(tag: &str) -> Self {
+            Self::with_live_history(tag, 50)
+        }
+
+        fn with_live_history(tag: &str, rows: usize) -> Self {
             let (history, sink) = start(History::new(4096, temp_dir(tag)).with_chunk_bytes(512));
-            let mut t = TestTerm::new(COLS, SCREEN, 50);
+            let mut t = TestTerm::new(COLS, SCREEN, rows);
             t.term.grid_mut().set_row_sink(Box::new(sink));
             Self { t, history, budget: Budget { bytes: 200 * 4 * COLS * CELL_BYTES }, s: Scroller::new(Quiet) }
         }
@@ -556,6 +560,47 @@ mod tests {
             assert_eq!(text.trim_end(), numbered(2500 + k));
         }
         assert!(lines.last().unwrap().0 > 5980);
+    }
+
+    #[test]
+    fn a_window_reaching_the_screen_shows_what_came_later() {
+        // Less live history than a screen, as after a clear.
+        let mut t = T::with_live_history("stale-screen", 3);
+        t.feed_numbered(0, 300);
+        // Clear the screen (its lines go to history) and leave a prompt.
+        t.t.feed("\x1b[H\x1b[2J$ ");
+        let end = {
+            t.t.term.flush_row_sink();
+            crate::history::sync(&t.history);
+            crate::history::lock(&t.history).end_line()
+        };
+        t.s.set_top(&mut t.t.term, &t.history, &t.budget, At { line: end - 5, sub: 0 });
+        assert!(t.s.in_window());
+        t.t.feed("cmd\n");
+        t.feed_numbered(300, 330);
+        t.s.sync(&mut t.t.term, &t.history, &t.budget);
+        let mut rows = vec![(t.top(), t.row_text(0))];
+        loop {
+            // In the window every row has text: none is a stale blank row.
+            let screen = t.screen();
+            if t.s.in_window() {
+                assert!(screen.iter().all(|r| !r.is_empty()), "{screen:?}");
+            }
+            assert!(!screen.contains(&"$".to_owned()), "a stale prompt: {screen:?}");
+            t.scroll(-1);
+            let top = t.top();
+            if top == rows.last().unwrap().0 {
+                break;
+            }
+            rows.push((top, t.row_text(0)));
+        }
+        let texts: Vec<String> = join(&rows).into_iter().map(|(_, s)| s.trim_end().to_owned()).collect();
+        let at = texts.iter().position(|s| s == "$ cmd").expect("the prompt line");
+        // Down to where the screen reaches the bottom.
+        let after: Vec<String> = (300..300 + texts.len() - at - 1).map(numbered).collect();
+        assert!(after.len() >= 10, "{texts:?}");
+        assert_eq!(texts[at + 1..], after[..], "{texts:?}");
+        assert_eq!(texts[at - 1], numbered(299));
     }
 
     #[test]
