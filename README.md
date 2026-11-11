@@ -2,172 +2,224 @@
 
 [![Build](https://github.com/andrewpushkin/ragamuffin/actions/workflows/build.yml/badge.svg)](https://github.com/andrewpushkin/ragamuffin/actions/workflows/build.yml)
 
-Ultra fast GPU-accelerated terminal emulator, written in Rust, for Linux,
-Windows and macOS.
+A fast terminal for Windows, Linux and macOS. It marks every search match
+on screen the way Notepad++ does, colours source code you `cat`, shows when
+each line of output appeared, and lets you bookmark lines and log tabs to
+files.
+
+![ragamuffin with C code highlighted and two searches, "greet" and "int", each marked in its own colour](docs/screenshot.png)
 
 ## Download
 
-| Platform | Latest build |
+| Platform | Download |
 |---|---|
-| Windows x86-64 | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-x86_64.zip) |
-| Windows ARM64 | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-arm64.zip) |
-| macOS Apple Silicon | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-macos-arm64.zip) |
-| Linux x86-64: Debian, Ubuntu | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.deb) |
-| Linux x86-64: any distro | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.AppImage) |
+| Windows (x64) | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-x86_64.zip) |
+| Windows (ARM) | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-arm64.zip) |
+| macOS (Apple Silicon) | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-macos-arm64.zip) |
+| Linux: Debian, Ubuntu | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.deb), or the [apt repository](#debian-ubuntu) for automatic updates |
+| Linux: Fedora, RHEL, openSUSE | [ragamuffin-linux-x86_64.rpm](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.rpm), or the [rpm repository](#fedora-rhel) for automatic updates |
+| Linux: any distribution | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.AppImage) |
 
-Every push to `main` is built by GitHub Actions and published as a
-release, numbered `0.1.<commits on main>`. Older builds:
-[all releases](https://github.com/andrewpushkin/ragamuffin/releases). Install notes are [below](#install).
-
-| Dark | Light |
-|---|---|
-| ![ragamuffin in dark mode: cat hello.c with C highlighting and a search for "greet"](docs/screenshot.png) | ![ragamuffin in light mode: the same session](docs/light.png) |
-
-| ⋮ menu | Options |
-|---|---|
-| ![menu](docs/menu.png) | ![options](docs/options.png) |
-
-- **GPU rendering** with [wgpu] (Vulkan, Metal, DirectX 12, OpenGL): one draw
-  call per frame, glyphs cached in a texture atlas, redraws only when something
-  changed.
-- **Search highlighting like Notepad++ or Konsole**: every match on screen is
-  marked, the current one stands out, and `3/17` shows where you are in the
-  whole scrollback. **+** in the search bar adds another search below it (up
-  to 8), each highlighted in its own colour: click the dot at the left of a
-  search to pick it.
-- **Code highlighting**: `cat hello.c`, `head main.rs`, `bat`, `type`
-  (Windows), `Get-Content` (PowerShell) and `git diff` output is detected and
-  coloured. The language comes from the file name, or from the content (`#!`
-  lines, `#include`, `fn main`...) when there is no extension. Text a program
-  colours itself is never touched.
-- **Times beside the text**, per command by default: a command's line shows
-  the local time it was entered at, and each line of its output how long
-  after that it appeared, both as `HH:MM:SS`. Options → General switches to line numbers from the start of
-  the tab, or turns the gutter off. A line that wraps keeps one number;
-  the numbers hold as old lines leave the scrollback.
-- **Bookmarks**: right-click a line, or its number, and pick Add bookmark,
-  or press Ctrl+Shift+B (Cmd+B on macOS) to mark the cursor's line, or the
-  line under the mouse when scrolled back. The line is tinted and stays
-  marked as it scrolls and rewraps; Ctrl+Shift+↑ / ↓ (Cmd+↑ / ↓ on macOS)
-  jump between a tab's bookmarks.
-- **Logging**: right-click a tab to copy all its text, save it to a file,
-  or log it to a file that keeps growing as output arrives (a red dot
-  marks the tab). Options → Logging sets logging for every new tab and
-  timestamps on each line.
-- **Tabs** labelled with the last program run in them (`Tab 1: vim`), each
-  with its own shell, scrollback and search. With many tabs the labels
-  shorten to `1: vim`, then just the number. A bell on a tab means it
-  printed something since you last looked at it.
-- **One-line title bar**: minimize, maximize and close sit in the tab bar
-  next to ⋮ (on macOS the native buttons move into it). Drag the empty part
-  of the bar to move the window; double-click it to maximize.
-- **⋮ menu** for tabs, find, copy and paste, Options and About, plus a
-  right-click menu for copy, paste, select all and bookmarks, and one on
-  each tab.
-- **Options panel** with three pages: General (theme, font size, code
-  highlighting, line numbers, graphics API), Keyboard shortcuts and
-  Logging. Drag its title to
-  move it. Changes are saved to the settings file.
-- **Light and dark themes** that follow the operating system automatically,
-  including on Linux desktops (GNOME, KDE and others) and under WSL, or a
-  fixed choice.
-- **Settings file**: font, size, theme, shell, opacity and more. Saved changes
-  apply immediately.
-- **Quiet UI**: the scrollbar and search bar sit at 40 % opacity and become
-  fully visible while you use them.
-- **No `unsafe`** in ragamuffin's own code (`#![forbid(unsafe_code)]`).
+New builds come out often. See [what changed](CHANGELOG.md) or download an
+[older build](https://github.com/andrewpushkin/ragamuffin/releases).
 
 ## Install
 
-- Debian, Ubuntu: install from the apt repository, so ragamuffin updates
-  together with the rest of the system. Add the repository and install:
+### Windows
 
-  ```sh
-  curl -fsSL https://andrewpushkin.github.io/ragamuffin/apt/ragamuffin.gpg | sudo tee /usr/share/keyrings/ragamuffin.gpg >/dev/null
-  curl -fsSL https://andrewpushkin.github.io/ragamuffin/apt/ragamuffin.sources | sudo tee /etc/apt/sources.list.d/ragamuffin.sources >/dev/null
-  sudo apt update && sudo apt install ragamuffin
-  ```
+Unzip and run `ragamuffin.exe`. It needs Windows 10 version 1809 or newer.
 
-  From now on `sudo apt update && sudo apt upgrade` installs new builds.
+Keep the other files from the zip next to `ragamuffin.exe`:
 
-  To remove: `sudo apt remove ragamuffin && sudo rm -f /etc/apt/sources.list.d/ragamuffin.sources /usr/share/keyrings/ragamuffin.gpg`.
-- `.deb` file without updates: `sudo apt install ./ragamuffin-linux-x86_64.deb`
-- Fedora, RHEL and compatible: install from the rpm repository, so
-  `sudo dnf upgrade` installs new builds:
+- `ragamuffin-wsl` makes WSL tabs faster: `cat` of a 36 MB file takes
+  0.33 s, against 0.40 s in Windows Terminal. Windows programs started from
+  a WSL tab (`cmd.exe`, `explorer.exe .`) work as usual.
+- `conpty.dll` and `OpenConsole.exe` are Microsoft's console host from
+  Windows Terminal. With them, large output in cmd and PowerShell tabs is
+  about 7 times faster than with the one built into Windows, which
+  ragamuffin falls back to if they are missing.
 
-  ```sh
-  sudo curl -fsSL -o /etc/yum.repos.d/ragamuffin.repo https://andrewpushkin.github.io/ragamuffin/rpm/ragamuffin.repo
-  sudo dnf install ragamuffin
-  ```
+### macOS
 
-  dnf asks once to import the repository's signing key; answer `y`.
-  To remove: `sudo dnf remove ragamuffin && sudo rm /etc/yum.repos.d/ragamuffin.repo`.
-- openSUSE: the same repository with zypper, so `sudo zypper update`
-  installs new builds:
+Unzip and move `Ragamuffin.app` to Applications. The app isn't notarized by
+Apple, so the first time, right-click it and choose **Open**.
 
-  ```sh
-  sudo zypper addrepo https://andrewpushkin.github.io/ragamuffin/rpm/ragamuffin.repo
-  sudo zypper refresh
-  sudo zypper install ragamuffin
-  ```
+### Linux
 
-  zypper asks once to trust the signing key; answer `a` (always).
-  To remove: `sudo zypper removerepo ragamuffin && sudo zypper remove ragamuffin`.
-- [`.rpm` file](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.rpm) without updates: `sudo dnf install ./ragamuffin-linux-x86_64.rpm`
-- AppImage: `chmod +x ragamuffin-linux-x86_64.AppImage && ./ragamuffin-linux-x86_64.AppImage`.
-  To update it in place from the latest GitHub release (only the changed
-  parts are downloaded), use an AppImage manager such as
-  [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever) or
-  [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher), or
-  [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) from
-  the command line: `appimageupdatetool ragamuffin-linux-x86_64.AppImage`.
-- Windows: unzip and run `ragamuffin.exe` (Windows 10 1809 or newer). Keep
-  the other files next to it:
-  - `ragamuffin-wsl` runs WSL tabs (shell `wsl.exe`) on a Linux pty and
-    passes their output to ragamuffin through a plain pipe, skipping the
-    Windows console host. Large output then comes through faster than in
-    Windows Terminal (`cat` of a 36 MB file: 0.33 s vs 0.40 s). Windows
-    programs started from such a tab (`cmd.exe`, `powershell.exe`,
-    `explorer.exe .`) work as usual. `wsl_direct = false` runs WSL tabs
-    through the console host instead, like other Windows terminals.
-  - `conpty.dll` and `OpenConsole.exe` are Microsoft's console host from
-    Windows Terminal (MIT, see `ConPTY-LICENSE.txt`), used for every other
-    tab: about 7 times faster with large output than the one built into
-    Windows, which is used if they are missing.
-- macOS: unzip and move `Ragamuffin.app` to Applications. The app is ad-hoc
-  signed, not notarized, so the first launch needs right-click → Open.
+Linux builds run on Ubuntu 20.04, Debian 11, Fedora 32 and anything newer.
 
-Linux builds target glibc 2.31, so they run on Ubuntu 20.04, Debian 11,
-Fedora 32 and anything newer.
+#### Debian, Ubuntu
 
-## Shortcuts
+Add the apt repository and install, so ragamuffin updates with the rest of
+the system:
 
-On macOS, use Cmd where the table says Ctrl+Shift, and for the tab number
-keys (Cmd+1 … Cmd+0); font reset is Cmd+Shift+0. These are the defaults:
-change them in Options (⋮ → Options… → Keyboard shortcuts): click a
-command's keys and press the new ones (Esc cancels, Backspace removes the
-shortcut, ↺ next to a changed command restores just its default keys,
-Reset all restores every default). A key taken from another command
-is removed there. The search keys (Enter, F3, Ctrl+R, Tab, Esc), the tab
-number keys and the mouse can't be changed; a tab number key given to a
-command in Options does that command instead.
-
-Changes are saved in the settings file's `[keys]` table, which lists only
-what differs from the defaults:
-
-```toml
-[keys]
-new_tab = "Ctrl+T"
-next_tab = "Ctrl+Tab, Alt+Right"   # several keys: comma-separated
-find = ""                          # no shortcut
+```sh
+curl -fsSL https://andrewpushkin.github.io/ragamuffin/apt/ragamuffin.gpg | sudo tee /usr/share/keyrings/ragamuffin.gpg >/dev/null
+curl -fsSL https://andrewpushkin.github.io/ragamuffin/apt/ragamuffin.sources | sudo tee /etc/apt/sources.list.d/ragamuffin.sources >/dev/null
+sudo apt update && sudo apt install ragamuffin
 ```
 
-Command names: `new_tab`, `close_tab`, `next_tab`, `previous_tab`, `find`,
-`copy`, `paste`, `options`, `cycle_theme`, `font_bigger`, `font_smaller`,
-`font_reset`, `scroll_page_up`, `scroll_page_down`, `scroll_top`,
-`scroll_bottom`, `toggle_bookmark`, `previous_bookmark`, `next_bookmark`. Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`); keys:
-a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
-`Up`/`Down`/`Left`/`Right`, `F1`–`F12`, and similar.
+From then on, `sudo apt update && sudo apt upgrade` installs new builds.
+
+To install the downloaded `.deb` instead, without updates:
+`sudo apt install ./ragamuffin-linux-x86_64.deb`.
+
+To remove ragamuffin and the repository:
+
+```sh
+sudo apt remove ragamuffin
+sudo rm -f /etc/apt/sources.list.d/ragamuffin.sources /usr/share/keyrings/ragamuffin.gpg
+```
+
+#### Fedora, RHEL
+
+```sh
+sudo curl -fsSL -o /etc/yum.repos.d/ragamuffin.repo https://andrewpushkin.github.io/ragamuffin/rpm/ragamuffin.repo
+sudo dnf install ragamuffin
+```
+
+dnf asks once to import the repository's signing key; answer `y`. From then
+on, `sudo dnf upgrade` installs new builds.
+
+To install the downloaded `.rpm` instead, without updates:
+`sudo dnf install ./ragamuffin-linux-x86_64.rpm`.
+
+To remove: `sudo dnf remove ragamuffin && sudo rm /etc/yum.repos.d/ragamuffin.repo`.
+
+#### openSUSE
+
+```sh
+sudo zypper addrepo https://andrewpushkin.github.io/ragamuffin/rpm/ragamuffin.repo
+sudo zypper refresh
+sudo zypper install ragamuffin
+```
+
+zypper asks once to trust the signing key; answer `a` (always). From then
+on, `sudo zypper update` installs new builds.
+
+To remove: `sudo zypper removerepo ragamuffin && sudo zypper remove ragamuffin`.
+
+#### AppImage (any distribution)
+
+```sh
+chmod +x ragamuffin-linux-x86_64.AppImage
+./ragamuffin-linux-x86_64.AppImage
+```
+
+To keep it updated, use an AppImage manager such as
+[Gear Lever](https://flathub.org/apps/it.mijorus.gearlever) or
+[AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher), or run
+`appimageupdatetool ragamuffin-linux-x86_64.AppImage`
+([AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate)).
+Only the changed parts are downloaded.
+
+## Features
+
+### Search that marks every match
+
+Press **Ctrl+Shift+F** and type. Every match on screen is marked, the current
+one stands out, and `3/17` tells you where you are among all matches in the
+scrollback. Enter, F3 and the arrow keys move between matches; Ctrl+R
+switches to regular expressions. Search ignores case unless you type a
+capital letter.
+
+Click **+** in the search bar to add another search below it, up to 8. Each
+one gets its own colour, so you can follow several words at once. Click the
+dot at the left of a search to choose its colour.
+
+![A second search box with its colour picker open](docs/search-colors.png)
+
+### Code highlighting
+
+When you print a source file with `cat`, `head`, `bat`, `type` (Windows),
+`Get-Content` (PowerShell) or `git diff`, ragamuffin colours it. The
+language comes from the file name, or from the content (`#!` lines,
+`#include`, `fn main`...) when there is no extension. Output a program
+colours itself is left as it is. Turn it off in Options if you don't want
+it.
+
+### Times beside the output
+
+The left margin shows, for each command, the local time you ran it, and for
+each line of its output how long after that it appeared (`HH:MM:SS`). This
+makes it easy to see what was slow in a long build or log.
+
+In Options → General you can switch the margin to line numbers counted from
+the start of the tab, or turn it off.
+
+### Bookmarks
+
+Right-click a line, or its time, and choose **Add bookmark**, or press
+**Ctrl+Shift+B**. The line is tinted and stays marked as more output
+arrives. **Ctrl+Shift+↑ / ↓** jump between a tab's bookmarks.
+
+![Two bookmarked lines, tinted, in a C file](docs/bookmarks.png)
+
+### Tabs
+
+Each tab has its own shell, scrollback and search, and is labelled with the
+last program run in it (`Tab 1: vim`). A bell on a tab means it printed
+something since you last looked at it, handy for a long build in the
+background. Ctrl+1 … Ctrl+9 jump to a tab.
+
+### Save and log a tab's text
+
+Right-click a tab:
+
+- **Copy all text** puts the tab's whole scrollback on the clipboard.
+- **Save text to file** writes it to a `.txt` file.
+- **Log to file** writes what the tab already has to a `.log` file, then
+  keeps adding lines as they arrive, until you choose **Stop logging** or
+  close the tab. A red dot marks a tab that is being logged.
+- **Open logs folder** shows where the files go: `ragamuffin-logs` in your
+  Documents folder, unless you pick another one.
+
+Files hold plain text as the program printed it, without colours. Options →
+Logging can log every new tab automatically and put the time at the start
+of each logged line.
+
+![The tab menu: copy all text, save text to file, log to file](docs/tab-menu.png)
+
+### Light and dark themes
+
+ragamuffin follows your system's light or dark setting, including on Linux
+desktops (GNOME, KDE and others) and under WSL. You can also pick one in
+Options, or press Ctrl+Shift+L to switch.
+
+![The same window in the light theme](docs/light.png)
+
+### Options
+
+Open Options from the **⋮** menu or with **Ctrl+Shift+,**. The General page
+sets theme, font size, code highlighting, the time and line number margin
+and the graphics mode. On the Keyboard shortcuts page you can change any
+shortcut. Changes take effect at once and are remembered.
+
+| General | Keyboard shortcuts |
+|---|---|
+| ![Options, General page](docs/options.png) | ![Options, Keyboard shortcuts page](docs/shortcuts.png) |
+
+### Menus
+
+**⋮** in the top-right corner holds new tab, find, copy, paste, Options and
+About. Right-click the text for copy, paste, select all and bookmarks.
+
+| ⋮ menu | Right-click menu |
+|---|---|
+| ![The ⋮ menu](docs/menu.png) | ![The right-click menu](docs/context.png) |
+
+### Fast and light
+
+ragamuffin draws on the GPU (DirectX 12, Metal, Vulkan or OpenGL) and only
+redraws when something changes, so it stays responsive with large output.
+The title bar is a single row: tabs, ⋮ and the
+window buttons share it, leaving more room for text. Drag the empty part of
+the bar to move the window, double-click it to maximize.
+
+## Keyboard shortcuts
+
+On macOS, use Cmd where the table says Ctrl+Shift (for example Cmd+T for a
+new tab), Cmd+1 … Cmd+0 for tabs, and Cmd+Shift+0 to reset the font size.
 
 | Keys                        | Action                                   |
 |-----------------------------|------------------------------------------|
@@ -188,23 +240,31 @@ a character, `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 | Ctrl+Shift+B                | add / remove bookmark                    |
 | Ctrl+Shift+↑ / ↓            | previous / next bookmark                 |
 
-Mouse: drag to select, double-click selects a word, triple-click a line,
-right-click opens the copy/paste/bookmark menu, and middle-click pastes. On the tab
-bar, middle-click closes a tab; right-click shows the tab's name and number key, with
-Previous tab, Next tab and the saving and logging items below. Drag the scrollbar, or click the track to page. Hold
-Shift to select text in programs that capture the mouse (vim, htop).
+**Changing shortcuts.** In Options → Keyboard shortcuts, click a command's
+keys and press the new ones. Esc cancels, Backspace removes the shortcut,
+↺ restores that command's default, and Reset all restores every default. A
+key taken from another command is removed there. The keys inside search
+(Enter, F3, Ctrl+R, Tab, Esc), the tab number keys and the mouse can't be
+changed.
 
-Search ignores case unless the query contains a capital letter.
+**Mouse.** Drag to select, double-click to select a word, triple-click for a
+line. Right-click opens the copy, paste and bookmark menu; middle-click
+pastes. On a tab, middle-click closes it and right-click opens the tab
+menu. Hold Shift to select text in programs that use the mouse themselves
+(vim, htop).
 
-## Settings
+## Settings file
 
-The settings file is created on first start:
+Everything in Options is saved to a settings file, created on first start.
+**Options → Open config.toml** opens it. It lives at:
 
-- Linux: `~/.config/ragamuffin/config.toml`
-- macOS: `~/Library/Application Support/ragamuffin/config.toml`
 - Windows: `%APPDATA%\ragamuffin\config.toml`
+- macOS: `~/Library/Application Support/ragamuffin/config.toml`
+- Linux: `~/.config/ragamuffin/config.toml`
 
-Set `RAGAMUFFIN_CONFIG` to use a different file.
+Changes you save there apply immediately. To use a different file, set the
+`RAGAMUFFIN_CONFIG` environment variable to its path. All settings with
+their defaults:
 
 ```toml
 font_family = "JetBrains Mono"   # any installed font
@@ -213,70 +273,54 @@ line_height = 1.2
 theme = "system"                 # "system" | "dark" | "light"
 shell = ""                       # empty: $SHELL, or PowerShell/cmd on Windows
 shell_args = []
-scrollback = 10000
-ui_idle_opacity = 0.4            # scrollbar/search bar opacity when idle
+scrollback = 10000               # lines kept per tab
+ui_idle_opacity = 0.4            # scrollbar/search bar opacity when not in use
 padding = 6.0
 code_highlight = true
-line_numbers = "command"         # "command" (time since each command) | "tab" (line numbers) | "off"
+line_numbers = "command"         # "command" (times per command) | "tab" (line numbers) | "off"
 code_theme_dark = "base16-ocean.dark"
 code_theme_light = "InspiredGitHub"
 bold_is_bright = false
-title_bar = "custom"             # "custom" (buttons in the tab bar) | "system" (OS title bar)
+title_bar = "custom"             # "custom" (one row with the tabs) | "system" (OS title bar)
 display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to apply)
 antialiasing = "auto"            # "auto" | "subpixel" | "grayscale"
 minimum_contrast = 4.5           # text on coloured backgrounds: WCAG contrast ratio, 1 = off
 gpu = "auto"                     # "auto" | "directx" | "vulkan" | "opengl" | "metal" | "software"
-wsl_direct = true                # Windows: WSL tabs through ragamuffin-wsl, not the console host
+wsl_direct = true                # Windows: WSL tabs through ragamuffin-wsl (false: console host)
 log_folder = ""                  # empty: ragamuffin-logs in Documents (or home)
 log_new_tabs = false             # log every new tab to a file
 log_timestamps = false           # start each logged line with [HH:MM:SS]
 ```
 
-**Saving and logging tabs.** Right-click a tab:
-
-- *Copy all text* puts the tab's whole scrollback and screen on the
-  clipboard.
-- *Save text to file* writes it to `log_folder` as
-  `<tab>-<program>_<date>_<time>.txt`.
-- *Log to file* writes what the tab already has to a `.log` file, then
-  adds each line as it completes, until *Stop logging*, the tab closes
-  or ragamuffin quits. If more output arrives at once than the scrollback
-  holds, the log notes how many lines it missed. What full-screen
-  programs (vim, less) draw isn't logged.
-
-Text is written as programs printed it: wrapped rows joined, trailing
-spaces removed, no colours.
-
-**Graphics API.** `gpu` picks what draws the window (Options → General →
-Graphics); it takes effect when ragamuffin restarts. `software` draws on
-the CPU (Microsoft Basic Render Driver on Windows, llvmpipe on Linux), for
-machines without a working GPU driver, remote desktops and VMs. If the
-chosen API isn't available, ragamuffin falls back to the automatic choice
-and starts anyway; About shows what is in use. For one run only:
-
-```sh
-ragamuffin --gpu software
-ragamuffin --gpu opengl new-tab logs -- tail -f app.log
-```
-
-**Text on Windows** is drawn by DirectWrite, like in other Windows apps.
-With `antialiasing = "auto"` it follows the system setting: ClearType
-(sub-pixel) when "Adjust ClearType text" is on, as in Explorer and
-Notepad; grayscale otherwise, as in Windows Terminal's default.
-Box-drawing and block characters are drawn to fill the cell, so borders
-and bars join between lines.
-
-**WSL note:** on WSLg (Linux GUI apps on Windows), the mouse cursor may stay
-hidden over a Linux window until you click it. That is WSLg behaviour and
-affects other Linux apps too (e.g. `xeyes`). On Windows, the native Windows
-build doesn't have this problem.
-
 Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
 `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)`.
 
+Changed shortcuts are saved in a `[keys]` table that lists only what
+differs from the defaults:
+
+```toml
+[keys]
+new_tab = "Ctrl+T"
+next_tab = "Ctrl+Tab, Alt+Right"   # several keys: comma-separated
+find = ""                          # no shortcut
+```
+
+Command names: `new_tab`, `close_tab`, `next_tab`, `previous_tab`, `find`,
+`copy`, `paste`, `options`, `cycle_theme`, `font_bigger`, `font_smaller`,
+`font_reset`, `scroll_page_up`, `scroll_page_down`, `scroll_top`,
+`scroll_bottom`, `toggle_bookmark`, `previous_bookmark`, `next_bookmark`.
+Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`). Keys: a character,
+`Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
+`Up`/`Down`/`Left`/`Right`, `F1`–`F12`, and similar.
+
+**Text on Windows** is drawn by DirectWrite, like in other Windows apps.
+With `antialiasing = "auto"` it follows the system: ClearType when "Adjust
+ClearType text" is on, grayscale otherwise.
+
 ## Command line
 
-The same `ragamuffin` program controls a window that is already open:
+The `ragamuffin` command can also open and close tabs in a window that is
+already running, which is useful in scripts:
 
 ```text
 ragamuffin [--gpu API]
@@ -310,16 +354,15 @@ ragamuffin new-tab dev -- powershell -NoExit -Command "cd C:\src\app"
 ragamuffin new-tab cmd -- cmd /k echo hello
 ```
 
-**Which window.** Commands go to the most recently started window.
-`--pid N` picks one by process id (`ragamuffin --pid 1234 quit`).
+Commands go to the most recently started window; `--pid N` picks one by
+process id. A command prints a short reply (`opened tab 2`, `closed Tab 1:
+logs`) and exits with 0. Errors (`no tab named x`, `no window is running`)
+exit with 1, wrong usage with 2. Only you can control your windows: each
+command must present a secret that only your user account can read.
 
-**Replies and exit codes.** A command prints a short reply (`opened tab
-2`, `closed Tab 1: logs`) and exits with 0; errors (`no tab named x`,
-`no window is running`) exit with 1, bad usage with 2.
-
-**Windows.** `ragamuffin.exe` is a GUI program, so cmd and PowerShell
-don't wait for it: the reply appears, but after the prompt. To wait for
-it and read `$LASTEXITCODE` in a PowerShell script, pipe its output:
+On Windows, `ragamuffin.exe` is a GUI program, so cmd and PowerShell don't
+wait for it and the reply appears after the prompt. To wait for it in a
+PowerShell script and check `$LASTEXITCODE`, pipe its output:
 
 ```powershell
 ragamuffin quit 2>&1 | Out-Host
@@ -328,110 +371,25 @@ if ($LASTEXITCODE -ne 0) { "no window to close" }
 
 From WSL it behaves like any Linux command.
 
-**How it works.** Each window listens on a random port on 127.0.0.1 and
-writes the port and a random secret to `instances/<pid>` in the local
-data directory (`%LOCALAPPDATA%\ragamuffin` on Windows,
-`~/.local/share/ragamuffin` on Linux, `~/Library/Application
-Support/ragamuffin` on macOS), readable only by you. A command must
-present that secret. The file is removed when the window closes.
+## Troubleshooting
 
-## Building
+**The window is blank, or ragamuffin doesn't start on a VM or remote
+desktop.** Choose Software in Options → General → Graphics, or start it once
+with `ragamuffin --gpu software`. It then draws without the GPU. If the
+graphics mode you chose isn't available, ragamuffin falls back to the
+automatic choice; About shows what is in use.
 
-Everything builds in Docker, so the only requirements are Docker and `make`.
-Each platform has its own image in `docker/`. All generated files are normal
-files in the project, owned by your user: packages in `dist/`, build output
-in `target/`, downloaded crates in `.cache/`. `make clean` is a plain
-`rm -rf target dist` and needs no Docker.
+**macOS says the app can't be opened.** Right-click `Ragamuffin.app` and
+choose Open. This is needed only the first time.
 
-```sh
-make all                     # every release package below
+**The mouse pointer is hidden over the window under WSLg** (Linux apps on
+Windows) until you click. That is WSLg behaviour and affects other Linux
+apps too. Use the Windows build instead, which also handles WSL tabs.
 
-make linux-x86_64            # compile only
-make linux-x86_64-deb        # .deb
-make linux-x86_64-appimage   # AppImage
-make windows-x86_64          # compile only
-make windows-x86_64-zip      # zip
-make windows-arm64           # compile only
-make windows-arm64-zip       # zip
-make macos-arm64             # compile only (the image downloads the macOS SDK, see below)
-make macos-arm64-zip         # Ragamuffin.app in a zip
+## Building from source
 
-make build            # quick build for this machine -> dist/ragamuffin
-make run              # build and start it
-make tests            # unit tests (not run by GitHub Actions)
-make clippy           # lints
-make check-all        # type-check every target platform
-make screenshot       # headless UI run -> dist/screenshots/*.png
-make clean
-```
-
-GitHub Actions (`.github/workflows/build.yml`) lints and builds every
-package on each pull request and push to `main`, using the same Makefile
-targets. It doesn't run the unit tests; run `make tests` before pushing.
-macOS is built on GitHub's Apple Silicon runner with Apple's own SDK.
-
-Every push to `main` becomes a release. The version is
-`<major>.<minor>.<commits on main>` (`scripts/get_version.sh`): `0.1` comes from
-`Cargo.toml`, so bump it there for a new minor version. Local builds use
-the same numbering, and `make VERSION=1.2.3 ...` overrides it.
-
-The macOS image downloads Apple's macOS SDK from a third-party mirror while
-it is built. Apple's SDK license only allows use on Apple hardware and
-forbids redistribution, so check that you may use it, and don't publish that
-image. `docker/macos-arm64.Dockerfile` explains how to point it at an SDK you
-packaged yourself. You can also build natively on a Mac with
-`scripts/package/macos-arm64.sh`.
-
-## How it stays fast
-
-```
-PTY ──read──▶ I/O thread ──parse in place──▶ grid (shared, locked)
-                                                │ borrowed &Cell
-                         UI thread ──▶ instance buffer ──▶ GPU, 1 draw call
-```
-
-- The terminal core ([alacritty_terminal]) parses PTY bytes straight from its
-  read buffer into the grid. The renderer borrows cells under a short lock
-  and never copies them out.
-- The lock is released before presenting, so waiting for vsync never blocks
-  the shell's output.
-- Each frame is four reusable instance arrays (backgrounds, text, UI shapes,
-  UI text). They keep their capacity between frames and are uploaded straight
-  from their slices, so a steady-state frame allocates nothing.
-- Glyphs are shaped and rasterised once, then looked up in a table. ASCII
-  skips hashing entirely.
-- Fixed key sequences (Enter, arrows, Ctrl+C...) go to the shell as
-  `&'static [u8]` without allocating.
-- Code highlighting runs once per line as output arrives, and its colours are
-  cached per row.
-- Nothing is drawn unless the terminal changed, the window changed, or an
-  overlay is fading.
-
-## Project layout
-
-| Path                | What it does                                      |
-|---------------------|---------------------------------------------------|
-| `src/app.rs`        | window, tabs, input, mouse, clipboard, actions    |
-| `src/chrome.rs`     | tab bar, menus, Options and About panels          |
-| `src/shortcuts.rs`  | shortcut table shown in Options and menus         |
-| `src/session.rs`    | shell process, PTY and I/O thread                 |
-| `src/view.rs`       | terminal state → quads                            |
-| `src/render/`       | wgpu pipeline, glyph atlas, WGSL shader           |
-| `vendor/`           | alacritty_terminal with two patches (see its README) |
-| `src/search.rs`     | find, match navigation and counting               |
-| `src/highlight.rs`  | code blocks in the grid, syntect highlighting     |
-| `src/detect.rs`     | command-line and content language detection       |
-| `src/lines.rs`      | logical lines and their numbers                   |
-| `src/logging.rs`    | copying, saving and logging a tab's text          |
-| `src/input.rs`      | keyboard, mouse and paste encoding                |
-| `src/config.rs`     | settings file and hot reload                      |
-| `src/remote.rs`     | `ragamuffin new-tab/close-tab/quit` control       |
-| `src/theme.rs`      | dark and light palettes, OS theme detection       |
-| `docker/`, `scripts/package/`, `packaging/` | release builds    |
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## License
 
 MIT, see [LICENSE](LICENSE).
-
-[wgpu]: https://wgpu.rs
-[alacritty_terminal]: https://crates.io/crates/alacritty_terminal
