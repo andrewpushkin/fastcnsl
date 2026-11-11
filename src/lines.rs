@@ -118,14 +118,6 @@ pub fn push_row(out: &mut String, grid: &Grid<Cell>, abs: usize) {
     }
 }
 
-/// How far to scroll the display (for `Scroll::Delta`) to bring row `abs`
-/// to the middle of the screen, or as near as the scrollback allows.
-pub fn scroll_to_show(grid: &Grid<Cell>, abs: usize) -> i32 {
-    let hist = grid.history_size();
-    let top = abs.saturating_sub(grid.screen_lines() / 2).min(hist);
-    (hist - top) as i32 - grid.display_offset() as i32
-}
-
 /// The absolute row the bookmark key acts on: the cursor's at the bottom of
 /// the scrollback; when scrolled back, screen row `pointer_row`, the one
 /// under the mouse pointer.
@@ -134,21 +126,6 @@ pub fn key_bookmark_row(grid: &Grid<Cell>, pointer_row: usize) -> usize {
         0 => cursor_row(grid),
         offset => grid.history_size() - offset + pointer_row,
     }
-}
-
-/// First row of global line `line`, if it still is in the grid. Walks the
-/// whole scrollback: this is for a key press, not for every frame.
-fn first_row_of(grid: &Grid<Cell>, line: u64) -> Option<usize> {
-    let mut ends = grid.lines_dropped();
-    for abs in 0..=cursor_row(grid) {
-        if ends == line {
-            return Some(abs);
-        }
-        if !wraps(grid, abs) {
-            ends += 1;
-        }
-    }
-    None
 }
 
 /// The bookmark to jump to in `marks` (ascending), wrapping around at the
@@ -243,13 +220,16 @@ impl LineIndex {
             self.times.truncate(self.times.partition_point(|&(l, _)| l < end));
             self.timed = end;
         } else if end > self.timed {
-            self.times.push((self.timed, ms));
+            // Times show whole seconds since the command: lines in the same
+            // second as the entry before share it, so a tab that prints
+            // for days keeps about one entry a second.
+            let (mark, at) = self.marks.last().map_or((0, 0), |&(m, at, _)| (m, at));
+            let same_second = self.times.last().is_some_and(|&(l, t)| l >= mark && t >= at && ms >= at && (t - at) / 1000 == (ms - at) / 1000);
+            if !same_second {
+                self.times.push((self.timed, ms));
+            }
             self.timed = end;
         }
-
-        let gone = grid.lines_dropped();
-        let unused = self.times.partition_point(|&(l, _)| l <= gone).saturating_sub(1);
-        self.times.drain(..unused);
     }
 
     /// Records the cursor's line as a command. Call when Enter is pressed
@@ -264,10 +244,28 @@ impl LineIndex {
         if self.marks.last().is_none_or(|&(m, ..)| m < line) {
             self.marks.push((line, ms, clock));
         }
-        // Commands whose output is gone entirely aren't needed any more.
-        let gone = grid.lines_dropped();
-        let unused = self.marks.partition_point(|&(m, ..)| m <= gone).saturating_sub(1);
+    }
+
+    /// Forgets what is known about lines before `first_line`, the oldest
+    /// line the tab still has (see `History::first_line`): bookmarks on
+    /// them, and command marks and times no line needs any more.
+    pub fn forget_before(&mut self, first_line: u64) {
+        let unused = self.marks.partition_point(|&(m, ..)| m <= first_line).saturating_sub(1);
         self.marks.drain(..unused);
+        let unused = self.times.partition_point(|&(l, _)| l <= first_line).saturating_sub(1);
+        self.times.drain(..unused);
+        let gone = self.bookmarks.partition_point(|&m| m < first_line);
+        self.bookmarks.drain(..gone);
+    }
+
+    /// Forgets bookmarks past the cursor's line: lines a terminal reset
+    /// wiped. Pass the normal screen's live grid.
+    pub fn prune_past_cursor(&mut self, grid: &Grid<Cell>) {
+        if self.bookmarks.is_empty() {
+            return;
+        }
+        let last = ends_before(grid, &mut self.cursor, cursor_row(grid));
+        self.bookmarks.retain(|&m| m <= last);
     }
 
     /// What to show beside the rows on screen, top to bottom: line numbers,
@@ -311,19 +309,7 @@ impl LineIndex {
         }
     }
 
-    /// Forgets bookmarks whose text is gone: lines that left the scrollback
-    /// and, after a terminal reset, lines past the cursor.
-    fn prune_bookmarks(&mut self, grid: &Grid<Cell>) {
-        if self.bookmarks.is_empty() {
-            return;
-        }
-        let gone = grid.lines_dropped();
-        let last = ends_before(grid, &mut self.view, cursor_row(grid));
-        self.bookmarks.retain(|&m| m >= gone && m <= last);
-    }
-
-    pub fn has_bookmarks(&mut self, grid: &Grid<Cell>) -> bool {
-        self.prune_bookmarks(grid);
+    pub fn has_bookmarks(&self) -> bool {
         !self.bookmarks.is_empty()
     }
 
@@ -331,7 +317,6 @@ impl LineIndex {
     /// every row of a wrapped line. Pass the normal screen's grid.
     pub fn bookmarked_rows(&mut self, grid: &Grid<Cell>, out: &mut Vec<usize>) {
         out.clear();
-        self.prune_bookmarks(grid);
         if self.bookmarks.is_empty() {
             return;
         }
@@ -348,9 +333,9 @@ impl LineIndex {
     }
 
     /// Moves to the next bookmark down (or up) from what is on screen and
-    /// returns its first row, or None if there are no bookmarks.
-    pub fn step_bookmark(&mut self, grid: &Grid<Cell>, down: bool) -> Option<usize> {
-        self.prune_bookmarks(grid);
+    /// returns its global line, or None if there are no bookmarks. Pass the
+    /// grid shown.
+    pub fn step_bookmark(&mut self, grid: &Grid<Cell>, down: bool) -> Option<u64> {
         let top = grid.history_size() - grid.display_offset();
         let bottom = (top + grid.screen_lines() - 1).min(cursor_row(grid));
         let first = ends_before(grid, &mut self.view, top);
@@ -358,7 +343,7 @@ impl LineIndex {
         let here = self.jumped.filter(|line| (first..=last).contains(line));
         let line = next_bookmark(&self.bookmarks, here, first, last, down)?;
         self.jumped = Some(line);
-        first_row_of(grid, line)
+        Some(line)
     }
 
     /// Milliseconds since the tab started.
@@ -426,6 +411,29 @@ mod tests {
     use alacritty_terminal::term::{Config as TermConfig, Term};
     use alacritty_terminal::vte::ansi::Processor;
 
+    /// How far to scroll the display (for `Scroll::Delta`) to bring row `abs`
+    /// to the middle of the screen, or as near as the scrollback allows.
+    pub fn scroll_to_show(grid: &Grid<Cell>, abs: usize) -> i32 {
+        let hist = grid.history_size();
+        let top = abs.saturating_sub(grid.screen_lines() / 2).min(hist);
+        (hist - top) as i32 - grid.display_offset() as i32
+    }
+
+    /// First row of global line `line`, if it still is in the grid. Walks the
+    /// whole scrollback: this is for a key press, not for every frame.
+    pub fn first_row_of(grid: &Grid<Cell>, line: u64) -> Option<usize> {
+        let mut ends = grid.lines_dropped();
+        for abs in 0..=cursor_row(grid) {
+            if ends == line {
+                return Some(abs);
+            }
+            if !wraps(grid, abs) {
+                ends += 1;
+            }
+        }
+        None
+    }
+
     struct T {
         term: Term<VoidListener>,
         parser: Processor,
@@ -438,8 +446,12 @@ mod tests {
             Self { term: Term::new(cfg, &TermSize::new(cols, lines), VoidListener), parser: Processor::new(), index: LineIndex::new() }
         }
 
+        /// Output, then what the app does each frame for a tab whose
+        /// history is only its grid.
         fn feed(&mut self, s: &str) {
             self.parser.advance(&mut self.term, s.replace('\n', "\r\n").as_bytes());
+            self.index.forget_before(self.term.grid().lines_dropped());
+            self.index.prune_past_cursor(self.term.grid());
         }
 
         /// Types a command at the prompt and presses Enter.
@@ -491,7 +503,8 @@ mod tests {
 
         /// Jumps to the next (or previous) bookmark; returns its text.
         fn jump(&mut self, down: bool) -> String {
-            let abs = self.index.step_bookmark(self.term.grid(), down).expect("a bookmark");
+            let line = self.index.step_bookmark(self.term.grid(), down).expect("a bookmark");
+            let abs = first_row_of(self.term.grid(), line).expect("on the grid");
             let delta = scroll_to_show(self.term.grid(), abs);
             self.term.scroll_display(alacritty_terminal::grid::Scroll::Delta(delta));
             let grid = self.term.grid();
@@ -655,7 +668,7 @@ mod tests {
         assert_eq!(t.index.bookmark_target(t.term.grid(), abs).map(|(_, on)| on), Some(true));
         t.toggle("l1");
         assert!(t.marked().is_empty());
-        assert!(!t.index.has_bookmarks(t.term.grid()));
+        assert!(!t.index.has_bookmarks());
     }
 
     #[test]
@@ -735,11 +748,11 @@ mod tests {
         // 20 rows of history: l0 drops out of it.
         let mut t = T::numbered(20, 5, 20, 3);
         t.toggle("l0");
-        assert!(t.index.has_bookmarks(t.term.grid()));
+        assert!(t.index.has_bookmarks());
         for i in 3..60 {
             t.feed(&format!("l{i}\n"));
         }
-        assert!(!t.index.has_bookmarks(t.term.grid()));
+        assert!(!t.index.has_bookmarks());
         assert!(t.index.step_bookmark(t.term.grid(), true).is_none());
     }
 
@@ -748,7 +761,7 @@ mod tests {
         let mut t = T::numbered(20, 8, 100, 5);
         t.toggle("l3");
         t.feed("\x1bc");
-        assert!(!t.index.has_bookmarks(t.term.grid()));
+        assert!(!t.index.has_bookmarks());
     }
 
     /// A tab that started at 09:14:32, in seconds.
@@ -917,5 +930,138 @@ mod tests {
         format_number(1234567, &mut b);
         assert_eq!(b, "…4567");
         assert_eq!(b.chars().count(), DIGITS);
+    }
+
+    /// A tab that keeps its history (see `crate::history`).
+    mod with_history {
+        use alacritty_terminal::grid::Grid;
+
+        use super::super::*;
+        use crate::history::scroll::{At, Scroller};
+        use crate::history::{Budget, CELL_BYTES, History, Shared, lock, start, sync};
+        use crate::testterm::{Quiet, TestTerm, temp_dir};
+
+        struct H {
+            t: TestTerm,
+            history: Shared,
+            budget: Budget,
+            s: Scroller<Quiet>,
+            index: LineIndex,
+        }
+
+        impl H {
+            /// 20×10, 50 rows of live history, windows of 200 rows.
+            fn new(tag: &str) -> Self {
+                let (history, sink) = start(History::new(4096, temp_dir(tag)).with_chunk_bytes(512));
+                let mut t = TestTerm::new(20, 10, 50);
+                t.term.grid_mut().set_row_sink(Box::new(sink));
+                Self { t, history, budget: Budget { bytes: 200 * 4 * 20 * CELL_BYTES }, s: Scroller::new(Quiet), index: LineIndex::new() }
+            }
+
+            /// Output at `ms`, then what the app does each frame.
+            fn output(&mut self, ms: u64, s: &str) {
+                self.t.feed(s);
+                self.index.record_times_at(self.t.term.grid(), ms);
+                self.t.term.flush_row_sink();
+                sync(&self.history);
+                let first = lock(&self.history).first_line();
+                self.index.forget_before(first);
+                self.index.prune_past_cursor(self.t.term.grid());
+            }
+
+            fn lines(&mut self, from: usize, to: usize) {
+                let text: String = (from..to).map(|i| format!("l{i}\n")).collect();
+                self.output(0, &text);
+            }
+
+            fn shown(&self) -> &Grid<Cell> {
+                self.s.shown(&self.t.term).grid()
+            }
+
+            /// Screen row showing `text`.
+            fn screen_row(&self, text: &str) -> Option<usize> {
+                let grid = self.shown();
+                let top = grid.history_size() - grid.display_offset();
+                (0..grid.screen_lines()).find(|r| {
+                    let mut s = String::new();
+                    push_row(&mut s, grid, top + r);
+                    s.trim_end() == text
+                })
+            }
+
+            fn show_line(&mut self, line: u64) {
+                self.s.show_line(&mut self.t.term, &self.history, &self.budget, line);
+                self.index.invalidate();
+            }
+        }
+
+        #[test]
+        fn bookmark_survives_moving_to_disk() {
+            let mut h = H::new("bm-disk");
+            h.lines(0, 20);
+            h.index.toggle_bookmark(7);
+            h.lines(20, 10_000);
+            assert!(h.index.has_bookmarks());
+            h.show_line(7);
+            assert!(h.s.in_window());
+            let mut rows = Vec::new();
+            h.index.bookmarked_rows(h.s.shown(&h.t.term).grid(), &mut rows);
+            assert_eq!(rows, vec![h.screen_row("l7").expect("l7 on screen")]);
+        }
+
+        #[test]
+        fn jump_reaches_bookmark_on_disk() {
+            let mut h = H::new("bm-jump");
+            h.lines(0, 20);
+            h.index.toggle_bookmark(7);
+            h.lines(20, 10_000);
+            let grid = h.s.shown(&h.t.term).grid();
+            assert_eq!(h.index.step_bookmark(grid, false), Some(7));
+        }
+
+        #[test]
+        fn tab_numbers_in_window_are_global() {
+            let mut h = H::new("numbers");
+            h.lines(0, 6000);
+            h.s.set_top(&mut h.t.term, &h.history, &h.budget, At { line: 4000, sub: 0 });
+            h.index.invalidate();
+            let mut out = Vec::new();
+            h.index.numbers(h.s.shown(&h.t.term).grid(), LineNumbers::Tab, &mut out);
+            assert_eq!(out[0], Some(4001));
+            assert_eq!(out[9], Some(4010));
+        }
+
+        #[test]
+        fn times_kept_for_archived_lines() {
+            let mut h = H::new("times");
+            for k in 0..100 {
+                let text: String = (k * 100..(k + 1) * 100).map(|i| format!("l{i}\n")).collect();
+                h.output(k as u64 * 1000, &text);
+            }
+            h.s.set_top(&mut h.t.term, &h.history, &h.budget, At { line: 1050, sub: 0 });
+            h.index.invalidate();
+            let mut out = Vec::new();
+            h.index.numbers(h.s.shown(&h.t.term).grid(), LineNumbers::Command, &mut out);
+            assert_eq!(out[0], Some(10), "line 1050 came at 10 s");
+        }
+
+        #[test]
+        fn times_grow_by_at_most_one_entry_a_second() {
+            let mut h = H::new("times-bound");
+            for k in 0..1000 {
+                h.output(k as u64 * 10, &format!("l{k}\n"));
+            }
+            assert!(h.index.times.len() <= 11, "{}", h.index.times.len());
+        }
+
+        #[test]
+        fn clear_forgets_marks_above() {
+            let mut h = H::new("bm-clear");
+            h.lines(0, 20);
+            h.index.toggle_bookmark(7);
+            h.lines(20, 10_000);
+            h.output(0, "\x1b[3J");
+            assert!(!h.index.has_bookmarks());
+        }
     }
 }

@@ -1062,6 +1062,9 @@ impl State {
             }
             let scroll = tab.scroller.metrics(&live, &tab.session.history);
             if !live.mode().contains(TermMode::ALT_SCREEN) {
+                let first = crate::history::lock(&tab.session.history).first_line();
+                tab.lines.forget_before(first);
+                tab.lines.prune_past_cursor(live.grid());
                 tab.code.update(live.grid());
                 let term = tab.scroller.shown(&live);
                 tab.lines.numbers(term.grid(), cfg.line_numbers, &mut tab.numbers);
@@ -1147,7 +1150,7 @@ impl State {
         let grid = tab.scroller.shown(&live).grid();
         let abs = grid.history_size() - offset + row;
         let target = if over_text { tab.lines.bookmark_target(grid, abs) } else { None };
-        BookmarkMenu { target, any: tab.lines.has_bookmarks(grid) }
+        BookmarkMenu { target, any: tab.lines.has_bookmarks() }
     }
 
     /// The bookmark key: adds or removes a bookmark without a clicked row
@@ -1178,14 +1181,13 @@ impl State {
         if live.mode().contains(TermMode::ALT_SCREEN) {
             return;
         }
-        let term = tab.scroller.shown_mut(&mut live);
-        let Some(abs) = tab.lines.step_bookmark(term.grid(), down) else {
+        let Some(line) = tab.lines.step_bookmark(tab.scroller.shown(&live).grid(), down) else {
             drop(live);
             self.show("No bookmarks in this tab".to_owned());
             return;
         };
-        let delta = lines::scroll_to_show(term.grid(), abs);
-        term.scroll_display(Scroll::Delta(delta));
+        let budget = tab.session.budget();
+        tab.scroller.show_line(&mut live, &tab.session.history, &budget, line);
         drop(live);
         self.scrolled();
     }
