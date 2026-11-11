@@ -259,7 +259,7 @@ impl SearchBox {
             match segment {
                 Segment::History(range, up) => {
                     if !range.is_empty() {
-                        a.searcher.step(snap.clone(), &pattern, range, up, self.id);
+                        a.searcher.step(snap.clone(), &pattern, range, a.live.columns(), up, self.id);
                         return;
                     }
                 }
@@ -568,7 +568,7 @@ impl Search {
                 continue;
             }
             let snap = lock(a.history).snapshot();
-            a.searcher.count(snap, &pattern, from..end, COUNT_CAP - b.hist_total, b.id);
+            a.searcher.count(snap, &pattern, from..end, a.live.columns(), COUNT_CAP - b.hist_total, b.id);
             b.hist_counted = Some((generation, end));
             b.hist_gen = b.query_gen;
             b.last_hist_count = Some(Instant::now());

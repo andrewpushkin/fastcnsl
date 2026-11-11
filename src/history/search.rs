@@ -12,6 +12,18 @@ use regex_automata::util::syntax;
 
 use super::{Item, Snapshot, line};
 
+/// A line's text as alacritty_terminal's search sees it in a grid
+/// `columns` wide: with the blanks that fill its last row, so `$` matches
+/// in the same places.
+fn grid_text(bytes: &[u8], columns: usize, text: &mut String) {
+    text.clear();
+    line::text(bytes, text);
+    let width = unicode_width::UnicodeWidthStr::width(text.as_str());
+    let columns = columns.max(1);
+    let fill = if width == 0 { columns } else { (columns - width % columns) % columns };
+    text.extend(std::iter::repeat_n(' ', fill));
+}
+
 /// A regex for `pattern`, by alacritty_terminal's rule: it ignores case
 /// unless the pattern has an upper-case letter.
 pub fn compile(pattern: &str) -> Result<Regex, String> {
@@ -63,7 +75,7 @@ impl Searcher {
 
     /// Looks for the nearest line in `range` with a match, from its end
     /// (`up`) or its start.
-    pub fn step(&mut self, snap: Snapshot, pattern: &str, range: Range<u64>, up: bool, owner: u64) {
+    pub fn step(&mut self, snap: Snapshot, pattern: &str, range: Range<u64>, columns: usize, up: bool, owner: u64) {
         self.spawn(owner, Kind::Step, pattern, move |re, cancel| {
             let mut found = Found::Nothing;
             let mut text = String::new();
@@ -72,8 +84,7 @@ impl Searcher {
                     return ControlFlow::Break(());
                 }
                 if let Item::Line(bytes) = item {
-                    text.clear();
-                    line::text(bytes, &mut text);
+                    grid_text(bytes, columns, &mut text);
                     if re.is_match(&text) {
                         found = Found::Line(at);
                         return ControlFlow::Break(());
@@ -86,7 +97,7 @@ impl Searcher {
     }
 
     /// Counts the matches in `range`, up to `cap`.
-    pub fn count(&mut self, snap: Snapshot, pattern: &str, range: Range<u64>, cap: usize, owner: u64) {
+    pub fn count(&mut self, snap: Snapshot, pattern: &str, range: Range<u64>, columns: usize, cap: usize, owner: u64) {
         self.spawn(owner, Kind::Count, pattern, move |re, cancel| {
             let mut matches = 0;
             let mut text = String::new();
@@ -95,8 +106,7 @@ impl Searcher {
                     return ControlFlow::Break(());
                 }
                 if let Item::Line(bytes) = item {
-                    text.clear();
-                    line::text(bytes, &mut text);
+                    grid_text(bytes, columns, &mut text);
                     matches += re.find_iter(&text).filter(|m| !m.is_empty()).count();
                     if matches >= cap {
                         return ControlFlow::Break(());
@@ -226,11 +236,11 @@ mod tests {
         let (_t, history) = needles("step");
         let snap = crate::history::lock(&history).snapshot();
         let mut s = Searcher::new(|| {});
-        s.step(snap.clone(), "needle", snap.first_line()..snap.end_line(), true, 1);
+        s.step(snap.clone(), "needle", snap.first_line()..snap.end_line(), 20, true, 1);
         assert_eq!(next(&mut s), (1, Kind::Step, Found::Line(9000)));
-        s.step(snap.clone(), "needle", snap.first_line()..9000, true, 1);
+        s.step(snap.clone(), "needle", snap.first_line()..9000, 20, true, 1);
         assert_eq!(next(&mut s), (1, Kind::Step, Found::Line(5)));
-        s.step(snap.clone(), "needle", 6..9000, false, 1);
+        s.step(snap.clone(), "needle", 6..9000, 20, false, 1);
         assert_eq!(next(&mut s), (1, Kind::Step, Found::Nothing));
         assert!(!s.busy(1, Kind::Step));
     }
@@ -240,7 +250,7 @@ mod tests {
         let (_t, history) = needles("count");
         let snap = crate::history::lock(&history).snapshot();
         let mut s = Searcher::new(|| {});
-        s.count(snap.clone(), "needle", snap.first_line()..snap.end_line(), 9999, 7);
+        s.count(snap.clone(), "needle", snap.first_line()..snap.end_line(), 20, 9999, 7);
         assert_eq!(next(&mut s), (7, Kind::Count, Found::Count { matches: 2, capped: false }));
     }
 
@@ -249,7 +259,7 @@ mod tests {
         let (_t, history) = needles("cap");
         let snap = crate::history::lock(&history).snapshot();
         let mut s = Searcher::new(|| {});
-        s.count(snap.clone(), "a", snap.first_line()..snap.end_line(), 9999, 7);
+        s.count(snap.clone(), "a", snap.first_line()..snap.end_line(), 20, 9999, 7);
         assert_eq!(next(&mut s), (7, Kind::Count, Found::Count { matches: 9999, capped: true }));
     }
 
@@ -258,7 +268,7 @@ mod tests {
         let (_t, history) = needles("cancel");
         let snap = crate::history::lock(&history).snapshot();
         let mut s = Searcher::new(|| {});
-        s.count(snap.clone(), "needle", snap.first_line()..snap.end_line(), 9999, 3);
+        s.count(snap.clone(), "needle", snap.first_line()..snap.end_line(), 20, 9999, 3);
         s.cancel(3);
         assert!(!s.busy(3, Kind::Count));
         std::thread::sleep(Duration::from_millis(200));
@@ -266,12 +276,27 @@ mod tests {
     }
 
     #[test]
+    fn line_ends_match_as_in_the_grid() {
+        // alacritty_terminal searches rows with their trailing blanks, so
+        // `$` only matches where a line fills its last row.
+        let (_t, history) = needles("dollar");
+        let snap = crate::history::lock(&history).snapshot();
+        let mut s = Searcher::new(|| {});
+        s.count(snap.clone(), "^hay 1234$", snap.first_line()..snap.end_line(), 20, 9999, 1);
+        assert_eq!(next(&mut s), (1, Kind::Count, Found::Count { matches: 0, capped: false }));
+        s.count(snap.clone(), "^hay 1234 +$", snap.first_line()..snap.end_line(), 20, 9999, 1);
+        assert_eq!(next(&mut s), (1, Kind::Count, Found::Count { matches: 1, capped: false }));
+        s.step(snap.clone(), "^hay 1234 +$", snap.first_line()..snap.end_line(), 20, true, 1);
+        assert_eq!(next(&mut s), (1, Kind::Step, Found::Line(1234)));
+    }
+
+    #[test]
     fn a_new_step_replaces_the_one_running() {
         let (_t, history) = needles("replace");
         let snap = crate::history::lock(&history).snapshot();
         let mut s = Searcher::new(|| {});
-        s.step(snap.clone(), "needle", snap.first_line()..snap.end_line(), true, 1);
-        s.step(snap.clone(), "needle", snap.first_line()..snap.end_line(), false, 1);
+        s.step(snap.clone(), "needle", snap.first_line()..snap.end_line(), 20, true, 1);
+        s.step(snap.clone(), "needle", snap.first_line()..snap.end_line(), 20, false, 1);
         assert_eq!(next(&mut s), (1, Kind::Step, Found::Line(5)));
         std::thread::sleep(Duration::from_millis(100));
         assert!(s.poll().is_empty(), "the first step's result is dropped");

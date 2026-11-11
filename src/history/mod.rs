@@ -188,7 +188,10 @@ pub fn start(history: History) -> (Shared, Sink) {
     let flow = history.flow.clone();
     let shared = Arc::new(Mutex::new(history));
     let (tx, rx) = mpsc::sync_channel::<Msg>(QUEUE);
-    let (back_tx, back) = mpsc::channel::<Vec<Row<Cell>>>();
+    // Rows go back to the sink for reuse, but only one batch waits there:
+    // the rest are freed, so a burst of output doesn't leave megabytes of
+    // spare rows behind.
+    let (back_tx, back) = mpsc::sync_channel::<Vec<Row<Cell>>>(1);
     let worker = shared.clone();
     let worker_flow = flow.clone();
     std::thread::Builder::new()
@@ -210,7 +213,7 @@ pub fn start(history: History) -> (Shared, Sink) {
                     }
                 };
                 if let Some(rows) = rows {
-                    let _ = back_tx.send(rows);
+                    let _ = back_tx.try_send(rows);
                 }
                 *worker_flow.pending.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
                 worker_flow.done.notify_all();

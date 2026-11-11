@@ -102,8 +102,10 @@ pub struct Window<L: EventListener> {
     pub generation: u64,
     pub columns: usize,
     pub screen: usize,
-    /// What it was built from, to read lines before it.
-    snap: Snapshot,
+    /// The lines just before it (global line, encoded), for the state
+    /// they leave a code highlighter in. Not a snapshot: that would keep
+    /// history chunks in RAM after they move to disk.
+    before: Vec<(u64, Vec<u8>)>,
     /// Code colours per row, `coloured` once worked out with `code_theme`.
     spans: Vec<Vec<Span>>,
     coloured: Vec<bool>,
@@ -213,6 +215,13 @@ impl<L: EventListener> Window<L> {
         }
 
         let first_line = ats.first().map_or(end, |a| a.line);
+        let mut before = Vec::new();
+        snap.for_each(first_line.saturating_sub(CONTEXT)..first_line, false, |at_line, item| {
+            if let Item::Line(bytes) = item {
+                before.push((at_line, bytes.to_vec()));
+            }
+            ControlFlow::Continue(())
+        })?;
         let history = rows.len() - screen;
         let config = TermConfig { scrolling_history: history, ..TermConfig::default() };
         let mut term = Term::new(config, &TermSize::new(columns, screen), listener);
@@ -226,7 +235,7 @@ impl<L: EventListener> Window<L> {
             generation: snap.generation(),
             columns,
             screen,
-            snap: snap.clone(),
+            before,
             spans: vec![Vec::new(); count],
             coloured: vec![false; count],
             code_theme: None,
@@ -302,14 +311,11 @@ impl<L: EventListener> Window<L> {
             // Lines before the window: their text, for context only.
             if from < window_first {
                 let mut text = String::new();
-                let _ = self.snap.for_each(from..window_first.min(range.end), false, |_, item| {
-                    if let Item::Line(bytes) = item {
-                        text.clear();
-                        line::text(bytes, &mut text);
-                        hl.context(&text);
-                    }
-                    ControlFlow::Continue(())
-                });
+                for (_, bytes) in self.before.iter().filter(|(l, _)| (from..window_first.min(range.end)).contains(l)) {
+                    text.clear();
+                    line::text(bytes, &mut text);
+                    hl.context(&text);
+                }
             }
             for at_line in from.max(window_first)..range.end.min(last + 1) {
                 let lo = self.rows.partition_point(|a| a.line < at_line);
