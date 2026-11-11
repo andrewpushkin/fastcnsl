@@ -89,18 +89,17 @@ first frame later. Its log gives the first frame at a median of 186 ms (Xvfb) an
 - **xterm starts fastest (about 50 ms) and is the smallest.** It is also among the slowest
   at throughput, and half as much CPU again goes into the X server.
 - **Unlimited scrollback costs memory, not speed.** Since 2026-11-11 a tab keeps
-  all its output: its grid keeps 10 000 lines as before, and older lines
-  go into a compact history on a thread of its own, then to disk past
-  `memory_per_tab_mb`. Measured right after the tables above, alternating
-  with the build before it (9 runs each, twice): ascii 0.42 → 0.42–0.43 s,
-  unicode 0.40–0.42 → 0.42–0.43 s, within the run-to-run spread; `lines`
-  1.48 s either way. Peak RSS is about 40 MB higher (180 → 220 MB under
-  Xvfb), because the 32 MiB just printed is kept, and terminal CPU about
-  0.3 s higher for the thread that stores it.
-
-### Method and limits
-
-- Every terminal uses DejaVu Sans Mono 11 pt, 10 000 lines of scrollback (fastcnsl: 10 000 in its grid, the rest of its unlimited history beyond that) and a 100×30 grid,
+  all its output: its grid keeps the last 2 000 lines, and older lines go
+  into a compact history on a thread of its own (compressed once it
+  holds 32 MB), then to disk past `memory_per_tab_mb`. Measured right
+  after the tables above, against the build before it: ascii 0.41 →
+  0.41–0.43 s, unicode 0.41 → 0.41–0.43 s, color 0.39 → 0.37 s, lines
+  1.52 → 1.49 s, within the run-to-run spread. Terminal CPU is 0.15–0.3 s
+  higher for the thread that stores the history. Peak RSS for 32 MiB is
+  about 20 MB higher (179 → 200 MB), because the output is kept. After
+  smaller output a tab uses less than before (5 000 lines of a log:
+  156 → 142 MB), since its grid is smaller.
+- Every terminal uses DejaVu Sans Mono 11 pt, 10 000 lines of scrollback (fastcnsl: 2 000 in its grid, the rest in its unlimited history) and a 100×30 grid,
   which is fastcnsl's default 960×600 window. Under WSLg, fastcnsl's
   grid came out at 95×30. Everything else is left at each terminal's
   defaults, so fastcnsl's line-time gutter and code detection were on.
