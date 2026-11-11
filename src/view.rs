@@ -48,6 +48,9 @@ pub struct View<'a> {
     /// The screen rows of bookmarked lines, ascending (see
     /// `LineIndex::bookmarked_rows`).
     pub bookmarks: &'a [usize],
+    /// For the scrollbar: the tab's history rows and how far up the view is
+    /// (see `Scroller::metrics`); None takes them from the terminal drawn.
+    pub scroll: Option<(usize, usize)>,
 }
 
 /// What the pointer is over, for hover highlights.
@@ -633,7 +636,8 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
 
 fn draw_scrollbar<T>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>) {
     let grid = term.grid();
-    let Some(g) = ui::scroll_geometry(p.width, v.top, p.height, v.scale, grid.history_size(), grid.screen_lines(), grid.display_offset()) else {
+    let (hist, offset) = v.scroll.unwrap_or((grid.history_size(), grid.display_offset()));
+    let Some(g) = ui::scroll_geometry(p.width, v.top, p.height, v.scale, hist, grid.screen_lines(), offset) else {
         return;
     };
     let a = v.scrollbar_alpha;
@@ -816,6 +820,7 @@ mod tests {
                 line_numbers: &[],
                 line_number_mode: LineNumbers::Tab,
                 bookmarks: &[],
+                scroll: None,
             }
         }
     }

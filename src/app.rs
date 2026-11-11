@@ -11,7 +11,7 @@ use alacritty_terminal::event::{Event as TermEvent, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::{ClipboardType, TermMode};
+use alacritty_terminal::term::{ClipboardType, Term, TermMode};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton as WinitButton, MouseScrollDelta, WindowEvent};
@@ -23,6 +23,7 @@ use crate::chrome::{self, Action, BookmarkMenu, Caption, Menu, Metrics, OptionsP
 use crate::config::{Config, ConfigWatcher, GpuBackend, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
+use crate::history::scroll::Scroller;
 use crate::input::{self, MouseButton};
 use crate::lines::{self, LineIndex};
 use crate::logging::{self, TabLog, Upto};
@@ -96,6 +97,58 @@ struct Tab {
     log: Option<TabLog>,
     /// Printed something since it was last the selected tab (a bell on it).
     activity: bool,
+    /// What is shown: the live terminal or a window onto older lines.
+    scroller: Scroller<EventProxy>,
+    /// `scroller.changes()` when line positions were last computed.
+    shown_changes: u64,
+}
+
+impl Tab {
+    /// Runs `f` on the terminal shown: the live one, or the window onto
+    /// older lines when scrolled back that far.
+    fn shown<R>(&mut self, f: impl FnOnce(&mut Term<EventProxy>) -> R) -> R {
+        let mut live = self.session.term.lock();
+        f(self.scroller.shown_mut(&mut live))
+    }
+
+    /// Runs `f` on the search and the terminal shown.
+    fn search_with<R>(&mut self, f: impl FnOnce(&mut Search, &mut Term<EventProxy>) -> R) -> R {
+        let mut live = self.session.term.lock();
+        f(&mut self.search, self.scroller.shown_mut(&mut live))
+    }
+
+    /// Scrolls like `Term::scroll_display`, through the whole history.
+    fn scroll(&mut self, s: Scroll) {
+        let mut live = self.session.term.lock();
+        let budget = self.session.budget();
+        let history = &self.session.history;
+        match s {
+            Scroll::Delta(n) => self.scroller.scroll(&mut live, history, &budget, i64::from(n)),
+            Scroll::PageUp => self.scroller.page(&mut live, history, &budget, true),
+            Scroll::PageDown => self.scroller.page(&mut live, history, &budget, false),
+            Scroll::Top => self.scroller.to_top(&mut live, history, &budget),
+            Scroll::Bottom => self.scroller.to_bottom(&mut live),
+        }
+    }
+
+    /// For the scrollbar: history rows and how far up the view is.
+    fn scroll_metrics(&self) -> (usize, usize) {
+        self.scroller.metrics(&self.session.term.lock(), &self.session.history)
+    }
+
+    /// Scrollbar drag to `offset` (in the units of `scroll_metrics`).
+    fn set_scroll_offset(&mut self, offset: usize) {
+        let mut live = self.session.term.lock();
+        let budget = self.session.budget();
+        self.scroller.set_offset(&mut live, &self.session.history, &budget, offset);
+    }
+
+    /// Drops a stale window (history cleared, size changed).
+    fn sync_scroller(&mut self) {
+        let mut live = self.session.term.lock();
+        let budget = self.session.budget();
+        self.scroller.sync(&mut live, &self.session.history, &budget);
+    }
 }
 
 enum Overlay {
@@ -469,18 +522,14 @@ impl App {
                     el.exit();
                 }
             }
-            Action::Find => {
-                let tab = st.tab_mut();
-                tab.search.open_in(&mut tab.session.term.lock());
-            }
+            Action::Find => st.tab_mut().search_with(|search, term| search.open_in(term)),
             Action::Copy => st.copy_selection(),
             Action::Paste => st.paste(),
-            Action::SelectAll => {
-                let mut term = st.tab().session.term.lock();
+            Action::SelectAll => st.tab_mut().shown(|term| {
                 let mut sel = Selection::new(SelectionType::Simple, Point::new(term.topmost_line(), Column(0)), Side::Left);
                 sel.include_all();
                 term.selection = Some(sel);
-            }
+            }),
             Action::Theme(mode) => self.change_config(|c| c.theme = mode),
             Action::FontBigger => {
                 let size = (self.cfg.font_size + 1.0).min(96.0);
@@ -678,7 +727,8 @@ impl State {
             }
             None => cfg,
         };
-        let session = Session::spawn(cfg, self.grid, EventProxy::new(self.proxy.clone(), id))
+        let listener = EventProxy::new(self.proxy.clone(), id);
+        let session = Session::spawn(cfg, self.grid, listener.clone())
             .map_err(|e| format!("starting {}: {e}", if cfg.shell.is_empty() { "shell" } else { &cfg.shell }))?;
         let code_theme = if self.palette.dark { &cfg.code_theme_dark } else { &cfg.code_theme_light };
         self.tabs.push(Tab {
@@ -695,6 +745,8 @@ impl State {
             shell_title: None,
             log: None,
             activity: false,
+            scroller: Scroller::new(listener),
+            shown_changes: 0,
         });
         self.relabel();
         self.select_tab(self.tabs.len() - 1);
@@ -915,6 +967,7 @@ impl State {
                 tab.code.clear();
             }
             tab.session.resize(size);
+            tab.sync_scroller();
             tab.lines.invalidate();
             if let Some(log) = tab.log.as_mut() {
                 log.invalidate();
@@ -998,10 +1051,19 @@ impl State {
         let shared = self.tabs[self.active].session.term.clone();
         let t0 = Instant::now();
         {
-            let term = shared.lock();
+            let mut live = shared.lock();
             let tab = &mut self.tabs[self.active];
-            if !term.mode().contains(TermMode::ALT_SCREEN) {
-                tab.code.update(term.grid());
+            let budget = tab.session.budget();
+            tab.scroller.sync(&mut live, &tab.session.history, &budget);
+            if tab.scroller.changes() != tab.shown_changes {
+                // Another terminal is shown: cached row positions don't hold.
+                tab.shown_changes = tab.scroller.changes();
+                tab.lines.invalidate();
+            }
+            let scroll = tab.scroller.metrics(&live, &tab.session.history);
+            if !live.mode().contains(TermMode::ALT_SCREEN) {
+                tab.code.update(live.grid());
+                let term = tab.scroller.shown(&live);
                 tab.lines.numbers(term.grid(), cfg.line_numbers, &mut tab.numbers);
                 tab.lines.bookmarked_rows(term.grid(), &mut tab.bookmarked);
             } else {
@@ -1010,9 +1072,10 @@ impl State {
                 tab.bookmarked.clear();
             }
             if tab.search.open {
-                tab.search.refresh(&term);
+                tab.search.refresh(tab.scroller.shown(&live));
             }
             let tab = &self.tabs[self.active];
+            let term = tab.scroller.shown(&live);
             let v = View {
                 palette: &self.palette,
                 search: &tab.search,
@@ -1029,6 +1092,7 @@ impl State {
                 line_numbers: &tab.numbers,
                 line_number_mode: cfg.line_numbers,
                 bookmarks: &tab.bookmarked,
+                scroll: Some(scroll),
             };
             let c = ChromeView {
                 caption: self.caption(),
@@ -1046,7 +1110,7 @@ impl State {
                 activity: self.tabs.iter().map(|t| t.activity).collect(),
                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
             };
-            self.renderer.build(|p| view::draw(p, &term, &v, &c));
+            self.renderer.build(|p| view::draw(p, term, &v, &c));
         }
         let t1 = Instant::now();
         self.renderer.present(self.palette.background);
@@ -1072,15 +1136,15 @@ impl State {
     /// What the right-click menu at the pointer offers for bookmarks.
     /// Lines are only numbered on the normal screen.
     fn bookmark_menu(&mut self, cfg: &Config) -> BookmarkMenu {
-        let offset = self.tab().session.term.lock().grid().display_offset();
+        let offset = self.tab_mut().shown(|t| t.grid().display_offset());
         let (_, _, _, row) = self.mouse_cell(cfg, offset);
         let over_text = self.mouse.1 >= self.top();
         let tab = &mut self.tabs[self.active];
-        let term = tab.session.term.lock();
-        if term.mode().contains(TermMode::ALT_SCREEN) {
+        let live = tab.session.term.lock();
+        if live.mode().contains(TermMode::ALT_SCREEN) {
             return BookmarkMenu::default();
         }
-        let grid = term.grid();
+        let grid = tab.scroller.shown(&live).grid();
         let abs = grid.history_size() - offset + row;
         let target = if over_text { tab.lines.bookmark_target(grid, abs) } else { None };
         BookmarkMenu { target, any: tab.lines.has_bookmarks(grid) }
@@ -1089,42 +1153,49 @@ impl State {
     /// The bookmark key: adds or removes a bookmark without a clicked row
     /// (see `lines::key_bookmark_row`).
     fn toggle_bookmark_by_key(&mut self, cfg: &Config) {
-        let offset = self.tab().session.term.lock().grid().display_offset();
+        let offset = self.tab_mut().shown(|t| t.grid().display_offset());
         let (_, _, _, pointer_row) = self.mouse_cell(cfg, offset);
         let tab = &mut self.tabs[self.active];
-        let term = tab.session.term.lock();
-        let grid = term.grid();
-        if let Some((line, _)) = tab.lines.bookmark_target(grid, lines::key_bookmark_row(grid, pointer_row)) {
+        let live = tab.session.term.lock();
+        let grid = tab.scroller.shown(&live).grid();
+        // In a window onto older lines there is no cursor: the pointer's row.
+        let row = if tab.scroller.in_window() {
+            grid.history_size() - grid.display_offset() + pointer_row
+        } else {
+            lines::key_bookmark_row(grid, pointer_row)
+        };
+        if let Some((line, _)) = tab.lines.bookmark_target(grid, row) {
             tab.lines.toggle_bookmark(line);
         }
-        drop(term);
+        drop(live);
         self.window.request_redraw();
     }
 
     /// Scrolls to the next bookmark down (or up) in the active tab.
     fn jump_to_bookmark(&mut self, down: bool) {
         let tab = &mut self.tabs[self.active];
-        let mut term = tab.session.term.lock();
-        if term.mode().contains(TermMode::ALT_SCREEN) {
+        let mut live = tab.session.term.lock();
+        if live.mode().contains(TermMode::ALT_SCREEN) {
             return;
         }
+        let term = tab.scroller.shown_mut(&mut live);
         let Some(abs) = tab.lines.step_bookmark(term.grid(), down) else {
-            drop(term);
+            drop(live);
             self.show("No bookmarks in this tab".to_owned());
             return;
         };
         let delta = lines::scroll_to_show(term.grid(), abs);
         term.scroll_display(Scroll::Delta(delta));
-        drop(term);
+        drop(live);
         self.scrolled();
     }
 
-    fn has_selection(&self) -> bool {
-        self.tab().session.term.lock().selection.as_ref().is_some_and(|s| !s.is_empty())
+    fn has_selection(&mut self) -> bool {
+        self.tab_mut().shown(|t| t.selection.as_ref().is_some_and(|s| !s.is_empty()))
     }
 
     fn copy_selection(&mut self) {
-        let text = self.tab().session.term.lock().selection_to_string();
+        let text = self.tab_mut().shown(|t| t.selection_to_string());
         if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut())
             && let Err(e) = cb.set_text(text)
         {
@@ -1140,8 +1211,7 @@ impl State {
         let Some(text) = self.clipboard_text() else { return };
         let tab = &mut self.tabs[self.active];
         if tab.search.focused {
-            let mut term = tab.session.term.lock();
-            tab.search.type_text(text.lines().next().unwrap_or(""), &mut term);
+            tab.search_with(|search, term| search.type_text(text.lines().next().unwrap_or(""), term));
             return;
         }
         let mode = *tab.session.term.lock().mode();
@@ -1231,7 +1301,7 @@ impl State {
             };
             // Full-screen programs (vim, less) get these keys themselves.
             if let Some(s) = scroll.filter(|_| !alt_screen) {
-                self.tab().session.term.lock().scroll_display(s);
+                self.tab_mut().scroll(s);
                 self.scrolled();
                 self.window.request_redraw();
                 return None;
@@ -1270,7 +1340,7 @@ impl State {
         let tab = &mut self.tabs[self.active];
         if tab.search.open && matches!(event.logical_key, Key::Named(NamedKey::F3)) {
             let dir = if m.shift_key() { Direction::Right } else { Direction::Left };
-            tab.search.step(&mut tab.session.term.lock(), dir);
+            tab.search_with(|search, term| search.step(term, dir));
             self.window.request_redraw();
             return None;
         }
@@ -1281,7 +1351,7 @@ impl State {
             return None;
         }
 
-        let mut term = tab.session.term.lock();
+        let term = tab.session.term.lock();
         let mode = *term.mode();
         let bytes = input::encode_key(&event.logical_key, event.text.as_deref(), m, mode)?;
         let mut ran = None;
@@ -1297,9 +1367,12 @@ impl State {
             }
             ran = detect::program_name(&line).filter(|name| *name != tab.app);
         }
-        term.scroll_display(Scroll::Bottom);
-        term.selection = None;
         drop(term);
+        // Typing goes back to the live terminal, at the bottom.
+        let mut live = tab.session.term.lock();
+        tab.scroller.to_bottom(&mut live);
+        live.selection = None;
+        drop(live);
         self.write(bytes);
         if let Some(name) = ran {
             self.tabs[self.active].app = name;
@@ -1312,7 +1385,8 @@ impl State {
     fn on_search_key(&mut self, event: &KeyEvent) {
         let m = self.mods;
         let tab = &mut self.tabs[self.active];
-        let mut term = tab.session.term.lock();
+        let mut live = tab.session.term.lock();
+        let term = tab.scroller.shown_mut(&mut live);
         let search = &mut tab.search;
         match &event.logical_key {
             Key::Named(NamedKey::Escape) if search.picker.is_some() => search.picker = None,
@@ -1320,10 +1394,10 @@ impl State {
             Key::Named(NamedKey::Tab) => search.cycle(!m.shift_key()),
             Key::Named(NamedKey::Enter) => {
                 let dir = if m.shift_key() { Direction::Right } else { Direction::Left };
-                search.step(&mut term, dir);
+                search.step(term, dir);
             }
-            Key::Named(NamedKey::ArrowUp) => search.step(&mut term, Direction::Left),
-            Key::Named(NamedKey::ArrowDown) => search.step(&mut term, Direction::Right),
+            Key::Named(NamedKey::ArrowUp) => search.step(term, Direction::Left),
+            Key::Named(NamedKey::ArrowDown) => search.step(term, Direction::Right),
             Key::Named(NamedKey::Backspace) => {
                 let mut q = search.query().to_owned();
                 if m.control_key() {
@@ -1331,11 +1405,11 @@ impl State {
                 } else {
                     q.pop();
                 }
-                search.set_query(q, &mut term);
+                search.set_query(q, term);
             }
-            Key::Character(c) if m.control_key() && c.eq_ignore_ascii_case("r") => search.toggle_regex(&mut term),
+            Key::Character(c) if m.control_key() && c.eq_ignore_ascii_case("r") => search.toggle_regex(term),
             Key::Character(c) if m.control_key() && c.eq_ignore_ascii_case("v") => {
-                drop(term);
+                drop(live);
                 self.paste()
             }
             _ => {
@@ -1343,7 +1417,7 @@ impl State {
                     return;
                 }
                 if let Some(text) = event.text.as_deref().filter(|t| t.chars().all(|c| !c.is_control())) {
-                    search.type_text(text, &mut term);
+                    search.type_text(text, term);
                 }
             }
         }
@@ -1437,10 +1511,9 @@ impl State {
         let top = self.top();
         let scale = self.scale();
         let tab = &mut self.tabs[self.active];
-        let mut term = tab.session.term.lock();
-        let grid = term.grid();
-        let (hist, screen, offset) = (grid.history_size(), grid.screen_lines(), grid.display_offset());
-        let geo = ui::scroll_geometry(m.width, top, m.height, scale, hist, screen, offset);
+        let (hist, scrolled) = tab.scroll_metrics();
+        let (screen, offset) = tab.shown(|t| (t.grid().screen_lines(), t.grid().display_offset()));
+        let geo = ui::scroll_geometry(m.width, top, m.height, scale, hist, screen, scrolled);
 
         let over_bar = geo.as_ref().is_some_and(|g| g.track.contains(x, y));
         let sg = ui::search_geometry(m.width, top, scale, m.cw, m.ch, tab.search.boxes.len(), tab.search.picker);
@@ -1461,37 +1534,33 @@ impl State {
         }
 
         if let (Some(grab), Some(g)) = (self.scrollbar.drag, geo.as_ref()) {
-            let target = ui::offset_for_thumb(g, y - grab, hist) as i32;
-            term.scroll_display(Scroll::Delta(target - offset as i32));
-            drop(term);
+            let target = ui::offset_for_thumb(g, y - grab, hist);
+            self.tabs[self.active].set_scroll_offset(target);
             self.scrolled();
             self.window.request_redraw();
             return;
         }
 
-        drop(term);
         let (point, side, col, row) = self.mouse_cell(cfg, offset);
-        let mut term = self.tabs[self.active].session.term.lock();
-        let mode = *term.mode();
+        let mode = *self.tabs[self.active].session.term.lock().mode();
         if let Some(button) = self.reported_button {
             if mode.intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG) && self.last_reported_cell != Some((col, row)) {
                 self.last_reported_cell = Some((col, row));
                 if let Some(b) = input::encode_mouse(button, true, true, col, row, self.mods, mode) {
-                    drop(term);
                     self.write(b);
                 }
             }
             return;
         }
         if self.selecting {
-            if let Some(sel) = term.selection.as_mut() {
-                sel.update(point, side);
-            }
-            drop(term);
+            self.tab_mut().shown(|term| {
+                if let Some(sel) = term.selection.as_mut() {
+                    sel.update(point, side);
+                }
+            });
             self.window.request_redraw();
             return;
         }
-        drop(term);
         if redraw {
             self.window.request_redraw();
         }
@@ -1617,7 +1686,8 @@ impl State {
                             s.focus(i);
                             s.picker = None;
                             let dir = if hit == SearchHit::Prev(i) { Direction::Left } else { Direction::Right };
-                            s.step(&mut tab.session.term.lock(), dir);
+                            let mut live = tab.session.term.lock();
+                            s.step(tab.scroller.shown_mut(&mut live), dir);
                         }
                         SearchHit::Bar(i) => {
                             s.focus(i);
@@ -1630,18 +1700,16 @@ impl State {
                     return None;
                 }
             }
-            let mut term = tab.session.term.lock();
-            let grid = term.grid();
-            let (hist, screen, offset) = (grid.history_size(), grid.screen_lines(), grid.display_offset());
-            if let Some(g) = ui::scroll_geometry(m.width, top, m.height, scale, hist, screen, offset)
+            let (hist, scrolled) = tab.scroll_metrics();
+            let screen = tab.shown(|t| t.grid().screen_lines());
+            if let Some(g) = ui::scroll_geometry(m.width, top, m.height, scale, hist, screen, scrolled)
                 && g.track.contains(x, y)
             {
                 if g.thumb.contains(x, y) {
                     self.scrollbar.drag = Some(y - g.thumb.y);
                 } else {
-                    term.scroll_display(if y < g.thumb.y { Scroll::PageUp } else { Scroll::PageDown });
+                    tab.scroll(if y < g.thumb.y { Scroll::PageUp } else { Scroll::PageDown });
                 }
-                drop(term);
                 self.scrolled();
                 self.window.request_redraw();
                 return None;
@@ -1652,10 +1720,12 @@ impl State {
             return None;
         }
 
-        let offset = self.tab().session.term.lock().grid().display_offset();
+        let offset = self.tab_mut().shown(|t| t.grid().display_offset());
         let (point, side, col, row) = self.mouse_cell(cfg, offset);
-        let mut term = self.tabs[self.active].session.term.lock();
-        let mode = *term.mode();
+        let tab = &mut self.tabs[self.active];
+        let mut live = tab.session.term.lock();
+        let mode = *live.mode();
+        let term = tab.scroller.shown_mut(&mut live);
 
         if mode.intersects(TermMode::MOUSE_MODE) && !self.mods.shift_key() {
             let b = match button {
@@ -1667,7 +1737,7 @@ impl State {
             self.reported_button = pressed.then_some(b);
             self.last_reported_cell = Some((col, row));
             if let Some(bytes) = input::encode_mouse(b, pressed, false, col, row, self.mods, mode) {
-                drop(term);
+                drop(live);
                 self.write(bytes);
             }
             return None;
@@ -1685,7 +1755,7 @@ impl State {
                     _ => SelectionType::Lines,
                 };
                 term.selection = Some(Selection::new(ty, point, side));
-                drop(term);
+                drop(live);
                 self.selecting = true;
                 self.tab_mut().search.blur();
             }
@@ -1697,12 +1767,12 @@ impl State {
             }
             (WinitButton::Right, true) => {
                 let sel = term.selection.as_ref().is_some_and(|s| !s.is_empty());
-                drop(term);
+                drop(live);
                 let marks = self.bookmark_menu(cfg);
                 self.overlay = Overlay::Menu(Menu::context(x, y, sel, marks, &self.keymap));
             }
             (WinitButton::Middle, true) => {
-                drop(term);
+                drop(live);
                 self.paste();
             }
             _ => {}
@@ -1727,20 +1797,17 @@ impl State {
         }
         self.wheel_accum -= whole as f32;
 
-        let offset = self.tab().session.term.lock().grid().display_offset();
+        let offset = self.tab_mut().shown(|t| t.grid().display_offset());
         let (_, _, col, row) = self.mouse_cell(cfg, offset);
-        let mut term = self.tabs[self.active].session.term.lock();
-        let mode = *term.mode();
+        let mode = *self.tabs[self.active].session.term.lock().mode();
         if mode.intersects(TermMode::MOUSE_MODE) && !self.mods.shift_key() {
             let b = if whole > 0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
-            drop(term);
             for _ in 0..whole.unsigned_abs() {
                 if let Some(bytes) = input::encode_mouse(b, true, false, col, row, self.mods, mode) {
                     self.write(bytes);
                 }
             }
         } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) {
-            drop(term);
             let seq: &'static [u8] = match (whole > 0, mode.contains(TermMode::APP_CURSOR)) {
                 (true, true) => b"\x1bOA",
                 (true, false) => b"\x1b[A",
@@ -1751,8 +1818,7 @@ impl State {
                 self.write(seq);
             }
         } else {
-            term.scroll_display(Scroll::Delta(whole));
-            drop(term);
+            self.tab_mut().scroll(Scroll::Delta(whole));
             self.scrolled();
             self.window.request_redraw();
         }
@@ -1931,7 +1997,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 let tab = &mut st.tabs[st.active];
                 if tab.search.focused {
-                    tab.search.type_text(&text, &mut tab.session.term.lock());
+                    tab.search_with(|search, term| search.type_text(&text, term));
                     st.window.request_redraw();
                 } else if matches!(st.overlay, Overlay::None) {
                     st.write(text.into_bytes());
