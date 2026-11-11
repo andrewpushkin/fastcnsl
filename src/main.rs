@@ -24,6 +24,8 @@ mod testterm;
 mod shortcuts;
 mod theme;
 mod ui;
+#[cfg(test)]
+mod vendor_vte_tests;
 mod view;
 #[cfg(windows)]
 mod wsl;

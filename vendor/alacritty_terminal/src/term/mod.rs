@@ -1143,6 +1143,58 @@ impl<T: EventListener> Handler for Term<T> {
         }
     }
 
+    /// fastcnsl patch: printable ASCII, written a row at a time. The same
+    /// as `input` for each character; that handles the rare cases.
+    fn input_ascii(&mut self, s: &str) {
+        let template = &self.grid.cursor.template;
+        if self.mode.contains(TermMode::INSERT)
+            || !self.mode.contains(TermMode::LINE_WRAP)
+            || self.grid.cursor.charsets[self.active_charset] != StandardCharset::Ascii
+            || template.extra.is_some()
+        {
+            for c in s.chars() {
+                self.input(c);
+            }
+            return;
+        }
+        let (fg, bg, flags) = (template.fg, template.bg, template.flags);
+        let columns = self.columns();
+        let mut bytes = s.as_bytes();
+        while !bytes.is_empty() {
+            if self.grid.cursor.input_needs_wrap {
+                self.wrapline();
+            }
+            let Point { line, column: Column(start) } = self.grid.cursor.point;
+            let n = bytes.len().min(columns - start);
+
+            // Up to the first cell that is part of a wide character.
+            let row = &mut self.grid[line];
+            let mut written = 0;
+            for (cell, &b) in row[Column(start)..Column(start + n)].iter_mut().zip(&bytes[..n]) {
+                if cell.flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER) {
+                    break;
+                }
+                *cell = Cell { c: b as char, fg, bg, flags, extra: None };
+                written += 1;
+            }
+            // That one clears the rest of the wide character too.
+            if written < n {
+                self.grid.cursor.point.column = Column(start + written);
+                self.write_at_cursor(bytes[written] as char);
+                written += 1;
+            }
+
+            let end = start + written;
+            if end < columns {
+                self.grid.cursor.point.column = Column(end);
+            } else {
+                self.grid.cursor.point.column = Column(columns - 1);
+                self.grid.cursor.input_needs_wrap = true;
+            }
+            bytes = &bytes[written..];
+        }
+    }
+
     #[inline]
     fn decaln(&mut self) {
         trace!("Decalnning");

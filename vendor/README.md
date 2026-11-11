@@ -1,9 +1,39 @@
 # Vendored crates
 
+## vte 0.15.0
+
+The crates.io release (Apache-2.0 OR MIT, see `vte/LICENSE-APACHE` and
+`vte/LICENSE-MIT`), without its changelog, examples and test data, plus
+one change (marked "fastcnsl patch"), together with `Term::input_ascii` in
+alacritty_terminal below. The tests are in `src/vendor_vte_tests.rs`.
+
+### Runs of printable ASCII and SIMD UTF-8 validation (`src/lib.rs`, `src/ansi.rs`)
+
+Plain text between escape sequences used to reach the terminal one
+character at a time: `Perform::print`, then `Handler::input`, which works
+out the character's width, the wrap, insert mode, the charset and wide
+characters it overwrites, all for one cell. That was 25–40 % of the
+CPU time of parsing output. Now `ground_dispatch` finds runs of printable
+ASCII (U+0020 to U+007E), 16 bytes at a time, and passes each to the new
+`Perform::print_ascii` and `Handler::input_ascii`. Both default to calling
+`print` and `input` for each character, so other implementations behave
+as before.
+
+Text runs of 64 bytes or more are checked as UTF-8 by `simdutf8` (SSE4.2
+or AVX2 on x86-64, chosen at run time; NEON on ARM64) instead of the
+standard library, which checks non-ASCII text a byte at a time: 32 MiB of
+Cyrillic, Greek and CJK took 18.7 ms, now 0.7 ms. Shorter runs, such as
+single words between colour escapes, stay with the standard library,
+which is faster on them.
+
+Parsing 32 MiB (`scripts/bench/gen.py`, 100×30 grid, no window): ASCII
+0.216 → 0.066 s, `seq` lines 0.282 → 0.215 s, Unicode 0.207 → 0.167 s,
+colour 0.168 → 0.158 s.
+
 ## alacritty_terminal 0.26.0
 
 The crates.io release (Apache-2.0, see `alacritty_terminal/LICENSE-APACHE`),
-without its test recordings, plus five changes (marked "fastcnsl patch").
+without its test recordings, plus six changes (marked "fastcnsl patch").
 
 ### Dropped-line counters (`src/grid/mod.rs`, `src/grid/resize.rs`)
 
@@ -61,3 +91,13 @@ allocations the hardware prefetcher can't follow. `scroll_up` now asks
 for the row it will reuse four lines later (x86-64 only). Parsing a 36 MB
 `cat` (vendored or crates.io code alike): 0.33 s before, 0.29 s after; with
 3 000 lines of scrollback, which fit in the cache, it takes 0.22 s.
+
+### Printable ASCII a row at a time (`src/term/mod.rs`)
+
+`Term::input_ascii` implements vte's new `Handler::input_ascii` (see vte
+above): it writes as much of a run as fits on the cursor's row in one pass
+over the row's cells, then wraps. Insert mode, no line wrap, the DEC line
+drawing charset, a hyperlink or underline colour in the cursor's style,
+and cells that are part of a wide character go through `input` instead,
+one character at a time. `src/vendor_vte_tests.rs` (in fastcnsl) checks
+it against `input` on random output.

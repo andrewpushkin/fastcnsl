@@ -89,6 +89,8 @@ assets = [
 "(dejavu-sans-mono-fonts or dejavu-fonts)" = ""
 
 # alacritty_terminal with a fix for a Windows output stall (large output
-# could stop until the window was resized); see vendor/README.md.
+# could stop until the window was resized), and vte with SIMD UTF-8
+# validation and runs of ASCII passed on whole; see vendor/README.md.
 [patch.crates-io]
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
+vte = { path = "vendor/vte" }
