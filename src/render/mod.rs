@@ -309,7 +309,14 @@ impl Renderer {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("fastcnsl"),
                 required_features: if dual { wgpu::Features::DUAL_SOURCE_BLENDING } else { wgpu::Features::empty() },
-                required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+                // DirectX 12 makes its shader-visible descriptor heap this
+                // big. The default, 1 000 000 descriptors of 32 bytes,
+                // took about 90 MB of private memory once the runtime and
+                // driver had made their copies; the renderer needs a few.
+                required_limits: wgpu::Limits {
+                    max_non_sampler_bindings: 4096,
+                    ..wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
+                },
                 // Small allocation blocks: a terminal's few buffers and one
                 // atlas don't need the big ones. With DirectX 12 this cut
                 // the private memory from 344 MB to 181 MB, with the same
