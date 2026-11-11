@@ -4,6 +4,21 @@ Notable changes to fastcnsl, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
+## Unreleased
+
+- **A tab's scrollback has no limit any more.** It keeps everything printed
+  while the tab is open. Up to 500 MB of a tab's text stays in memory
+  (`memory_per_tab_mb`, which replaces `scrollback`); older lines go to a
+  temporary file in the cache folder, deleted when the tab closes or
+  fastcnsl exits. Scrolling, the scrollbar, search, line numbers, times,
+  bookmarks and code colours all reach the oldest lines.
+- **Copy all text copies the last 100 000 lines** of a tab, as does copying
+  a longer selection. Save text to file and Log to file write the whole
+  scrollback.
+- The app is now called fastcnsl: its settings are in the `fastcnsl` config
+  folder and its environment variables start with `FASTCNSL_`.
+- Bug fixes.
+
 ## 0.1.84 (2026-11-09)
 
 ### Changed
