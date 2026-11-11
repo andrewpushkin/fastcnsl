@@ -21,7 +21,8 @@ rows as the tab's history (`src/history/`), so the grid itself stays small.
 The sink may swap the row for one of its own, so the terminal's thread only
 swaps a pointer and the history thread does the rest; with a sink, the
 prefetch below asks for the sink's rows (`prefetch_row()`) instead of the
-grid's. `Row::occupied()` tells how many cells of a row were written.
+grid's. `Row::occupied()` tells how many cells of a row were written. `Grid::top_continues()` tells whether the top row continues a line that
+already went to the sink.
 `Term::flush_row_sink()` makes the sink pass on rows it holds back.
 `Grid::set_content()` fills a grid with given rows: fastcnsl shows archived
 history through a read-only terminal built that way. The tests are in

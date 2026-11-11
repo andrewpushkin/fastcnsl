@@ -369,6 +369,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let keep = self.max_scroll_limit + self.lines;
         if reversed.len() > keep {
             let ends = reversed[keep..].iter().filter(|r| super::ends_line(r)).count();
+            // The newest row pushed out is the one just above those kept.
+            self.top_continues = !super::ends_line(&reversed[keep]);
             if let Some(sink) = self.sink.0.as_mut() {
                 for row in reversed[keep..].iter_mut().rev() {
                     sink.dropped(row);

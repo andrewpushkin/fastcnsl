@@ -148,6 +148,11 @@ pub struct Grid<T> {
     /// fastcnsl patch: receives the rows that leave the top of the grid.
     #[cfg_attr(feature = "serde", serde(skip))]
     sink: SinkSlot<T>,
+
+    /// fastcnsl patch: the top row continues a line whose first rows were
+    /// passed to the sink.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    top_continues: bool,
 }
 
 /// fastcnsl patch: receives rows as they leave the top of the grid, so the
@@ -222,6 +227,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             rows_dropped: 0,
             lines_dropped: 0,
             sink: SinkSlot::default(),
+            top_continues: false,
             display_offset: 0,
             saved_cursor: Cursor::default(),
             cursor: Cursor::default(),
@@ -584,6 +590,14 @@ impl<T> Grid<T> {
         self.saved_cursor.point = self.cursor.point;
         self.rows_dropped = rows_dropped;
         self.lines_dropped = lines_dropped;
+        self.top_continues = false;
+    }
+
+    /// fastcnsl patch: the top row continues a line whose first rows left
+    /// the grid (and went to the row sink).
+    #[inline]
+    pub fn top_continues(&self) -> bool {
+        self.top_continues
     }
 
     /// fastcnsl patch: rows that have left the top of the grid so far.
@@ -618,6 +632,7 @@ impl<T: GridCell> Grid<T> {
         let ends = (0..count)
             .filter(|&i| ends_line(&self.raw[top + i]))
             .count();
+        self.top_continues = pass_on && !ends_line(&self.raw[top + (count - 1)]);
         if pass_on && let Some(sink) = self.sink.0.as_mut() {
             for i in 0..count {
                 sink.dropped(&mut self.raw[top + i]);

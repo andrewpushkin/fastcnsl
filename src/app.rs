@@ -194,7 +194,7 @@ impl Tab {
         if term.mode().contains(TermMode::ALT_SCREEN) {
             return Ok(false);
         }
-        let snap = log.behind(term.grid()).then(|| crate::history::scroll::settled(&mut term, &self.session.history));
+        let snap = log.needs_history(term.grid(), upto).then(|| crate::history::scroll::settled(&mut term, &self.session.history));
         log.write_new(snap.as_ref(), term.grid(), upto)
     }
 

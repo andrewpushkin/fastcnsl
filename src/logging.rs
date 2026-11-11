@@ -106,6 +106,20 @@ impl TabLog {
         self.next.is_none_or(|next| next < grid.lines_dropped())
     }
 
+    /// [`Self::write_new`] up to `upto` needs the tab's history: lines that
+    /// left the grid are waiting, or the next line to write started before
+    /// the grid's top row.
+    pub fn needs_history(&self, grid: &Grid<Cell>, upto: Upto) -> bool {
+        if self.behind(grid) {
+            return true;
+        }
+        if self.next != Some(grid.lines_dropped()) || !grid.top_continues() {
+            return false;
+        }
+        // Complete lines only: not while that line is still being written.
+        upto != Upto::Complete || lines::line_start(grid, lines::cursor_row(grid)) > 0
+    }
+
     /// Writes the lines not written yet, up to `upto`, and flushes them to
     /// the file. Pass the normal screen's grid, except to save a
     /// full-screen program's screen once, and the tab's history, settled
@@ -529,6 +543,28 @@ mod tests {
             assert!(rx.recv_timeout(Duration::from_secs(20)).unwrap());
             let want: String = (0..20_000).map(|i| format!("line {i}\n")).collect::<String>() + "\n";
             assert!(read(&path) == want, "every line once, in order");
+        }
+
+        #[test]
+        fn a_line_longer_than_the_grid_is_logged_whole() {
+            let (mut t, history) = tab("long-line");
+            let path = temp_dir("long-line-out").join("l.log");
+            let mut log = TabLog::create(&path, false).unwrap();
+            let pass = |t: &mut TestTerm, log: &mut TabLog| {
+                let snap = log.needs_history(t.term.grid(), Upto::Complete).then(|| snap(t, &history));
+                while log.write_new(snap.as_ref(), t.term.grid(), Upto::Complete).unwrap() {}
+            };
+            t.feed("before\n");
+            pass(&mut t, &mut log);
+            // 500 columns of one line: the grid holds 10 rows of 20.
+            let long: String = (0..500).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+            for piece in long.as_bytes().chunks(50) {
+                t.feed(std::str::from_utf8(piece).unwrap());
+                pass(&mut t, &mut log);
+            }
+            t.feed("\nafter\n");
+            pass(&mut t, &mut log);
+            assert_eq!(read(&path), format!("before\n{long}\nafter\n"));
         }
 
         #[test]
