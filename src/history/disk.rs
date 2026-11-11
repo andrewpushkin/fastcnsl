@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Chunks kept in the read cache.
-const CACHED: usize = 4;
+pub const CACHED: usize = 4;
 
 pub struct DiskFile {
     file: File,

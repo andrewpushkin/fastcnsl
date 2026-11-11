@@ -306,6 +306,21 @@ impl History {
     }
 
     #[cfg(test)]
+    pub fn breakdown(&self) -> String {
+        format!(
+            "chunks {} open {} (data {} starts {}) partial {} cache {} entries {} in RAM {}",
+            self.ram,
+            self.open.allocated(),
+            self.open.data.capacity(),
+            self.open.starts.capacity(),
+            self.partial.capacity(),
+            self.disk.as_ref().map_or(0, |d| d.cached_bytes()),
+            self.entries.len(),
+            self.entries.iter().filter(|e| matches!(e.place, Place::Ram(_))).count()
+        )
+    }
+
+    #[cfg(test)]
     pub fn disk_entries(&self) -> usize {
         self.entries.iter().filter(|e| matches!(e.place, Place::Disk { .. })).count()
     }
@@ -360,11 +375,21 @@ impl History {
         self.spill();
     }
 
-    /// Moves the oldest chunks in RAM to disk until the RAM limit holds.
-    /// Chunks that can't be written are lost.
+    /// The most RAM the history can take until the next chunk is sealed:
+    /// the chunks in RAM, the open chunk at its fullest (its bytes and the
+    /// table of where its lines start), the partial line and a full read
+    /// cache.
+    fn resident(&self) -> usize {
+        let chunk_max = self.chunk_bytes + self.chunk_bytes / 16;
+        self.ram + self.open.allocated().max(2 * chunk_max) + self.partial.capacity() + disk::CACHED * chunk_max
+    }
+
+    /// Moves the oldest chunks in RAM to disk until the RAM limit holds,
+    /// with room left for the read cache. Chunks that can't be written are
+    /// lost.
     fn spill(&mut self) {
         let mut i = 0;
-        while self.ram_bytes() > self.ram_limit && i < self.entries.len() {
+        while self.resident() > self.ram_limit && i < self.entries.len() {
             let Place::Ram(chunk) = &self.entries[i].place else {
                 i += 1;
                 continue;
@@ -771,3 +796,60 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod budget_tests {
+    use alacritty_terminal::grid::Dimensions;
+
+    use super::scroll::{At, Scroller};
+    use super::*;
+    use crate::testterm::{Quiet, TestTerm, temp_dir};
+
+    /// `cargo test --release -- --ignored history_ram_never_exceeds --nocapture`
+    #[test]
+    #[ignore]
+    fn history_ram_never_exceeds_budget_with_gigabytes() {
+        let budget = Budget::from_mb(64);
+        let cols = 160;
+        let (history, sink) = start(History::new(budget.history_ram(), temp_dir("budget")));
+        let mut t = TestTerm::new(cols, 50, budget.live_rows(cols));
+        t.term.grid_mut().set_row_sink(Box::new(sink));
+        let mut s = Scroller::new(Quiet);
+        let mut fed = 0usize;
+        let mut lines = 0u64;
+        let mut chunk = String::new();
+        let started = std::time::Instant::now();
+        while fed < 3 << 30 {
+            chunk.clear();
+            for k in 0..100_000u64 {
+                let i = lines + k;
+                match i % 3 {
+                    0 => chunk.push_str(&format!("{i} {}\n", "abcdefghij".repeat(7))),
+                    1 => chunk.push_str(&format!("\x1b[38;5;{}m{i} colour\x1b[0m {}\n", i % 256, "word ".repeat(12))),
+                    _ => chunk.push_str(&format!("{i} 漢字テスト中文 {}\n", "ж".repeat(40))),
+                }
+            }
+            lines += 100_000;
+            fed += chunk.len();
+            t.feed(&chunk);
+            t.term.flush_row_sink();
+            sync(&history);
+            let (ram, first, end, breakdown) = {
+                let h = lock(&history);
+                (h.ram_bytes(), h.first_line(), h.end_line(), h.breakdown())
+            };
+            assert!(ram <= budget.history_ram(), "history RAM {ram} after {lines} lines: {breakdown}");
+            let grid = t.term.grid();
+            assert!(grid.total_lines() * cols * CELL_BYTES <= budget.bytes / 4 + 50 * cols * CELL_BYTES, "live grid");
+            // A window somewhere in history.
+            let at = At { line: first + (lines * 7919) % (end - first).max(1), sub: 0 };
+            s.set_top(&mut t.term, &history, &budget, at);
+            if let Some(w) = &s.window {
+                let rows = w.term.grid().total_lines();
+                assert!(rows * cols * CELL_BYTES <= budget.bytes / 4, "window of {rows} rows");
+            }
+            s.go_bottom(&mut t.term);
+        }
+        println!("{} MB, {lines} lines in {:?}", fed >> 20, started.elapsed());
+    }
+}
