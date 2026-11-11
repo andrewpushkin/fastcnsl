@@ -50,7 +50,9 @@ def home_fastcnsl(home):
     os.makedirs(d)
     with open(os.path.join(d, "config.toml"), "w") as f:
         f.write(f'font_family = "{FONT}"\nfont_size = {FONT_PT}.0\n'
-                f'scrollback = {SCROLLBACK}\ntheme = "dark"\nshell = "/bin/sh"\n')
+                f'scrollback = {SCROLLBACK}\ntheme = "dark"\nshell = "/bin/sh"\n'
+                # Extra settings, e.g. to measure what a feature costs.
+                + os.environ.get("FASTCNSL_CONFIG_EXTRA", "").replace("\\n", "\n") + "\n")
 
 
 def home_konsole(home):
