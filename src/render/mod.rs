@@ -310,6 +310,11 @@ impl Renderer {
                 label: Some("fastcnsl"),
                 required_features: if dual { wgpu::Features::DUAL_SOURCE_BLENDING } else { wgpu::Features::empty() },
                 required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+                // Small allocation blocks: a terminal's few buffers and one
+                // atlas don't need the big ones. With DirectX 12 this cut
+                // the private memory from 344 MB to 181 MB, with the same
+                // output speed (docs/BENCHMARK.md).
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await

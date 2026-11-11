@@ -176,7 +176,9 @@ its own process, started for the run.
   output, or fastcnsl spends more on parsing it.
 - **Startup and memory cost the most.** fastcnsl's 485 ms is mostly DirectX 12
   setup. Its 379 MB working set, against 138 MB for Windows Terminal and 16 MB for conhost, comes
-  mostly from the GPU driver.
+  mostly from the GPU driver. Since then fastcnsl asks wgpu for small
+  allocation blocks (`MemoryHints::MemoryUsage`). That halved a window's private memory
+  with DirectX 12, from 344 MB to 183 MB (195 MB working set), with the same output speed.
 
 ### Limits
 
