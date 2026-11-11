@@ -63,6 +63,8 @@ pub struct SearchBox {
     /// Where that step goes on looking, beyond the terminal shown.
     segments: VecDeque<Segment>,
     step_dir: Direction,
+    /// The history generation the step's history segments were taken in.
+    step_generation: u64,
     /// Matches in the live terminal, and the current one's place among them.
     live_total: usize,
     live_index: Option<usize>,
@@ -106,6 +108,7 @@ impl SearchBox {
             stepped: None,
             segments: VecDeque::new(),
             step_dir: Direction::Left,
+            step_generation: 0,
             live_total: 0,
             live_index: None,
             current_live: true,
@@ -251,6 +254,15 @@ impl SearchBox {
         self.combine();
     }
 
+    /// A step up whose origin is the top of `term`, so nothing in it is
+    /// ahead: what follows comes from history.
+    #[cfg(test)]
+    fn step_from_top_for_test<T: EventListener>(&mut self, term: &mut Term<T>) {
+        self.stepped = Some((Direction::Left, false));
+        self.step_dir = Direction::Left;
+        let _ = term;
+    }
+
     /// Goes on looking along the segments left, after the terminal shown
     /// had no match: a history segment starts a search and waits for it.
     fn run_segments<L: EventListener + Clone>(&mut self, a: &mut Across<'_, L>, snap: &Snapshot) {
@@ -286,9 +298,9 @@ impl SearchBox {
     /// A history search found a match on global line `line`: shows it and
     /// makes the match there the current one.
     fn land<L: EventListener + Clone>(&mut self, a: &mut Across<'_, L>, line: u64) {
+        let Some(regex) = self.regex.as_mut() else { return };
         a.scroller.show_line(a.live, a.history, &a.budget, line);
         let up = self.step_dir == Direction::Left;
-        let Some(regex) = self.regex.as_mut() else { return };
         let Some(w) = a.scroller.window.as_mut() else { return };
         let Some(row) = w.row_of(At { line, sub: if up { u32::MAX } else { 0 } }) else { return };
         let term = &mut w.term;
@@ -477,7 +489,14 @@ impl Search {
     /// After searching the terminal shown: where a step found no match
     /// ahead, goes on in the rest of the history before going round.
     pub fn follow_up<L: EventListener + Clone>(&mut self, a: &mut Across<'_, L>) {
+        // Searches of boxes closed, removed or emptied are of no use now.
+        a.searcher.retain_owners(|owner| self.open && self.boxes.iter().any(|b| b.id == owner && b.regex.is_some()));
         for b in &mut self.boxes {
+            if !self.open || b.regex.is_none() {
+                b.segments.clear();
+                b.stepped = None;
+                continue;
+            }
             let Some((dir, ahead)) = b.stepped.take() else { continue };
             a.searcher.cancel_step(b.id);
             b.segments.clear();
@@ -493,6 +512,7 @@ impl Search {
             let (first, end) = (snap.first_line(), snap.end_line());
             let up = dir == Direction::Left;
             b.step_dir = dir;
+            b.step_generation = snap.generation();
             b.segments = match &a.scroller.window {
                 None => [Segment::History(first..end, up)].into(),
                 Some(w) => {
@@ -522,8 +542,14 @@ impl Search {
 
     /// Takes the history searcher's results: matches found, counts.
     pub fn on_results<L: EventListener + Clone>(&mut self, a: &mut Across<'_, L>) {
+        let generation = lock(a.history).generation();
         for (owner, kind, found) in a.searcher.poll() {
             let Some(b) = self.boxes.iter_mut().find(|b| b.id == owner) else { continue };
+            if kind == Kind::Step && (!self.open || b.step_generation != generation) {
+                // Closed since, or the history was cleared under it.
+                b.segments.clear();
+                continue;
+            }
             match (kind, found) {
                 (Kind::Step, Found::Line(line)) => b.land(a, line),
                 (Kind::Step, Found::Nothing) => {
@@ -950,6 +976,50 @@ mod tests {
             a.settle();
             let b = a.search.active_box();
             assert_eq!((b.total, b.index, b.counting), (3, Some(3), false));
+        }
+
+        /// Steps into history for "needle" from the live bottom, and
+        /// returns before the history search can report.
+        fn start_history_step(a: &mut A) {
+            a.act(|s, t| s.set_query("needle".into(), t));
+            assert_eq!(a.current(), "a needle 19990");
+            a.search.boxes[0].current = None;
+            // From the top of the live terminal up: only history is left.
+            a.search.boxes[0].step_from_top_for_test(&mut a.t.term);
+            a.with(|s, x| s.follow_up(x));
+        }
+
+        #[test]
+        fn closing_search_cancels_a_history_step() {
+            let mut a = A::new("esc");
+            start_history_step(&mut a);
+            a.search.close();
+            a.with(|s, x| s.follow_up(x));
+            std::thread::sleep(Duration::from_millis(300));
+            a.settle();
+            assert!(!a.scroller.in_window(), "the view didn't jump into history");
+        }
+
+        #[test]
+        fn emptying_the_query_cancels_a_history_step() {
+            let mut a = A::new("empty");
+            start_history_step(&mut a);
+            a.act(|s, t| s.set_query(String::new(), t));
+            std::thread::sleep(Duration::from_millis(300));
+            a.settle();
+            assert!(!a.scroller.in_window(), "the view didn't jump into history");
+        }
+
+        #[test]
+        fn a_step_from_before_a_clear_is_dropped() {
+            let mut a = A::new("stale");
+            start_history_step(&mut a);
+            a.t.feed("\x1b[3J");
+            a.t.term.flush_row_sink();
+            crate::history::sync(&a.history);
+            std::thread::sleep(Duration::from_millis(300));
+            a.settle();
+            assert!(!a.scroller.in_window(), "no jump to a line from before the clear");
         }
 
         #[test]

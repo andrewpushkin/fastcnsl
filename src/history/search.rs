@@ -154,6 +154,17 @@ impl Searcher {
         });
     }
 
+    /// Stops the searches of owners `keep` says no to.
+    pub fn retain_owners(&mut self, keep: impl Fn(u64) -> bool) {
+        self.jobs.retain(|j| {
+            let kept = keep(j.owner);
+            if !kept {
+                j.cancel.store(true, Ordering::Relaxed);
+            }
+            kept
+        });
+    }
+
     /// Stops `owner`'s searches; their results never come.
     pub fn cancel(&mut self, owner: u64) {
         self.cancel_kind(owner, Kind::Step);
