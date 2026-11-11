@@ -94,18 +94,71 @@ fn spacer_of(wide: &Cell) -> Cell {
 
 /// Appends the encoded form of `cells` to `out`.
 pub fn encode(cells: &[Cell], out: &mut Vec<u8>) {
-    let (mut fg, mut bg, mut flags) = (Color::Named(NamedColor::Foreground), Color::Named(NamedColor::Background), Flags::empty());
-    let mut utf8 = [0u8; 4];
-    let mut i = 0;
-    while i < cells.len() {
-        let cell = &cells[i];
-        let wide = cell.flags.contains(Flags::WIDE_CHAR) && cells.get(i + 1) == Some(&spacer_of(cell));
-        let cell_flags = if wide { cell.flags - Flags::WIDE_CHAR } else { cell.flags };
-        if cell.fg != fg || cell.bg != bg || cell_flags != flags {
-            (fg, bg, flags) = (cell.fg, cell.bg, cell_flags);
+    Encoder::default().encode(cells, out);
+}
+
+/// Encodes a line in pieces: each piece continues in the style the last
+/// one ended with, so the pieces concatenated decode as one line.
+#[derive(Debug, Clone, Copy)]
+pub struct Encoder {
+    fg: Color,
+    bg: Color,
+    flags: Flags,
+}
+
+impl Default for Encoder {
+    fn default() -> Self {
+        Self { fg: Color::Named(NamedColor::Foreground), bg: Color::Named(NamedColor::Background), flags: Flags::empty() }
+    }
+}
+
+impl Encoder {
+    /// Appends the encoded form of `cells` to `out`.
+    pub fn encode(&mut self, cells: &[Cell], out: &mut Vec<u8>) {
+        let mut i = 0;
+        while i < cells.len() {
+            let wide = cells[i].flags.contains(Flags::WIDE_CHAR) && cells.get(i + 1) == Some(&spacer_of(&cells[i]));
+            self.cell(&cells[i], wide, out);
+            i += if wide { 2 } else { 1 };
+        }
+    }
+
+    /// Appends one grid row of a line, as `join_rows` would join it.
+    /// Returns true if the row ends the line.
+    pub fn encode_row(&mut self, row: &Row<Cell>, out: &mut Vec<u8>) -> bool {
+        let cells = &row[..];
+        let Some(last) = cells.last() else { return true };
+        if last.flags.contains(Flags::WRAPLINE) {
+            let mut last = last.clone();
+            last.flags.remove(Flags::WRAPLINE);
+            let body = &cells[..cells.len() - 1];
+            if last.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+                self.encode(body, out);
+            } else if let Some(wide) = body.last().filter(|w| w.flags.contains(Flags::WIDE_CHAR) && last == spacer_of(w)) {
+                // A wide character in the last two columns: its spacer
+                // carried the WRAPLINE flag.
+                self.encode(&body[..body.len() - 1], out);
+                self.cell(wide, true, out);
+            } else {
+                self.encode(body, out);
+                self.cell(&last, false, out);
+            }
+            false
+        } else {
+            let blank = Cell::default();
+            let end = cells.iter().rposition(|c| *c != blank).map_or(0, |i| i + 1);
+            self.encode(&cells[..end], out);
+            true
+        }
+    }
+
+    fn cell(&mut self, cell: &Cell, wide: bool, out: &mut Vec<u8>) {
+        let flags = if wide { cell.flags - Flags::WIDE_CHAR } else { cell.flags };
+        if cell.fg != self.fg || cell.bg != self.bg || flags != self.flags {
+            (self.fg, self.bg, self.flags) = (cell.fg, cell.bg, flags);
             out.push(STYLE);
-            put_color(out, fg);
-            put_color(out, bg);
+            put_color(out, cell.fg);
+            put_color(out, cell.bg);
             out.extend_from_slice(&flags.bits().to_le_bytes());
         }
         if let Some(extra) = &cell.extra {
@@ -117,9 +170,9 @@ pub fn encode(cells: &[Cell], out: &mut Vec<u8>) {
         if cell.c.is_ascii() {
             out.push(cell.c as u8);
         } else {
+            let mut utf8 = [0u8; 4];
             out.extend_from_slice(cell.c.encode_utf8(&mut utf8).as_bytes());
         }
-        i += if wide { 2 } else { 1 };
     }
 }
 
@@ -505,6 +558,26 @@ mod tests {
         assert_eq!(rows[0][Column(0)].c, 'j');
         assert_eq!(rows[1][Column(0)].c, 'm');
         assert!(rows[1][Column(2)].flags.contains(Flags::WRAPLINE));
+    }
+
+    #[test]
+    fn encode_row_matches_join_then_encode() {
+        let mut t = TestTerm::new(20, 30, 100);
+        t.feed(STYLED);
+        for start in t.line_starts() {
+            let mut want = Vec::new();
+            encode(&joined(&t, start), &mut want);
+            let mut got = Vec::new();
+            let mut enc = Encoder::default();
+            let rows = t.rows_of_line(start);
+            for (i, row) in rows.iter().enumerate() {
+                assert_eq!(enc.encode_row(row, &mut got), i + 1 == rows.len(), "row {i} of line at {start}");
+            }
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            decode(&got, &mut a);
+            decode(&want, &mut b);
+            assert_eq!(a, b, "line at row {start}");
+        }
     }
 
     #[test]

@@ -50,3 +50,14 @@ impl TestTerm {
         (0..=last).filter(|&abs| abs == 0 || !lines::wraps(grid, abs - 1)).collect()
     }
 }
+
+/// A new empty directory for one test, under the system temp dir.
+pub fn temp_dir(tag: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("fastcnsl-test-{}-{tag}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    dir
+}
