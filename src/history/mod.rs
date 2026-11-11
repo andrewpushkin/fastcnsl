@@ -39,6 +39,9 @@ pub fn history_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("fastcnsl-history"))
 }
 
+/// Chunks in RAM up to this size are not compressed (see `History::plain_bytes`).
+const PLAIN_BYTES: usize = 32 << 20;
+
 /// Most history rows the live grid keeps.
 const LIVE_ROWS: usize = 2000;
 
@@ -104,9 +107,11 @@ fn unpack(packed: &[u8]) -> io::Result<Vec<u8>> {
 /// Where a chunk of lines is.
 #[derive(Clone)]
 enum Place {
-    /// Compressed (see [`pack`]).
+    /// In RAM, compressed (see [`pack`]).
     Ram(Chunk),
-    /// Not compressed: the lines a snapshot copies from the open chunk.
+    /// In RAM, not compressed: while the history is small (see
+    /// `History::plain_bytes`), and the lines a snapshot copies from the
+    /// open chunk.
     Plain(Chunk),
     Disk { offset: u64, len: u32 },
     /// Lost to a disk error: one marker stands for all its lines.
@@ -175,6 +180,9 @@ fn chunk_line(chunk: &[u8], i: usize) -> &[u8] {
 /// One tab's archived lines.
 pub struct History {
     chunk_bytes: usize,
+    /// Chunks are kept as they are while the chunks in RAM take less than
+    /// this, compressed after: small histories cost no compression.
+    plain_bytes: usize,
     ram_limit: usize,
     dir: PathBuf,
     entries: Vec<Entry>,
@@ -277,6 +285,7 @@ impl History {
     pub fn new(ram_limit: usize, dir: PathBuf) -> Self {
         Self {
             chunk_bytes: 1 << 20,
+            plain_bytes: PLAIN_BYTES,
             ram_limit,
             dir,
             entries: Vec::new(),
@@ -292,6 +301,22 @@ impl History {
             disk_warned: false,
             flow: Arc::new(Flow::default()),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_plain_bytes(mut self, n: usize) -> Self {
+        self.plain_bytes = n;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn compressed_entries(&self) -> usize {
+        self.entries.iter().filter(|e| matches!(e.place, Place::Ram(_))).count()
+    }
+
+    #[cfg(test)]
+    pub fn ram_entries(&self) -> usize {
+        self.entries.iter().filter(|e| matches!(e.place, Place::Ram(_) | Place::Plain(_))).count()
     }
 
     #[cfg(test)]
@@ -350,7 +375,7 @@ impl History {
             self.partial.capacity(),
             self.disk.as_ref().map_or(0, |d| d.cached_bytes()),
             self.entries.len(),
-            self.entries.iter().filter(|e| matches!(e.place, Place::Ram(_))).count()
+            self.entries.iter().filter(|e| matches!(e.place, Place::Ram(_) | Place::Plain(_))).count()
         )
     }
 
@@ -405,9 +430,16 @@ impl History {
             return;
         }
         let count = self.open.starts.len() as u64;
-        let chunk = Arc::new(pack(&std::mem::take(&mut self.open).into_chunk()));
-        self.ram += chunk.capacity();
-        self.entries.push(Entry { first: self.end - count, count, place: Place::Ram(chunk) });
+        let chunk = std::mem::take(&mut self.open).into_chunk();
+        let place = if self.ram + chunk.capacity() <= self.plain_bytes {
+            self.ram += chunk.capacity();
+            Place::Plain(chunk)
+        } else {
+            let packed = Arc::new(pack(&chunk));
+            self.ram += packed.capacity();
+            Place::Ram(packed)
+        };
+        self.entries.push(Entry { first: self.end - count, count, place });
         self.spill();
     }
 
@@ -426,12 +458,16 @@ impl History {
     fn spill(&mut self) {
         let mut i = 0;
         while self.resident() > self.ram_limit && i < self.entries.len() {
-            let Place::Ram(chunk) = &self.entries[i].place else {
-                i += 1;
-                continue;
+            let (held, packed) = match &self.entries[i].place {
+                Place::Ram(packed) => (packed.capacity(), packed.clone()),
+                // On disk every chunk is compressed.
+                Place::Plain(chunk) => (chunk.capacity(), Arc::new(pack(chunk))),
+                _ => {
+                    i += 1;
+                    continue;
+                }
             };
-            let chunk = chunk.clone();
-            let written = self.disk().and_then(|d| d.append(&chunk).map(|offset| Place::Disk { offset, len: chunk.len() as u32 }));
+            let written = self.disk().and_then(|d| d.append(&packed).map(|offset| Place::Disk { offset, len: packed.len() as u32 }));
             let place = match written {
                 Ok(place) => place,
                 Err(e) => {
@@ -442,7 +478,7 @@ impl History {
                     Place::Lost
                 }
             };
-            self.ram -= chunk.capacity();
+            self.ram -= held;
             self.entries[i].place = place;
             // Lost ranges next to each other become one.
             if i > 0 && matches!(self.entries[i].place, Place::Lost) && matches!(self.entries[i - 1].place, Place::Lost) {
@@ -840,7 +876,7 @@ mod tests {
     #[test]
     fn sealed_chunks_are_compressed() {
         // Typical log lines: much the same text again and again.
-        let (history, sink) = start(History::new(1 << 30, temp_dir("compress")).with_chunk_bytes(1 << 16));
+        let (history, sink) = start(History::new(1 << 30, temp_dir("compress")).with_chunk_bytes(1 << 16).with_plain_bytes(0));
         let mut t = TestTerm::new(100, 5, 5);
         t.term.grid_mut().set_row_sink(Box::new(sink));
         let text: String = (0..20_000).map(|i| format!("2026-11-11 12:00:{:02} INFO [api] request {i} handled in {} ms\n", i % 60, i % 97)).collect();
@@ -850,6 +886,35 @@ mod tests {
         let got = texts(&h.snapshot());
         assert_eq!(got.len() as u64, h.end_line());
         assert_eq!(got[1234], text.lines().nth(1234).unwrap());
+    }
+
+    #[test]
+    fn small_histories_are_not_compressed() {
+        let (history, sink) = start(History::new(1 << 30, temp_dir("plain")).with_chunk_bytes(1 << 16));
+        let mut t = TestTerm::new(100, 5, 5);
+        t.term.grid_mut().set_row_sink(Box::new(sink));
+        let text: String = (0..20_000).map(|i| format!("2026-11-11 12:00:{:02} INFO [api] request {i} handled in {} ms\n", i % 60, i % 97)).collect();
+        t.feed(&text);
+        let h = settled(&mut t, &history);
+        assert!(h.compressed_entries() == 0 && h.ram_entries() > 0, "{} of {} compressed", h.compressed_entries(), h.ram_entries());
+        assert_eq!(texts(&h.snapshot())[1234], text.lines().nth(1234).unwrap());
+    }
+
+    #[test]
+    fn past_the_plain_limit_chunks_are_compressed_and_spill_compressed() {
+        let (history, sink) = start(History::new(1 << 18, temp_dir("plain-limit")).with_chunk_bytes(1 << 14).with_plain_bytes(1 << 16));
+        let mut t = TestTerm::new(100, 5, 5);
+        t.term.grid_mut().set_row_sink(Box::new(sink));
+        let text: String = (0..40_000).map(|i| format!("2026-11-11 12:00:{:02} INFO [api] request {i} handled in {} ms\n", i % 60, i % 97)).collect();
+        t.feed(&text);
+        let h = settled(&mut t, &history);
+        assert!(h.compressed_entries() > 0);
+        assert!(h.disk_entries() > 0);
+        let got = texts(&h.snapshot());
+        assert_eq!(got.len() as u64, h.end_line());
+        for i in [0, 1234, 20_000, got.len() - 1] {
+            assert_eq!(got[i], text.lines().nth(i).unwrap());
+        }
     }
 
     #[test]
