@@ -8,7 +8,7 @@ use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::{Dimensions, Grid, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::Term;
+use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::term::cell::Cell;
 
 pub use super::window::{At, Window};
@@ -320,11 +320,19 @@ impl<L: EventListener + Clone> Scroller<L> {
     /// another size is built again at the same line.
     pub fn sync(&mut self, live: &mut Term<L>, history: &Shared, budget: &Budget) {
         let Some(w) = &self.window else { return };
+        if live.mode().contains(TermMode::ALT_SCREEN) {
+            // A full-screen program started: its screen is what to show.
+            self.go_bottom(live);
+            return;
+        }
         let snap = settled(live, history);
         if w.generation != snap.generation() {
             self.go_bottom(live);
         } else if w.columns != live.grid().columns() || w.screen != live.grid().screen_lines() {
-            let top = At { line: w.top().line, sub: 0 };
+            // The same place in the line: its rows hold more or fewer cells now.
+            let top = w.top();
+            let sub = u64::from(top.sub) * w.columns as u64 / live.grid().columns().max(1) as u64;
+            let top = At { line: top.line, sub: sub as u32 };
             self.window = None;
             self.changes += 1;
             self.place(live, &snap, budget, top);
@@ -601,6 +609,30 @@ mod tests {
         assert!(after.len() >= 10, "{texts:?}");
         assert_eq!(texts[at + 1..], after[..], "{texts:?}");
         assert_eq!(texts[at - 1], numbered(299));
+    }
+
+    #[test]
+    fn a_full_screen_program_takes_the_view_back() {
+        let mut t = T::new("alt");
+        t.feed_numbered(0, 3000);
+        t.s.go_top(&mut t.t.term, &t.history, &t.budget);
+        assert!(t.s.in_window());
+        t.t.feed("\x1b[?1049h");
+        t.s.sync(&mut t.t.term, &t.history, &t.budget);
+        assert!(!t.s.in_window(), "the program's screen shows");
+    }
+
+    #[test]
+    fn resize_keeps_the_place_in_a_long_line() {
+        let mut t = T::new("resize-mid");
+        let giant: String = (0..200_000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+        t.t.feed(&giant);
+        t.t.feed("\n");
+        t.feed_numbered(0, 500);
+        t.s.set_top(&mut t.t.term, &t.history, &t.budget, At { line: 0, sub: 5000 });
+        t.t.resize(2 * COLS, SCREEN);
+        t.s.sync(&mut t.t.term, &t.history, &t.budget);
+        assert_eq!(t.top(), At { line: 0, sub: 2500 }, "the same text at twice the width");
     }
 
     #[test]
