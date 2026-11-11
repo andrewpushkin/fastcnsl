@@ -31,16 +31,9 @@ pub struct At {
     pub sub: u32,
 }
 
-/// Cells of the partial line (see `History::partial`).
-pub fn partial_cells(snap: &Snapshot) -> Vec<Cell> {
-    let mut cells = Vec::new();
-    line::decode(snap.partial(), &mut cells);
-    cells
-}
-
 /// Rows the partial line takes at `columns` in history; 0 if there is none.
 pub fn partial_rows(snap: &Snapshot, columns: usize) -> usize {
-    if snap.partial().is_empty() { 0 } else { line::row_count(&partial_cells(snap), columns) }
+    snap.partial_rows(columns)
 }
 
 /// The row of absolute live row `abs`. `partial` is [`partial_rows`].
@@ -127,9 +120,7 @@ impl<L: EventListener> Window<L> {
         let columns = live.columns();
         let max_rows = max_rows.max(screen * 3);
         let end = snap.end_line();
-        let partial = partial_cells(snap);
-        let partial_rows = if snap.partial().is_empty() { 0 } else { line::row_count(&partial, columns) };
-        let mut cells = Vec::new();
+        let partial_rows = partial_rows(snap, columns);
 
         // Where to start: up to half the window above `top`.
         let want_above = max_rows / 2;
@@ -141,11 +132,7 @@ impl<L: EventListener> Window<L> {
             start_sub = 0;
             snap.for_each(snap.first_line()..start_line, true, |line, item| {
                 let rows = match item {
-                    Item::Line(bytes) => {
-                        cells.clear();
-                        line::decode(bytes, &mut cells);
-                        line::row_count(&cells, columns)
-                    }
+                    Item::Line(bytes) => line::row_count_encoded(bytes, columns),
                     Item::Lost(_) => 1,
                 };
                 start_line = line;
@@ -165,10 +152,8 @@ impl<L: EventListener> Window<L> {
             let from = if at_line == start_line { start_sub } else { 0 };
             match item {
                 Item::Line(bytes) => {
-                    cells.clear();
-                    line::decode(bytes, &mut cells);
                     let before = rows.len();
-                    line::wrap(&cells, columns, from, from + (max_rows - before), &mut rows);
+                    line::wrap_encoded(bytes, columns, from, from + (max_rows - before), &mut rows);
                     ats.extend((0..rows.len() - before).map(|i| At { line: at_line, sub: (from + i) as u32 }));
                 }
                 Item::Lost(count) => {
@@ -185,7 +170,7 @@ impl<L: EventListener> Window<L> {
             let from = if start_line == end { start_sub.min(partial_rows) } else { 0 };
             let before = rows.len();
             if partial_rows > 0 {
-                line::wrap(&partial, columns, from, from + (max_rows - before), &mut rows);
+                line::wrap_encoded(snap.partial(), columns, from, from + (max_rows - before), &mut rows);
                 // It goes on in the live grid.
                 if let Some(last) = rows.last_mut() {
                     last[Column(columns - 1)].flags.insert(Flags::WRAPLINE);

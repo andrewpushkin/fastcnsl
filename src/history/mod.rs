@@ -39,6 +39,9 @@ pub fn history_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("fastcnsl-history"))
 }
 
+/// Most rows in a window onto older lines.
+const WINDOW_ROWS: usize = 2000;
+
 /// Bytes of one grid cell.
 pub const CELL_BYTES: usize = std::mem::size_of::<Cell>();
 
@@ -64,9 +67,11 @@ impl Budget {
         ((self.bytes / 4) / (columns.max(1) * CELL_BYTES)).clamp(100, 10_000)
     }
 
-    /// Rows a window onto older lines may have at `columns`.
+    /// Rows a window onto older lines may have at `columns`: its quarter
+    /// of the budget, but no more than `WINDOW_ROWS`, so a window builds
+    /// in milliseconds when the view moves.
     pub fn window_rows(&self, columns: usize) -> usize {
-        ((self.bytes / 4) / (columns.max(1) * CELL_BYTES)).max(200)
+        ((self.bytes / 4) / (columns.max(1) * CELL_BYTES)).clamp(200, WINDOW_ROWS)
     }
 
     /// RAM the history may use.
@@ -155,6 +160,9 @@ pub struct History {
     open: Open,
     /// The line being dropped row by row, encoded so far.
     partial: Vec<u8>,
+    /// `partial` shared with snapshots, until it changes: it can be
+    /// megabytes, and a snapshot is taken for every scroll.
+    partial_shared: std::cell::OnceCell<Arc<[u8]>>,
     partial_enc: Encoder,
     first: u64,
     end: u64,
@@ -253,6 +261,7 @@ impl History {
             entries: Vec::new(),
             open: Open::default(),
             partial: Vec::new(),
+            partial_shared: std::cell::OnceCell::new(),
             partial_enc: Encoder::default(),
             first: 0,
             end: 0,
@@ -331,6 +340,7 @@ impl History {
 
     /// Appends rows leaving the grid, oldest first.
     pub fn push_rows(&mut self, rows: &[Row<Cell>]) {
+        self.partial_shared = std::cell::OnceCell::new();
         for (i, row) in rows.iter().enumerate() {
             // Rows come from the terminal's thread, not from this one's cache.
             if let Some(later) = rows.get(i + 2) {
@@ -359,6 +369,7 @@ impl History {
         self.entries.clear();
         self.open = Open::default();
         self.partial.clear();
+        self.partial_shared = std::cell::OnceCell::new();
         self.partial_enc = Encoder::default();
         self.first = lines_dropped;
         self.end = lines_dropped;
@@ -444,7 +455,8 @@ impl History {
             first: self.first,
             end: self.end,
             generation: self.generation,
-            partial: self.partial.as_slice().into(),
+            partial: self.partial_shared.get_or_init(|| self.partial.as_slice().into()).clone(),
+            partial_rows: Arc::new(Mutex::new(None)),
             disk: self.disk.clone(),
         }
     }
@@ -528,10 +540,28 @@ pub struct Snapshot {
     end: u64,
     generation: u64,
     partial: Arc<[u8]>,
+    /// `(columns, rows)` of the partial line, once worked out.
+    partial_rows: Arc<Mutex<Option<(usize, usize)>>>,
     disk: Option<Arc<DiskFile>>,
 }
 
 impl Snapshot {
+    /// Rows the partial line takes at `columns`; 0 if there is none.
+    pub fn partial_rows(&self, columns: usize) -> usize {
+        if self.partial.is_empty() {
+            return 0;
+        }
+        let mut cache = self.partial_rows.lock().unwrap_or_else(|e| e.into_inner());
+        match *cache {
+            Some((c, rows)) if c == columns => rows,
+            _ => {
+                let rows = line::row_count_encoded(&self.partial, columns);
+                *cache = Some((columns, rows));
+                rows
+            }
+        }
+    }
+
     pub fn first_line(&self) -> u64 {
         self.first
     }
@@ -803,6 +833,16 @@ mod tests {
 
 #[cfg(test)]
 mod budget_tests {
+    /// Windows are rebuilt as the view moves: a few thousand rows build in
+    /// milliseconds, the whole quarter of 500 MB (45 000 rows) in 100+ ms.
+    #[test]
+    fn windows_stay_small() {
+        let budget = super::Budget::from_mb(500);
+        assert!(budget.window_rows(120) <= 2000, "{}", budget.window_rows(120));
+        let tiny = super::Budget { bytes: 200 * 4 * 20 * super::CELL_BYTES };
+        assert_eq!(tiny.window_rows(20), 200, "a small budget still caps it");
+    }
+
     use alacritty_terminal::grid::Dimensions;
 
     use super::scroll::{At, Scroller};

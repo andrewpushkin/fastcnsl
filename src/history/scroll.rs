@@ -26,13 +26,9 @@ pub fn settled<L: EventListener>(live: &mut Term<L>, history: &Shared) -> Snapsh
 }
 
 /// Rows of an item at `columns`.
-fn item_rows(item: &Item<'_>, columns: usize, cells: &mut Vec<Cell>) -> u64 {
+fn item_rows(item: &Item<'_>, columns: usize) -> u64 {
     match item {
-        Item::Line(bytes) => {
-            cells.clear();
-            line::decode(bytes, cells);
-            line::row_count(cells, columns) as u64
-        }
+        Item::Line(bytes) => line::row_count_encoded(bytes, columns) as u64,
         Item::Lost(_) => 1,
     }
 }
@@ -44,9 +40,8 @@ fn up(snap: &Snapshot, columns: usize, at: At, n: u64) -> At {
     }
     let mut need = n - u64::from(at.sub);
     let mut result = At { line: at.line, sub: 0 };
-    let mut cells = Vec::new();
     let _ = snap.for_each(snap.first_line()..at.line, true, |line, item| {
-        let rows = item_rows(&item, columns, &mut cells);
+        let rows = item_rows(&item, columns);
         if rows >= need {
             result = At { line, sub: (rows - need) as u32 };
             return ControlFlow::Break(());
@@ -64,9 +59,8 @@ fn down(snap: &Snapshot, live: &Grid<Cell>, partial: usize, at: At, n: u64) -> A
     let end = snap.end_line();
     let mut sub = u64::from(at.sub) + n;
     let mut result = None;
-    let mut cells = Vec::new();
     let _ = snap.for_each(at.line..end, false, |line, item| {
-        let rows = item_rows(&item, columns, &mut cells);
+        let rows = item_rows(&item, columns);
         if sub < rows {
             result = Some(At { line, sub: sub as u32 });
             return ControlFlow::Break(());
@@ -613,5 +607,76 @@ mod tests {
         assert!(t.s.in_window());
         assert_ne!(t.s.changes(), changes, "rebuilt");
         assert_eq!(t.shown().selection_to_string().as_deref(), Some(text.as_str()));
+    }
+}
+
+#[cfg(test)]
+mod timing {
+    use std::time::Instant;
+    use alacritty_terminal::grid::Dimensions;
+    use super::*;
+    use crate::history::{History, start, sync, lock};
+    use crate::testterm::{Quiet, TestTerm, temp_dir};
+
+    /// `cargo test --release -- --ignored --nocapture timing`
+    #[test]
+    #[ignore]
+    fn window_build_time() {
+        let budget = Budget::from_mb(500);
+        let cols = 120;
+        let (history, sink) = start(History::new(budget.history_ram(), temp_dir("rtime")));
+        let mut t = TestTerm::new(cols, 40, budget.live_rows(cols));
+        t.term.grid_mut().set_row_sink(Box::new(sink));
+        let mut s = Scroller::new(Quiet);
+        let text: String = (0..300_000).map(|i| format!("line {i} {}\n", "abcdefgh ".repeat(i % 12))).collect();
+        t.feed(&text);
+        t.term.flush_row_sink(); sync(&history);
+        println!("end {}", lock(&history).end_line());
+        // Page up from the bottom until we cross into a window.
+        let mut worst = 0u128;
+        for _ in 0..400 {
+            let t0 = Instant::now();
+            s.page(&mut t.term, &history, &budget, true);
+            let el = t0.elapsed().as_millis();
+            if el > worst { worst = el; }
+            if s.in_window() { println!("entered window after page, took {el} ms"); break; }
+        }
+        println!("worst page {worst} ms");
+        for at in [1000u64, 150_000, 50_000] {
+            let t0 = Instant::now();
+            s.set_top(&mut t.term, &history, &budget, At { line: at, sub: 0 });
+            println!("set_top {at}: {} ms, rows {}", t0.elapsed().as_millis(), s.window.as_ref().map_or(0, |w| w.term.grid().total_lines()));
+        }
+        let t0 = Instant::now();
+        s.sync(&mut t.term, &history, &budget);
+        println!("sync no change: {} us", t0.elapsed().as_micros());
+        t.resize(100, 40);
+        let t0 = Instant::now();
+        s.sync(&mut t.term, &history, &budget);
+        println!("resize rebuild: {} ms", t0.elapsed().as_millis());
+    }
+
+    /// `cargo test --release -- --ignored --nocapture timing`
+    #[test]
+    #[ignore]
+    fn giant_partial_scroll_time() {
+        let budget = Budget::from_mb(500);
+        let cols = 120;
+        let (history, sink) = start(History::new(budget.history_ram(), temp_dir("rgiant")));
+        let mut t = TestTerm::new(cols, 40, budget.live_rows(cols));
+        t.term.grid_mut().set_row_sink(Box::new(sink));
+        let mut s = Scroller::new(Quiet);
+        let giant: String = (0..20_000_000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+        t.feed(&giant);
+        t.term.flush_row_sink(); sync(&history);
+        println!("partial bytes {}", lock(&history).snapshot().partial().len());
+        for k in 0..3 {
+            let t0 = Instant::now();
+            s.scroll(&mut t.term, &history, &budget, 3);
+            println!("scroll {k}: {} ms in_window {}", t0.elapsed().as_millis(), s.in_window());
+        }
+        let t0 = Instant::now();
+        s.sync(&mut t.term, &history, &budget);
+        println!("frame sync with 20MB partial: {} ms", t0.elapsed().as_millis());
     }
 }

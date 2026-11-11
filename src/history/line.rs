@@ -346,8 +346,9 @@ impl Reader<'_> {
     }
 }
 
-/// Calls `f` with each cell of an encoded line, in order.
-fn for_each_cell(bytes: &[u8], mut f: impl FnMut(&Cell)) {
+/// Calls `f` with each cell of an encoded line, in order, until it
+/// returns false.
+fn for_each_cell(bytes: &[u8], mut f: impl FnMut(&Cell) -> bool) {
     let mut r = Reader { bytes, at: 0 };
     let mut style = Cell::default();
     let mut cell = Cell::default();
@@ -369,8 +370,9 @@ fn for_each_cell(bytes: &[u8], mut f: impl FnMut(&Cell)) {
                 cell.fg = style.fg;
                 cell.bg = style.bg;
                 cell.flags = style.flags | Flags::WIDE_CHAR;
-                f(&cell);
-                f(&spacer_of(&cell));
+                if !f(&cell) || !f(&spacer_of(&cell)) {
+                    return;
+                }
                 cell.extra = None;
             }
             _ => {
@@ -378,7 +380,9 @@ fn for_each_cell(bytes: &[u8], mut f: impl FnMut(&Cell)) {
                 cell.fg = style.fg;
                 cell.bg = style.bg;
                 cell.flags = style.flags;
-                f(&cell);
+                if !f(&cell) {
+                    return;
+                }
                 cell.extra = None;
             }
         }
@@ -387,7 +391,10 @@ fn for_each_cell(bytes: &[u8], mut f: impl FnMut(&Cell)) {
 
 /// Appends the cells of an encoded line to `out`.
 pub fn decode(bytes: &[u8], out: &mut Vec<Cell>) {
-    for_each_cell(bytes, |cell| out.push(cell.clone()));
+    for_each_cell(bytes, |cell| {
+        out.push(cell.clone());
+        true
+    });
 }
 
 /// Appends the text of an encoded line: spacers left out, zero-width
@@ -400,38 +407,61 @@ pub fn text(bytes: &[u8], out: &mut String) {
                 out.extend(zw);
             }
         }
+        true
     });
 }
 
-/// Lays `cells` out in rows of `columns` the way alacritty reflows a line:
-/// calls `cell(row, cell)` for each cell placed and `end(row, wraps)` after
-/// each row. Stops early when `cell` or `end` returns false.
-fn lay_out(cells: &[Cell], columns: usize, mut cell: impl FnMut(usize, &Cell) -> bool, mut end: impl FnMut(usize, bool) -> bool) {
+/// A line's cells, given one at a time to a callback that returns false
+/// to stop: from a slice of cells or straight from the encoded bytes.
+type Source<'a> = &'a mut dyn FnMut(&mut dyn FnMut(&Cell) -> bool);
+
+/// Lays the cells of `source` out in rows of `columns` the way alacritty
+/// reflows a line: calls `cell(row, cell)` for each cell placed and
+/// `end(row, wraps)` after each row. Stops early when `cell` or `end`
+/// returns false.
+fn lay_out(source: Source<'_>, columns: usize, mut cell: impl FnMut(usize, &Cell) -> bool, mut end: impl FnMut(usize, bool) -> bool) {
     let columns = columns.max(1);
     let mut row = 0;
     let mut col = 0;
+    let mut stopped = false;
     let leading = Cell { flags: Flags::LEADING_WIDE_CHAR_SPACER, ..Cell::default() };
-    for c in cells {
+    source(&mut |c: &Cell| {
         if columns < 2 && c.flags.contains(Flags::WIDE_CHAR_SPACER) {
-            continue;
+            return true;
         }
         let width = if c.flags.contains(Flags::WIDE_CHAR) && columns >= 2 { 2 } else { 1 };
         if col + width > columns {
-            if col < columns && !cell(row, &leading) {
-                return;
-            }
-            if !end(row, true) {
-                return;
+            if (col < columns && !cell(row, &leading)) || !end(row, true) {
+                stopped = true;
+                return false;
             }
             row += 1;
             col = 0;
         }
         if !cell(row, c) {
-            return;
+            stopped = true;
+            return false;
         }
         col += 1;
+        true
+    });
+    if !stopped {
+        end(row, false);
     }
-    end(row, false);
+}
+
+fn from_cells(cells: &[Cell]) -> impl FnMut(&mut dyn FnMut(&Cell) -> bool) + '_ {
+    move |f| {
+        for c in cells {
+            if !f(c) {
+                return;
+            }
+        }
+    }
+}
+
+fn from_bytes(bytes: &[u8]) -> impl FnMut(&mut dyn FnMut(&Cell) -> bool) + '_ {
+    move |f| for_each_cell(bytes, |c| f(c))
 }
 
 /// Rows `from..to` of the line at `columns`: WRAPLINE on all but the last,
@@ -439,12 +469,22 @@ fn lay_out(cells: &[Cell], columns: usize, mut cell: impl FnMut(usize, &Cell) ->
 /// LEADING_WIDE_CHAR_SPACER, each row padded to `columns` with default
 /// cells. An empty line is one row.
 pub fn wrap(cells: &[Cell], columns: usize, from: usize, to: usize, out: &mut Vec<Row<Cell>>) {
+    wrap_from(&mut from_cells(cells), columns, from, to, out);
+}
+
+/// [`wrap`] for an encoded line, without decoding the rows before `from`
+/// or after `to` into cells: a line can be megabytes long.
+pub fn wrap_encoded(bytes: &[u8], columns: usize, from: usize, to: usize, out: &mut Vec<Row<Cell>>) {
+    wrap_from(&mut from_bytes(bytes), columns, from, to, out);
+}
+
+fn wrap_from(source: Source<'_>, columns: usize, from: usize, to: usize, out: &mut Vec<Row<Cell>>) {
     let columns = columns.max(1);
     let mut current: Vec<Cell> = Vec::new();
     let pending = std::cell::RefCell::new(&mut current);
     let rows = std::cell::RefCell::new(out);
     lay_out(
-        cells,
+        source,
         columns,
         |row, cell| {
             if row >= to {
@@ -473,8 +513,17 @@ pub fn wrap(cells: &[Cell], columns: usize, from: usize, to: usize, out: &mut Ve
 
 /// How many rows the line takes at `columns`.
 pub fn row_count(cells: &[Cell], columns: usize) -> usize {
+    count_rows(&mut from_cells(cells), columns)
+}
+
+/// [`row_count`] for an encoded line, without decoding it into cells.
+pub fn row_count_encoded(bytes: &[u8], columns: usize) -> usize {
+    count_rows(&mut from_bytes(bytes), columns)
+}
+
+fn count_rows(source: Source<'_>, columns: usize) -> usize {
     let mut rows = 0;
-    lay_out(cells, columns, |_, _| true, |_, _| {
+    lay_out(source, columns, |_, _| true, |_, _| {
         rows += 1;
         true
     });
@@ -620,6 +669,30 @@ mod tests {
             decode(&want, &mut b);
             assert_eq!(a, b, "line at row {start}");
         }
+    }
+
+    #[test]
+    fn encoded_lines_lay_out_like_decoded_ones() {
+        let mut t = TestTerm::new(20, 30, 100);
+        t.feed(STYLED);
+        for start in t.line_starts() {
+            let cells = joined(&t, start);
+            let mut bytes = Vec::new();
+            encode(&cells, &mut bytes);
+            for width in [1, 2, 7, 20, 33] {
+                assert_eq!(row_count_encoded(&bytes, width), row_count(&cells, width), "width {width}, row {start}");
+                for (from, to) in [(0, usize::MAX), (1, 3), (2, 2)] {
+                    let (mut a, mut b) = (Vec::new(), Vec::new());
+                    wrap(&cells, width, from, to, &mut a);
+                    wrap_encoded(&bytes, width, from, to, &mut b);
+                    assert_eq!(a.len(), b.len(), "width {width} rows {from}..{to}");
+                    for (ra, rb) in a.iter().zip(&b) {
+                        assert_eq!(&ra[..], &rb[..], "width {width} rows {from}..{to}");
+                    }
+                }
+            }
+        }
+        assert_eq!(row_count_encoded(&[], 80), 1);
     }
 
     #[test]
