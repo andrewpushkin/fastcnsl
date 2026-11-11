@@ -39,6 +39,9 @@ pub fn history_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("fastcnsl-history"))
 }
 
+/// Most history rows the live grid keeps.
+const LIVE_ROWS: usize = 2000;
+
 /// Most rows in a window onto older lines.
 const WINDOW_ROWS: usize = 2000;
 
@@ -62,9 +65,12 @@ impl Budget {
         Self { bytes: mb.clamp(64, 16384) << 20 }
     }
 
-    /// History rows the live grid keeps at `columns`.
+    /// History rows the live grid keeps at `columns`: its quarter of the
+    /// budget, but no more than `LIVE_ROWS`. Older lines take far less
+    /// room in history, and a small grid stays in the CPU's cache, which
+    /// makes output faster.
     pub fn live_rows(&self, columns: usize) -> usize {
-        ((self.bytes / 4) / (columns.max(1) * CELL_BYTES)).clamp(100, 10_000)
+        ((self.bytes / 4) / (columns.max(1) * CELL_BYTES)).clamp(100, LIVE_ROWS)
     }
 
     /// Rows a window onto older lines may have at `columns`: its quarter
@@ -835,6 +841,16 @@ mod tests {
 mod budget_tests {
     /// Windows are rebuilt as the view moves: a few thousand rows build in
     /// milliseconds, the whole quarter of 500 MB (45 000 rows) in 100+ ms.
+    /// The live grid stores 24 bytes a cell: older lines are cheaper in
+    /// history, and a small grid stays in the CPU's cache.
+    #[test]
+    fn the_live_grid_stays_small() {
+        assert_eq!(super::Budget::from_mb(500).live_rows(100), 2000);
+        // A small budget at a wide window: its quarter is the limit.
+        let budget = super::Budget::from_mb(64);
+        assert_eq!(budget.live_rows(1000), (16 << 20) / (1000 * super::CELL_BYTES));
+    }
+
     #[test]
     fn windows_stay_small() {
         let budget = super::Budget::from_mb(500);

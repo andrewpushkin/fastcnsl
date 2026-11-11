@@ -286,8 +286,8 @@ mod tests {
         wait_for(&s, &rx, "30000");
         {
             let mut term = s.term.lock();
-            // 64 MB: a quarter for the live grid, which holds at most 10 000 rows.
-            assert_eq!(term.grid().history_size(), 10_000);
+            // The live grid holds at most 2000 rows; the rest is history.
+            assert_eq!(term.grid().history_size(), 2000);
             term.flush_row_sink();
             history::sync(&s.history);
             let h = s.history.lock().unwrap();
