@@ -56,6 +56,7 @@ impl DiskFile {
     }
 
     /// Bytes held by the read cache.
+    #[cfg(test)]
     pub fn cached_bytes(&self) -> usize {
         self.cache.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, b)| b.len()).sum()
     }

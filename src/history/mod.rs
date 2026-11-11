@@ -301,6 +301,7 @@ impl History {
 
     /// RAM in use: chunks in RAM, the open chunk, the partial line and the
     /// disk read cache.
+    #[cfg(test)]
     pub fn ram_bytes(&self) -> usize {
         self.ram + self.open.allocated() + self.partial.capacity() + self.disk.as_ref().map_or(0, |d| d.cached_bytes())
     }
