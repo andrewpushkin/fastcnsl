@@ -3,7 +3,7 @@
 ## alacritty_terminal 0.26.0
 
 The crates.io release (Apache-2.0, see `alacritty_terminal/LICENSE-APACHE`),
-without its test recordings, plus four changes (marked "ragamuffin patch").
+without its test recordings, plus four changes (marked "fastcnsl patch").
 
 ### Dropped-line counters (`src/grid/mod.rs`, `src/grid/resize.rs`)
 
@@ -31,7 +31,7 @@ Drop this fix when alacritty_terminal ships one.
 
 `tty::windows::blocking` (the threaded pipe reader/writer) and
 `tty::windows::child` (the process exit watcher) are public, so that
-ragamuffin's own PTY for WSL tabs (`src/wsl.rs`), which reads a helper's
+fastcnsl's own PTY for WSL tabs (`src/wsl.rs`), which reads a helper's
 output through a plain pipe instead of ConPTY, can use them with the
 event loop.
 

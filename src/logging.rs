@@ -75,7 +75,7 @@ impl TabLog {
         let next = self.next.get_or_insert(dropped);
         if *next < dropped {
             let lost = dropped - *next;
-            writeln!(self.out, "[ragamuffin: {lost} lines scrolled out of the scrollback before they could be logged]")?;
+            writeln!(self.out, "[fastcnsl: {lost} lines scrolled out of the scrollback before they could be logged]")?;
             *next = dropped;
         }
 
@@ -195,7 +195,7 @@ mod tests {
     use alacritty_terminal::vte::ansi::Processor;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ragamuffin-log-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("fastcnsl-log-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -284,7 +284,7 @@ mod tests {
         log.write_new(t.term.grid(), Upto::Complete).unwrap();
         // "c" was cleared away before this pass saw it.
         let text = read(&path);
-        assert!(text.starts_with("aaaaaaaaaaaaaaa\nb\n[ragamuffin: 1 lines"), "{text}");
+        assert!(text.starts_with("aaaaaaaaaaaaaaa\nb\n[fastcnsl: 1 lines"), "{text}");
         assert!(text.ends_with("d\n"), "{text}");
     }
 

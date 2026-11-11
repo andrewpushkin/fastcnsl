@@ -5,19 +5,19 @@
 set -euo pipefail
 
 OUT="${1:-dist/screenshots}"
-BIN=./target/release/ragamuffin
+BIN=./target/release/fastcnsl
 SAMPLES="$(pwd)/scripts/samples"
 mkdir -p "$OUT"
 
 export DISPLAY=:99
 unset WAYLAND_DISPLAY
 export SHELL=/bin/bash USER=dev XDG_RUNTIME_DIR=/tmp
-export PS1='dev@ragamuffin:\w\$ '
+export PS1='dev@fastcnsl:\w\$ '
 
 # Shell without rc files so the prompt above is used as-is; dark theme so
 # the run doesn't depend on the container's (absent) desktop setting.
-mkdir -p "$HOME/.config/ragamuffin"
-cat > "$HOME/.config/ragamuffin/config.toml" <<'TOML'
+mkdir -p "$HOME/.config/fastcnsl"
+cat > "$HOME/.config/fastcnsl/config.toml" <<'TOML'
 shell = "/bin/bash"
 shell_args = ["--norc", "--noprofile"]
 theme = "dark"
@@ -28,11 +28,11 @@ XVFB=$!
 trap 'kill $XVFB 2>/dev/null || true' EXIT
 sleep 1
 
-RUST_LOG=ragamuffin=info "$BIN" &
+RUST_LOG=fastcnsl=info "$BIN" &
 APP=$!
 trap 'kill $APP $XVFB 2>/dev/null || true' EXIT
 
-WIN=$(timeout 20 xdotool search --sync --classname ragamuffin | head -1) || true
+WIN=$(timeout 20 xdotool search --sync --classname fastcnsl | head -1) || true
 if [ -z "$WIN" ]; then
     echo "terminal window did not appear" >&2
     exit 1
@@ -150,6 +150,6 @@ shot tab_activity
 click 100 15
 shot tab_activity_cleared
 
-LOGS="$HOME/ragamuffin-logs"
-[ -d "$HOME/Documents" ] && LOGS="$HOME/Documents/ragamuffin-logs"
+LOGS="$HOME/fastcnsl-logs"
+[ -d "$HOME/Documents" ] && LOGS="$HOME/Documents/fastcnsl-logs"
 for f in "$LOGS"/*; do echo "== $f"; cat "$f"; done

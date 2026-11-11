@@ -1,9 +1,9 @@
 [package]
-name = "ragamuffin-wsl"
+name = "fastcnsl-wsl"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Runs a WSL shell on a Linux pty for ragamuffin on Windows, bypassing ConPTY"
+description = "Runs a WSL shell on a Linux pty for fastcnsl on Windows, bypassing ConPTY"
 publish = false
 
 [dependencies]

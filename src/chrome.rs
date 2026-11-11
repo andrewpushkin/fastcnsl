@@ -651,7 +651,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 b.next();
             }
             if s.gpu_pending && b.fits_rows(1) {
-                b.text(label_w, "Takes effect when ragamuffin restarts", TextStyle::Dim);
+                b.text(label_w, "Takes effect when fastcnsl restarts", TextStyle::Dim);
                 b.next();
             }
             if b.fits_rows(1) {
@@ -738,7 +738,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
 
 pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str, offset: (f32, f32)) -> Panel {
     let mut b = PanelBuilder::new(m, 66.0, 12.0, offset);
-    b.header("Ragamuffin");
+    b.header("Fastcnsl");
     let build = crate::VERSION.rsplit('.').next().unwrap_or("0");
     b.text(0.0, format!("Version {} (build {build})", crate::VERSION), TextStyle::Dim);
     b.next();
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn about_panel_shows_version_gpu_and_close() {
-        let p = about_panel(&m(), "Test GPU (Vulkan)", "300 ms (GPU 100 ms, fonts 0 ms)", "/home/x/.config/ragamuffin/config.toml", (0.0, 0.0));
+        let p = about_panel(&m(), "Test GPU (Vulkan)", "300 ms (GPU 100 ms, fonts 0 ms)", "/home/x/.config/fastcnsl/config.toml", (0.0, 0.0));
         let text: Vec<&str> = p.lines.iter().map(|l| l.text.as_str()).collect();
         assert!(text.iter().any(|t| t.contains(crate::VERSION) && t.contains("build")));
         assert!(text.contains(&crate::REPOSITORY));

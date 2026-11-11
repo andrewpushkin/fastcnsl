@@ -1,4 +1,4 @@
-# Development image for ragamuffin.
+# Development image for fastcnsl.
 #
 # Contains the Rust toolchain, the system libraries winit/wgpu need on Linux,
 # and the std libraries for Windows and macOS targets so the cross-platform

@@ -1,11 +1,11 @@
 [package]
-name = "ragamuffin"
+name = "fastcnsl"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Fast GPU-accelerated terminal with Notepad++-style search highlighting and automatic code highlighting"
 license = "MIT"
-repository = "https://github.com/andrewpushkin/ragamuffin"
+repository = "https://github.com/andrewpushkin/fastcnsl"
 authors = ["Andrei Pushkin <andrew.pushkin@gmail.com>"]
 categories = ["command-line-utilities"]
 keywords = ["terminal", "gpu", "wgpu", "terminal-emulator"]
@@ -42,7 +42,7 @@ strip = true
 panic = "abort"
 
 [package.metadata.deb]
-name = "ragamuffin"
+name = "fastcnsl"
 maintainer = "Andrei Pushkin <andrew.pushkin@gmail.com>"
 license-file = ["LICENSE", "0"]
 section = "x11"
@@ -55,19 +55,19 @@ settings file."""
 depends = "$auto, libxkbcommon0, libxkbcommon-x11-0, libvulkan1 | libegl1"
 recommends = "fonts-dejavu-core | fonts-jetbrains-mono"
 assets = [
-    ["target/release/ragamuffin", "usr/bin/", "755"],
-    ["packaging/linux/ragamuffin.desktop", "usr/share/applications/", "644"],
-    ["packaging/icons/ragamuffin-256.png", "usr/share/icons/hicolor/256x256/apps/ragamuffin.png", "644"],
-    ["packaging/icons/ragamuffin.svg", "usr/share/icons/hicolor/scalable/apps/ragamuffin.svg", "644"],
+    ["target/release/fastcnsl", "usr/bin/", "755"],
+    ["packaging/linux/fastcnsl.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/fastcnsl-256.png", "usr/share/icons/hicolor/256x256/apps/fastcnsl.png", "644"],
+    ["packaging/icons/fastcnsl.svg", "usr/share/icons/hicolor/scalable/apps/fastcnsl.svg", "644"],
 ]
 
 [package.metadata.generate-rpm]
 assets = [
-    { source = "target/release/ragamuffin", dest = "/usr/bin/ragamuffin", mode = "755" },
-    { source = "packaging/linux/ragamuffin.desktop", dest = "/usr/share/applications/ragamuffin.desktop", mode = "644" },
-    { source = "packaging/icons/ragamuffin-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/ragamuffin.png", mode = "644" },
-    { source = "packaging/icons/ragamuffin.svg", dest = "/usr/share/icons/hicolor/scalable/apps/ragamuffin.svg", mode = "644" },
-    { source = "LICENSE", dest = "/usr/share/licenses/ragamuffin/LICENSE", mode = "644", doc = true },
+    { source = "target/release/fastcnsl", dest = "/usr/bin/fastcnsl", mode = "755" },
+    { source = "packaging/linux/fastcnsl.desktop", dest = "/usr/share/applications/fastcnsl.desktop", mode = "644" },
+    { source = "packaging/icons/fastcnsl-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/fastcnsl.png", mode = "644" },
+    { source = "packaging/icons/fastcnsl.svg", dest = "/usr/share/icons/hicolor/scalable/apps/fastcnsl.svg", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/fastcnsl/LICENSE", mode = "644", doc = true },
 ]
 
 # The same libraries as the .deb's depends. They are loaded with dlopen, so

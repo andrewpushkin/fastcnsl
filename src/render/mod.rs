@@ -307,7 +307,7 @@ impl Renderer {
         let dual = adapter.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("ragamuffin"),
+                label: Some("fastcnsl"),
                 required_features: if dual { wgpu::Features::DUAL_SOURCE_BLENDING } else { wgpu::Features::empty() },
                 required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
                 ..Default::default()

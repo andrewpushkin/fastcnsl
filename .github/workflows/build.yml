@@ -1,4 +1,4 @@
-# Builds ragamuffin for every platform. Unit tests are not run here; run
+# Builds fastcnsl for every platform. Unit tests are not run here; run
 # them locally with `make tests`.
 #
 # - Push to main: lints, all packages, then a GitHub release. Every run
@@ -70,7 +70,7 @@ jobs:
         run: make ${{ matrix.packages }}
       - uses: actions/upload-artifact@v4
         with:
-          name: ragamuffin-${{ matrix.target }}
+          name: fastcnsl-${{ matrix.target }}
           path: |
             dist/*.deb
             dist/*.rpm
@@ -101,7 +101,7 @@ jobs:
         run: scripts/package/macos-arm64.sh zip
       - uses: actions/upload-artifact@v4
         with:
-          name: ragamuffin-macos-arm64
+          name: fastcnsl-macos-arm64
           path: dist/*.zip
           if-no-files-found: error
 
@@ -127,12 +127,12 @@ jobs:
       - name: Name the files for download links
         run: |
           mkdir upload
-          cp dist/ragamuffin_*_amd64.deb          upload/ragamuffin-linux-x86_64.deb
-          cp dist/ragamuffin-*.x86_64.rpm         upload/ragamuffin-linux-x86_64.rpm
-          cp dist/Ragamuffin-*-x86_64.AppImage    upload/ragamuffin-linux-x86_64.AppImage
-          cp dist/ragamuffin-*-windows-x86_64.zip upload/ragamuffin-windows-x86_64.zip
-          cp dist/ragamuffin-*-windows-arm64.zip  upload/ragamuffin-windows-arm64.zip
-          cp dist/ragamuffin-*-macos-arm64.zip    upload/ragamuffin-macos-arm64.zip
+          cp dist/fastcnsl_*_amd64.deb          upload/fastcnsl-linux-x86_64.deb
+          cp dist/fastcnsl-*.x86_64.rpm         upload/fastcnsl-linux-x86_64.rpm
+          cp dist/Fastcnsl-*-x86_64.AppImage    upload/fastcnsl-linux-x86_64.AppImage
+          cp dist/fastcnsl-*-windows-x86_64.zip upload/fastcnsl-windows-x86_64.zip
+          cp dist/fastcnsl-*-windows-arm64.zip  upload/fastcnsl-windows-arm64.zip
+          cp dist/fastcnsl-*-macos-arm64.zip    upload/fastcnsl-macos-arm64.zip
           ls -l upload
       # The AppImage's update information points at this file in the latest
       # release (scripts/package/linux-x86_64.sh), so updaters download only
@@ -141,8 +141,8 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends zsync
           cd upload
-          zsyncmake -u ragamuffin-linux-x86_64.AppImage \
-            -o ragamuffin-linux-x86_64.AppImage.zsync ragamuffin-linux-x86_64.AppImage
+          zsyncmake -u fastcnsl-linux-x86_64.AppImage \
+            -o fastcnsl-linux-x86_64.AppImage.zsync fastcnsl-linux-x86_64.AppImage
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -153,7 +153,7 @@ jobs:
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" upload/* \
             --target "$GITHUB_SHA" \
-            --title "ragamuffin $VERSION" \
+            --title "fastcnsl $VERSION" \
             --notes "Build ${VERSION##*.} of \`main\` (${GITHUB_SHA::7}). Downloads: see the assets below." \
             --latest
 
@@ -195,7 +195,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: steps.key.outputs.ok == 'true'
         with:
-          name: ragamuffin-linux-x86_64
+          name: fastcnsl-linux-x86_64
           path: dist
       - name: Build the repositories
         if: steps.key.outputs.ok == 'true'
@@ -205,7 +205,7 @@ jobs:
           APT_REPO_URL="$SITE/apt" scripts/apt-repo.sh site/apt dist/*.deb
           RPM_REPO_URL="$SITE/rpm" scripts/rpm-repo.sh site/rpm dist/*.rpm
           touch site/.nojekyll
-          printf '<!doctype html><meta charset="utf-8"><title>ragamuffin packages</title>\n<p><a href="apt/">apt repository</a> (Debian, Ubuntu) · <a href="rpm/">rpm repository</a> (Fedora, RHEL, openSUSE)\n' > site/index.html
+          printf '<!doctype html><meta charset="utf-8"><title>fastcnsl packages</title>\n<p><a href="apt/">apt repository</a> (Debian, Ubuntu) · <a href="rpm/">rpm repository</a> (Fedora, RHEL, openSUSE)\n' > site/index.html
       - uses: actions/configure-pages@v5
         if: steps.key.outputs.ok == 'true'
       - uses: actions/upload-pages-artifact@v3

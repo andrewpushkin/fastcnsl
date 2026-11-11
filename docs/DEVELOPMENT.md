@@ -1,6 +1,6 @@
-# Developing ragamuffin
+# Developing fastcnsl
 
-Notes for building ragamuffin from source and finding your way around the
+Notes for building fastcnsl from source and finding your way around the
 code. For using it, see the [README](../README.md).
 
 ## Building
@@ -23,9 +23,9 @@ make windows-x86_64-zip      # zip
 make windows-arm64           # compile only
 make windows-arm64-zip       # zip
 make macos-arm64             # compile only (the image downloads the macOS SDK, see below)
-make macos-arm64-zip         # Ragamuffin.app in a zip
+make macos-arm64-zip         # Fastcnsl.app in a zip
 
-make build            # quick build for this machine -> dist/ragamuffin
+make build            # quick build for this machine -> dist/fastcnsl
 make run              # build and start it
 make tests            # unit tests (not run by GitHub Actions)
 make clippy           # lints
@@ -53,7 +53,7 @@ image. `docker/macos-arm64.Dockerfile` explains how to point it at an SDK you
 packaged yourself. You can also build natively on a Mac with
 `scripts/package/macos-arm64.sh`.
 
-ragamuffin's own code has no `unsafe` (`#![forbid(unsafe_code)]`).
+fastcnsl's own code has no `unsafe` (`#![forbid(unsafe_code)]`).
 
 ## How it stays fast
 
@@ -82,19 +82,19 @@ PTY ──read──▶ I/O thread ──parse in place──▶ grid (shared, l
 - Nothing is drawn unless the terminal changed, the window changed, or an
   overlay is fading.
 
-On Windows, WSL tabs go through `ragamuffin-wsl`, which runs the shell on a
-Linux pty and passes its output to ragamuffin through a plain pipe instead
+On Windows, WSL tabs go through `fastcnsl-wsl`, which runs the shell on a
+Linux pty and passes its output to fastcnsl through a plain pipe instead
 of the Windows console host. Other tabs use the console host from Windows
 Terminal (`conpty.dll`, `OpenConsole.exe`), which is much faster with large
 output than the one built into Windows.
 
 ## Remote control
 
-`ragamuffin new-tab/close-tab/quit` talk to a running window: each window
+`fastcnsl new-tab/close-tab/quit` talk to a running window: each window
 listens on a random port on 127.0.0.1 and writes the port and a random
 secret to `instances/<pid>` in the local data directory
-(`%LOCALAPPDATA%\ragamuffin` on Windows, `~/.local/share/ragamuffin` on
-Linux, `~/Library/Application Support/ragamuffin` on macOS), readable only
+(`%LOCALAPPDATA%\fastcnsl` on Windows, `~/.local/share/fastcnsl` on
+Linux, `~/Library/Application Support/fastcnsl` on macOS), readable only
 by the user. A command must present that secret. The file is removed when
 the window closes.
 
@@ -116,9 +116,9 @@ the window closes.
 | `src/logging.rs`    | copying, saving and logging a tab's text          |
 | `src/input.rs`      | keyboard, mouse and paste encoding                |
 | `src/config.rs`     | settings file and hot reload                      |
-| `src/remote.rs`     | `ragamuffin new-tab/close-tab/quit` control       |
+| `src/remote.rs`     | `fastcnsl new-tab/close-tab/quit` control       |
 | `src/theme.rs`      | dark and light palettes, OS theme detection       |
-| `wsl-relay/`        | `ragamuffin-wsl`, the WSL tab relay on Windows    |
+| `wsl-relay/`        | `fastcnsl-wsl`, the WSL tab relay on Windows    |
 | `docker/`, `scripts/package/`, `packaging/` | release builds    |
 
 [wgpu]: https://wgpu.rs

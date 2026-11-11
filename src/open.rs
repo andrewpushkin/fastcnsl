@@ -85,8 +85,8 @@ mod tests {
 
     #[test]
     fn wsl_tries_windows_first_then_the_linux_desktop() {
-        let dir = OsStr::new("/home/me/ragamuffin-logs");
-        let win = OsString::from(r"\\wsl.localhost\Ubuntu\home\me\ragamuffin-logs");
+        let dir = OsStr::new("/home/me/fastcnsl-logs");
+        let win = OsString::from(r"\\wsl.localhost\Ubuntu\home\me\fastcnsl-logs");
         let list = linux_openers(dir, Some(Some(win.clone())));
         assert_eq!(programs(&list), ["wslview", "explorer.exe", "xdg-open", "gio"]);
         assert_eq!(list[1].1, [win], "explorer gets the Windows path");
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn urls_go_to_windows_unchanged() {
-        let url = OsStr::new("https://github.com/andrewpushkin/ragamuffin");
+        let url = OsStr::new("https://github.com/andrewpushkin/fastcnsl");
         assert_eq!(windows_path(url).as_deref(), Some(url));
     }
 

@@ -1,47 +1,47 @@
-# ragamuffin
+# fastcnsl
 
-[![Build](https://github.com/andrewpushkin/ragamuffin/actions/workflows/build.yml/badge.svg)](https://github.com/andrewpushkin/ragamuffin/actions/workflows/build.yml)
+[![Build](https://github.com/andrewpushkin/fastcnsl/actions/workflows/build.yml/badge.svg)](https://github.com/andrewpushkin/fastcnsl/actions/workflows/build.yml)
 
 A fast terminal for Windows, Linux and macOS. It marks every search match
 on screen the way Notepad++ does, colours source code you `cat`, shows when
 each line of output appeared, and lets you bookmark lines and log tabs to
 files.
 
-![ragamuffin with C code highlighted and two searches, "greet" and "int", each marked in its own colour](docs/screenshot.png)
+![fastcnsl with C code highlighted and two searches, "greet" and "int", each marked in its own colour](docs/screenshot.png)
 
 ## Download
 
 | Platform | Download |
 |---|---|
-| Windows (x64) | [ragamuffin-windows-x86_64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-x86_64.zip) |
-| Windows (ARM) | [ragamuffin-windows-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-windows-arm64.zip) |
-| macOS (Apple Silicon) | [ragamuffin-macos-arm64.zip](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-macos-arm64.zip) |
-| Linux: Debian, Ubuntu | [ragamuffin-linux-x86_64.deb](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.deb), or the [apt repository](#debian-ubuntu) for automatic updates |
-| Linux: Fedora, RHEL, openSUSE | [ragamuffin-linux-x86_64.rpm](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.rpm), or the [rpm repository](#fedora-rhel) for automatic updates |
-| Linux: any distribution | [ragamuffin-linux-x86_64.AppImage](https://github.com/andrewpushkin/ragamuffin/releases/latest/download/ragamuffin-linux-x86_64.AppImage) |
+| Windows (x64) | [fastcnsl-windows-x86_64.zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-x86_64.zip) |
+| Windows (ARM) | [fastcnsl-windows-arm64.zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-arm64.zip) |
+| macOS (Apple Silicon) | [fastcnsl-macos-arm64.zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-macos-arm64.zip) |
+| Linux: Debian, Ubuntu | [fastcnsl-linux-x86_64.deb](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.deb), or the [apt repository](#debian-ubuntu) for automatic updates |
+| Linux: Fedora, RHEL, openSUSE | [fastcnsl-linux-x86_64.rpm](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.rpm), or the [rpm repository](#fedora-rhel) for automatic updates |
+| Linux: any distribution | [fastcnsl-linux-x86_64.AppImage](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.AppImage) |
 
 New builds come out often. See [what changed](CHANGELOG.md) or download an
-[older build](https://github.com/andrewpushkin/ragamuffin/releases).
+[older build](https://github.com/andrewpushkin/fastcnsl/releases).
 
 ## Install
 
 ### Windows
 
-Unzip and run `ragamuffin.exe`. It needs Windows 10 version 1809 or newer.
+Unzip and run `fastcnsl.exe`. It needs Windows 10 version 1809 or newer.
 
-Keep the other files from the zip next to `ragamuffin.exe`:
+Keep the other files from the zip next to `fastcnsl.exe`:
 
-- `ragamuffin-wsl` makes WSL tabs faster: `cat` of a 36 MB file takes
+- `fastcnsl-wsl` makes WSL tabs faster: `cat` of a 36 MB file takes
   0.33 s, against 0.40 s in Windows Terminal. Windows programs started from
   a WSL tab (`cmd.exe`, `explorer.exe .`) work as usual.
 - `conpty.dll` and `OpenConsole.exe` are Microsoft's console host from
   Windows Terminal. With them, large output in cmd and PowerShell tabs is
   about 7 times faster than with the one built into Windows, which
-  ragamuffin falls back to if they are missing.
+  fastcnsl falls back to if they are missing.
 
 ### macOS
 
-Unzip and move `Ragamuffin.app` to Applications. The app isn't notarized by
+Unzip and move `Fastcnsl.app` to Applications. The app isn't notarized by
 Apple, so the first time, right-click it and choose **Open**.
 
 ### Linux
@@ -50,66 +50,66 @@ Linux builds run on Ubuntu 20.04, Debian 11, Fedora 32 and anything newer.
 
 #### Debian, Ubuntu
 
-Add the apt repository and install, so ragamuffin updates with the rest of
+Add the apt repository and install, so fastcnsl updates with the rest of
 the system:
 
 ```sh
-curl -fsSL https://andrewpushkin.github.io/ragamuffin/apt/ragamuffin.gpg | sudo tee /usr/share/keyrings/ragamuffin.gpg >/dev/null
-curl -fsSL https://andrewpushkin.github.io/ragamuffin/apt/ragamuffin.sources | sudo tee /etc/apt/sources.list.d/ragamuffin.sources >/dev/null
-sudo apt update && sudo apt install ragamuffin
+curl -fsSL https://andrewpushkin.github.io/fastcnsl/apt/fastcnsl.gpg | sudo tee /usr/share/keyrings/fastcnsl.gpg >/dev/null
+curl -fsSL https://andrewpushkin.github.io/fastcnsl/apt/fastcnsl.sources | sudo tee /etc/apt/sources.list.d/fastcnsl.sources >/dev/null
+sudo apt update && sudo apt install fastcnsl
 ```
 
 From then on, `sudo apt update && sudo apt upgrade` installs new builds.
 
 To install the downloaded `.deb` instead, without updates:
-`sudo apt install ./ragamuffin-linux-x86_64.deb`.
+`sudo apt install ./fastcnsl-linux-x86_64.deb`.
 
-To remove ragamuffin and the repository:
+To remove fastcnsl and the repository:
 
 ```sh
-sudo apt remove ragamuffin
-sudo rm -f /etc/apt/sources.list.d/ragamuffin.sources /usr/share/keyrings/ragamuffin.gpg
+sudo apt remove fastcnsl
+sudo rm -f /etc/apt/sources.list.d/fastcnsl.sources /usr/share/keyrings/fastcnsl.gpg
 ```
 
 #### Fedora, RHEL
 
 ```sh
-sudo curl -fsSL -o /etc/yum.repos.d/ragamuffin.repo https://andrewpushkin.github.io/ragamuffin/rpm/ragamuffin.repo
-sudo dnf install ragamuffin
+sudo curl -fsSL -o /etc/yum.repos.d/fastcnsl.repo https://andrewpushkin.github.io/fastcnsl/rpm/fastcnsl.repo
+sudo dnf install fastcnsl
 ```
 
 dnf asks once to import the repository's signing key; answer `y`. From then
 on, `sudo dnf upgrade` installs new builds.
 
 To install the downloaded `.rpm` instead, without updates:
-`sudo dnf install ./ragamuffin-linux-x86_64.rpm`.
+`sudo dnf install ./fastcnsl-linux-x86_64.rpm`.
 
-To remove: `sudo dnf remove ragamuffin && sudo rm /etc/yum.repos.d/ragamuffin.repo`.
+To remove: `sudo dnf remove fastcnsl && sudo rm /etc/yum.repos.d/fastcnsl.repo`.
 
 #### openSUSE
 
 ```sh
-sudo zypper addrepo https://andrewpushkin.github.io/ragamuffin/rpm/ragamuffin.repo
+sudo zypper addrepo https://andrewpushkin.github.io/fastcnsl/rpm/fastcnsl.repo
 sudo zypper refresh
-sudo zypper install ragamuffin
+sudo zypper install fastcnsl
 ```
 
 zypper asks once to trust the signing key; answer `a` (always). From then
 on, `sudo zypper update` installs new builds.
 
-To remove: `sudo zypper removerepo ragamuffin && sudo zypper remove ragamuffin`.
+To remove: `sudo zypper removerepo fastcnsl && sudo zypper remove fastcnsl`.
 
 #### AppImage (any distribution)
 
 ```sh
-chmod +x ragamuffin-linux-x86_64.AppImage
-./ragamuffin-linux-x86_64.AppImage
+chmod +x fastcnsl-linux-x86_64.AppImage
+./fastcnsl-linux-x86_64.AppImage
 ```
 
 To keep it updated, use an AppImage manager such as
 [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever) or
 [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher), or run
-`appimageupdatetool ragamuffin-linux-x86_64.AppImage`
+`appimageupdatetool fastcnsl-linux-x86_64.AppImage`
 ([AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate)).
 Only the changed parts are downloaded.
 
@@ -132,7 +132,7 @@ dot at the left of a search to choose its colour.
 ### Code highlighting
 
 When you print a source file with `cat`, `head`, `bat`, `type` (Windows),
-`Get-Content` (PowerShell) or `git diff`, ragamuffin colours it. The
+`Get-Content` (PowerShell) or `git diff`, fastcnsl colours it. The
 language comes from the file name, or from the content (`#!` lines,
 `#include`, `fn main`...) when there is no extension. Output a program
 colours itself is left as it is. Turn it off in Options if you don't want
@@ -171,7 +171,7 @@ Right-click a tab:
 - **Log to file** writes what the tab already has to a `.log` file, then
   keeps adding lines as they arrive, until you choose **Stop logging** or
   close the tab. A red dot marks a tab that is being logged.
-- **Open logs folder** shows where the files go: `ragamuffin-logs` in your
+- **Open logs folder** shows where the files go: `fastcnsl-logs` in your
   Documents folder, unless you pick another one.
 
 Files hold plain text as the program printed it, without colours. Options →
@@ -182,7 +182,7 @@ of each logged line.
 
 ### Light and dark themes
 
-ragamuffin follows your system's light or dark setting, including on Linux
+fastcnsl follows your system's light or dark setting, including on Linux
 desktops (GNOME, KDE and others) and under WSL. You can also pick one in
 Options, or press Ctrl+Shift+L to switch.
 
@@ -210,7 +210,7 @@ About. Right-click the text for copy, paste, select all and bookmarks.
 
 ### Fast and light
 
-ragamuffin draws on the GPU (DirectX 12, Metal, Vulkan or OpenGL) and only
+fastcnsl draws on the GPU (DirectX 12, Metal, Vulkan or OpenGL) and only
 redraws when something changes, so it stays responsive with large output.
 The title bar is a single row: tabs, ⋮ and the
 window buttons share it, leaving more room for text. Drag the empty part of
@@ -258,12 +258,12 @@ menu. Hold Shift to select text in programs that use the mouse themselves
 Everything in Options is saved to a settings file, created on first start.
 **Options → Open config.toml** opens it. It lives at:
 
-- Windows: `%APPDATA%\ragamuffin\config.toml`
-- macOS: `~/Library/Application Support/ragamuffin/config.toml`
-- Linux: `~/.config/ragamuffin/config.toml`
+- Windows: `%APPDATA%\fastcnsl\config.toml`
+- macOS: `~/Library/Application Support/fastcnsl/config.toml`
+- Linux: `~/.config/fastcnsl/config.toml`
 
 Changes you save there apply immediately. To use a different file, set the
-`RAGAMUFFIN_CONFIG` environment variable to its path. All settings with
+`FASTCNSL_CONFIG` environment variable to its path. All settings with
 their defaults:
 
 ```toml
@@ -286,8 +286,8 @@ display_backend = "auto"         # Linux: "auto" | "wayland" | "x11" (restart to
 antialiasing = "auto"            # "auto" | "subpixel" | "grayscale"
 minimum_contrast = 4.5           # text on coloured backgrounds: WCAG contrast ratio, 1 = off
 gpu = "auto"                     # "auto" | "directx" | "vulkan" | "opengl" | "metal" | "software"
-wsl_direct = true                # Windows: WSL tabs through ragamuffin-wsl (false: console host)
-log_folder = ""                  # empty: ragamuffin-logs in Documents (or home)
+wsl_direct = true                # Windows: WSL tabs through fastcnsl-wsl (false: console host)
+log_folder = ""                  # empty: fastcnsl-logs in Documents (or home)
 log_new_tabs = false             # log every new tab to a file
 log_timestamps = false           # start each logged line with [HH:MM:SS]
 ```
@@ -319,16 +319,16 @@ ClearType text" is on, grayscale otherwise.
 
 ## Command line
 
-The `ragamuffin` command can also open and close tabs in a window that is
+The `fastcnsl` command can also open and close tabs in a window that is
 already running, which is useful in scripts:
 
 ```text
-ragamuffin [--gpu API]
-ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
-ragamuffin [--pid N] close-tab [NAME | NUMBER]
-ragamuffin [--pid N] quit
-ragamuffin --help
-ragamuffin -V | --version
+fastcnsl [--gpu API]
+fastcnsl [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
+fastcnsl [--pid N] close-tab [NAME | NUMBER]
+fastcnsl [--pid N] quit
+fastcnsl --help
+fastcnsl -V | --version
 ```
 
 | Command | What it does |
@@ -344,14 +344,14 @@ ragamuffin -V | --version
 Examples:
 
 ```sh
-ragamuffin new-tab logs -- tail -f /var/log/syslog
-ragamuffin new-tab build -- cargo watch -x test
-ragamuffin close-tab logs
+fastcnsl new-tab logs -- tail -f /var/log/syslog
+fastcnsl new-tab build -- cargo watch -x test
+fastcnsl close-tab logs
 ```
 
 ```powershell
-ragamuffin new-tab dev -- powershell -NoExit -Command "cd C:\src\app"
-ragamuffin new-tab cmd -- cmd /k echo hello
+fastcnsl new-tab dev -- powershell -NoExit -Command "cd C:\src\app"
+fastcnsl new-tab cmd -- cmd /k echo hello
 ```
 
 Commands go to the most recently started window; `--pid N` picks one by
@@ -360,12 +360,12 @@ logs`) and exits with 0. Errors (`no tab named x`, `no window is running`)
 exit with 1, wrong usage with 2. Only you can control your windows: each
 command must present a secret that only your user account can read.
 
-On Windows, `ragamuffin.exe` is a GUI program, so cmd and PowerShell don't
+On Windows, `fastcnsl.exe` is a GUI program, so cmd and PowerShell don't
 wait for it and the reply appears after the prompt. To wait for it in a
 PowerShell script and check `$LASTEXITCODE`, pipe its output:
 
 ```powershell
-ragamuffin quit 2>&1 | Out-Host
+fastcnsl quit 2>&1 | Out-Host
 if ($LASTEXITCODE -ne 0) { "no window to close" }
 ```
 
@@ -373,13 +373,13 @@ From WSL it behaves like any Linux command.
 
 ## Troubleshooting
 
-**The window is blank, or ragamuffin doesn't start on a VM or remote
+**The window is blank, or fastcnsl doesn't start on a VM or remote
 desktop.** Choose Software in Options → General → Graphics, or start it once
-with `ragamuffin --gpu software`. It then draws without the GPU. If the
-graphics mode you chose isn't available, ragamuffin falls back to the
+with `fastcnsl --gpu software`. It then draws without the GPU. If the
+graphics mode you chose isn't available, fastcnsl falls back to the
 automatic choice; About shows what is in use.
 
-**macOS says the app can't be opened.** Right-click `Ragamuffin.app` and
+**macOS says the app can't be opened.** Right-click `Fastcnsl.app` and
 choose Open. This is needed only the first time.
 
 **The mouse pointer is hidden over the window under WSLg** (Linux apps on

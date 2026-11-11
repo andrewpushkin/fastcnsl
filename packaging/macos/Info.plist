@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleExecutable</key><string>ragamuffin</string>
-    <key>CFBundleIconFile</key><string>ragamuffin.icns</string>
-    <key>CFBundleIdentifier</key><string>io.github.ragamuffin</string>
+    <key>CFBundleExecutable</key><string>fastcnsl</string>
+    <key>CFBundleIconFile</key><string>fastcnsl.icns</string>
+    <key>CFBundleIdentifier</key><string>io.github.fastcnsl</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>Ragamuffin</string>
-    <key>CFBundleDisplayName</key><string>Ragamuffin</string>
+    <key>CFBundleName</key><string>Fastcnsl</string>
+    <key>CFBundleDisplayName</key><string>Fastcnsl</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>@VERSION@</string>
     <key>CFBundleVersion</key><string>@VERSION@</string>

@@ -220,14 +220,14 @@ mod tests {
     /// the way native Windows apps do (DirectWrite into a GDI bitmap with
     /// the system's text settings, ClearType included), in the given
     /// colours, one glyph per 12px cell, and saves it as a PPM image.
-    /// Runs only with RAGAMUFFIN_NATIVE_TEXT=<dir>.
+    /// Runs only with FASTCNSL_NATIVE_TEXT=<dir>.
     #[test]
     fn native_text_reference() {
         use windows::Win32::Foundation::{COLORREF, RECT};
         use windows::Win32::Graphics::Gdi::{
             BITMAP, CreateSolidBrush, DeleteObject, FillRect, GetCurrentObject, GetObjectW, OBJ_BITMAP,
         };
-        let Some(dir) = std::env::var_os("RAGAMUFFIN_NATIVE_TEXT") else { return };
+        let Some(dir) = std::env::var_os("FASTCNSL_NATIVE_TEXT") else { return };
         let api = Api::new().unwrap();
         let text = "Windows PowerShell";
         let (w, h, cell, size, baseline) = (12 * text.len() as i32 + 8, 24, 12.0f32, 20.0f32, 18.0f32);

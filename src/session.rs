@@ -31,7 +31,7 @@ use crate::config::Config;
 pub enum UserEvent {
     /// An event from the terminal of the tab with this id.
     Term(u64, Event),
-    /// A command from `ragamuffin new-tab/close-tab/quit`, and where to
+    /// A command from `fastcnsl new-tab/close-tab/quit`, and where to
     /// send the answer.
     Remote(crate::remote::Command, std::sync::mpsc::Sender<crate::remote::Reply>),
     /// The operating system switched between dark (true) and light mode.
@@ -82,7 +82,7 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
             shell,
             working_directory: dirs::home_dir(),
             drain_on_exit: true,
-            env: [("TERM_PROGRAM".to_owned(), "ragamuffin".to_owned())].into(),
+            env: [("TERM_PROGRAM".to_owned(), "fastcnsl".to_owned())].into(),
             #[cfg(target_os = "windows")]
             escape_args: true,
         };
@@ -120,7 +120,7 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
     }
 }
 
-/// A WSL shell on `ragamuffin-wsl` instead of ConPTY (see `crate::wsl`),
+/// A WSL shell on `fastcnsl-wsl` instead of ConPTY (see `crate::wsl`),
 /// when it is on, the shell is `wsl.exe` with plain arguments and the
 /// helper is there. Otherwise, or if it fails to start, `None`: ConPTY.
 #[cfg(windows)]

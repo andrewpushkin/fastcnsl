@@ -132,7 +132,7 @@ impl<R: Read + Send + 'static> UnblockedReader<R> {
 impl<R: Read + Send + 'static> Read for UnblockedReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.try_read(buf);
-        // ragamuffin patch: only a read that finds the pipe empty registers
+        // fastcnsl patch: only a read that finds the pipe empty registers
         // a waker for new data. The event loop stops reading after
         // MAX_LOCKED_READ bytes, so its last read may have returned data:
         // then no waker is registered, whatever is (or arrives) in the pipe

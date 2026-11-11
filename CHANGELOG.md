@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to ragamuffin, newest first. Versions are
+Notable changes to fastcnsl, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
@@ -21,7 +21,7 @@ releases have a section.
   and rewrap; Ctrl+Shift+↑ / ↓ (Cmd+↑ / ↓) jump between them.
 - Ctrl+1…Ctrl+0 go to tabs 1-10, and the tab menu lists the tabs.
 - A bell on a tab means it printed something since you last had it selected.
-- `ragamuffin -V` and `--version` print the version.
+- `fastcnsl -V` and `--version` print the version.
 
 ### Fixed
 
@@ -32,7 +32,7 @@ releases have a section.
 
 ### Added
 
-- Windows: WSL tabs run through the `ragamuffin-wsl` relay instead of the
+- Windows: WSL tabs run through the `fastcnsl-wsl` relay instead of the
   console host, so large output comes through faster.
   `wsl_direct = false` goes back to the console host.
 - Windows: Microsoft's console host (`conpty.dll`, `OpenConsole.exe`) ships
@@ -67,7 +67,7 @@ First tagged release.
 - Tab menu: copy all text, save to a file, or log to a file as output
   arrives (Options → Logging).
 - Keyboard shortcuts can be changed in Options.
-- Command line control: `ragamuffin new-tab [NAME] [-- COMMAND]`,
+- Command line control: `fastcnsl new-tab [NAME] [-- COMMAND]`,
   `close-tab`, `quit`.
 
 ### Platforms

@@ -4,9 +4,9 @@
 //! and every byte of output then goes through the Windows console host,
 //! which is the slow part: `cat` of a 36 MB file takes 0.42 s that way
 //! (Windows Terminal: 0.41 s), but 0.07 s through a plain pipe. So for a
-//! `wsl.exe` shell, ragamuffin starts `wsl.exe ... -e ragamuffin-wsl ...`
-//! with plain pipes instead: `ragamuffin-wsl` (`wsl-relay/`, shipped next
-//! to ragamuffin.exe) runs the shell on a Linux pty and relays it.
+//! `wsl.exe` shell, fastcnsl starts `wsl.exe ... -e fastcnsl-wsl ...`
+//! with plain pipes instead: `fastcnsl-wsl` (`wsl-relay/`, shipped next
+//! to fastcnsl.exe) runs the shell on a Linux pty and relays it.
 //!
 //! Output comes back unchanged on stdout (stderr too). Input goes to its
 //! stdin, where 0xFF, which UTF-8 never uses, starts a control message:
@@ -28,8 +28,8 @@ use alacritty_terminal::tty::windows::{PTY_CHILD_EVENT_TOKEN, PTY_READ_WRITE_TOK
 use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite};
 use polling::{Event, PollMode, Poller};
 
-/// The relay's file name, next to ragamuffin.exe.
-pub const RELAY: &str = "ragamuffin-wsl";
+/// The relay's file name, next to fastcnsl.exe.
+pub const RELAY: &str = "fastcnsl-wsl";
 
 /// Control-message lead byte on the relay's stdin.
 const CONTROL: u8 = 0xFF;
@@ -113,7 +113,7 @@ pub struct WslPty {
 }
 
 impl WslPty {
-    /// Starts `wsl.exe options... -e ragamuffin-wsl COLS ROWS run...`.
+    /// Starts `wsl.exe options... -e fastcnsl-wsl COLS ROWS run...`.
     pub fn spawn(
         wsl: &str,
         options: &[String],
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn strips_verbatim_prefixes() {
-        assert_eq!(plain_path(Path::new(r"\\?\C:\Apps\ragamuffin-wsl")), r"C:\Apps\ragamuffin-wsl");
+        assert_eq!(plain_path(Path::new(r"\\?\C:\Apps\fastcnsl-wsl")), r"C:\Apps\fastcnsl-wsl");
         assert_eq!(plain_path(Path::new(r"\\?\UNC\wsl.localhost\Ubuntu\tmp\r")), r"\\wsl.localhost\Ubuntu\tmp\r");
         assert_eq!(plain_path(Path::new(r"D:\r")), r"D:\r");
     }

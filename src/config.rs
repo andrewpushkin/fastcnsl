@@ -1,8 +1,8 @@
 //! User settings, stored as TOML in the platform config directory:
 //!
-//! * Linux:   `~/.config/ragamuffin/config.toml`
-//! * macOS:   `~/Library/Application Support/ragamuffin/config.toml`
-//! * Windows: `%APPDATA%\ragamuffin\config.toml`
+//! * Linux:   `~/.config/fastcnsl/config.toml`
+//! * macOS:   `~/Library/Application Support/fastcnsl/config.toml`
+//! * Windows: `%APPDATA%\fastcnsl\config.toml`
 //!
 //! The file is created with defaults on first start and re-read whenever it
 //! changes on disk, so edits apply without restarting.
@@ -150,9 +150,9 @@ pub struct Config {
     pub minimum_contrast: f32,
     /// Graphics API: "auto", "directx" (Windows), "vulkan", "opengl",
     /// "metal" (macOS) or "software" (drawn by the CPU). Applies after a
-    /// restart; `ragamuffin --gpu NAME` overrides it for one run.
+    /// restart; `fastcnsl --gpu NAME` overrides it for one run.
     pub gpu: GpuBackend,
-    /// Windows: run WSL tabs (shell `wsl.exe`) through `ragamuffin-wsl`, a
+    /// Windows: run WSL tabs (shell `wsl.exe`) through `fastcnsl-wsl`, a
     /// helper next to the exe that gives the shell a Linux pty and relays it
     /// over a pipe, instead of the Windows console (ConPTY). Large output
     /// then comes through faster than in Windows Terminal (36 MB `cat`:
@@ -160,7 +160,7 @@ pub struct Config {
     /// like every other tab. Applies to new tabs.
     pub wsl_direct: bool,
     /// Folder for tab text saved or logged from a tab's right-click menu.
-    /// Empty: `ragamuffin-logs` in the Documents folder (or the home
+    /// Empty: `fastcnsl-logs` in the Documents folder (or the home
     /// folder where there is none). `~` stands for the home folder.
     pub log_folder: String,
     /// Log every new tab to a file from the start.
@@ -299,13 +299,13 @@ fn default_font() -> &'static str {
 }
 
 impl Config {
-    /// The settings file: $RAGAMUFFIN_CONFIG if set, else
-    /// <config dir>/ragamuffin/config.toml.
+    /// The settings file: $FASTCNSL_CONFIG if set, else
+    /// <config dir>/fastcnsl/config.toml.
     pub fn path() -> Option<PathBuf> {
-        if let Some(p) = std::env::var_os("RAGAMUFFIN_CONFIG").filter(|p| !p.is_empty()) {
+        if let Some(p) = std::env::var_os("FASTCNSL_CONFIG").filter(|p| !p.is_empty()) {
             return Some(PathBuf::from(p));
         }
-        dirs::config_dir().map(|d| d.join("ragamuffin").join("config.toml"))
+        dirs::config_dir().map(|d| d.join("fastcnsl").join("config.toml"))
     }
 
     /// Loads the config file, writing a default one if none exists.
@@ -356,7 +356,7 @@ impl Config {
         }
         let body = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
         let text = format!(
-            "# ragamuffin settings. Saved changes apply immediately.\n\
+            "# fastcnsl settings. Saved changes apply immediately.\n\
              # theme: \"system\" | \"dark\" | \"light\"\n\
              # code themes: base16-ocean.dark, base16-eighties.dark, base16-mocha.dark,\n\
              #   base16-ocean.light, InspiredGitHub, Solarized (dark), Solarized (light)\n\n{body}"
@@ -369,7 +369,7 @@ impl Config {
         let home = dirs::home_dir().unwrap_or_default();
         let folder = self.log_folder.trim();
         if folder.is_empty() {
-            return dirs::document_dir().unwrap_or(home).join("ragamuffin-logs");
+            return dirs::document_dir().unwrap_or(home).join("fastcnsl-logs");
         }
         match folder.strip_prefix("~/").or_else(|| folder.strip_prefix("~\\")) {
             Some(rest) => home.join(rest),
@@ -455,7 +455,7 @@ mod tests {
 
     /// A fresh directory under the system temp dir for one test.
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ragamuffin-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("fastcnsl-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -467,7 +467,7 @@ mod tests {
         let cfg = Config { font_size: 15.0, theme: ThemeMode::Light, ..Config::default() };
         cfg.write_default(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("# ragamuffin settings"));
+        assert!(text.starts_with("# fastcnsl settings"));
         assert_eq!(Config::load(&path).unwrap(), Some(cfg));
     }
 
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn log_folder_setting() {
         let cfg = Config::default();
-        assert!(cfg.log_dir().ends_with("ragamuffin-logs"));
+        assert!(cfg.log_dir().ends_with("fastcnsl-logs"));
         assert!(!cfg.log_new_tabs && !cfg.log_timestamps);
         let at = |f: &str| Config { log_folder: f.into(), ..Config::default() }.log_dir();
         assert_eq!(at("/var/log/term"), PathBuf::from("/var/log/term"));
@@ -582,7 +582,7 @@ mod tests {
         // A whole file written by that version.
         let old = "font_family = \"Cascadia Mono\"\nfont_size = 11.0\nshell_args = []\n\
                    title_bar = \"auto\"\ndisplay_backend = \"auto\"\n";
-        let dir = std::env::temp_dir().join(format!("ragamuffin-old-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("fastcnsl-old-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(&path, old).unwrap();

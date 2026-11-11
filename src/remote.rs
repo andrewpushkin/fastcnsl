@@ -1,14 +1,14 @@
-//! Command-line control of a running ragamuffin:
+//! Command-line control of a running fastcnsl:
 //!
 //! ```text
-//! ragamuffin [--gpu API]
-//! ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
-//! ragamuffin [--pid N] close-tab [NAME | NUMBER]
-//! ragamuffin [--pid N] quit
+//! fastcnsl [--gpu API]
+//! fastcnsl [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
+//! fastcnsl [--pid N] close-tab [NAME | NUMBER]
+//! fastcnsl [--pid N] quit
 //! ```
 //!
 //! Each window listens on a loopback TCP port. It writes the port and a
-//! random secret to `<local data dir>/ragamuffin/instances/<pid>` (readable
+//! random secret to `<local data dir>/fastcnsl/instances/<pid>` (readable
 //! only by the user); a request must carry the secret. Without `--pid` the
 //! most recently started window is used.
 
@@ -62,13 +62,13 @@ impl Args {
 }
 
 pub const USAGE: &str = "usage:
-  ragamuffin [--gpu API]                           start the terminal; API: auto,
+  fastcnsl [--gpu API]                           start the terminal; API: auto,
                                                    directx, vulkan, opengl, metal,
                                                    software (this run only)
-  ragamuffin [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
-  ragamuffin [--pid N] close-tab [NAME | NUMBER]   (default: the active tab)
-  ragamuffin [--pid N] quit
-  ragamuffin -V | --version                        print the version
+  fastcnsl [--pid N] new-tab [NAME] [-- COMMAND ARGS...]
+  fastcnsl [--pid N] close-tab [NAME | NUMBER]   (default: the active tab)
+  fastcnsl [--pid N] quit
+  fastcnsl -V | --version                        print the version
 Without --pid the most recently started window is used.";
 
 /// Parses the arguments after the program name.
@@ -146,7 +146,7 @@ impl Request {
 }
 
 fn instances_dir() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("ragamuffin").join("instances"))
+    dirs::data_local_dir().map(|d| d.join("fastcnsl").join("instances"))
 }
 
 /// A fresh random secret (RandomState is seeded from the OS).

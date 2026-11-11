@@ -14,7 +14,7 @@ RUN curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_M
     && mv /opt/llvm-mingw-${LLVM_MINGW}-ucrt-ubuntu-22.04-x86_64 /opt/llvm-mingw
 ENV PATH=/opt/llvm-mingw/bin:$PATH
 
-# aarch64-unknown-linux-musl: ragamuffin-wsl (wsl-relay/), the static Linux
+# aarch64-unknown-linux-musl: fastcnsl-wsl (wsl-relay/), the static Linux
 # helper for WSL tabs, linked by llvm-mingw's ld.lld with musl's own crt.
 RUN rustup target add aarch64-pc-windows-gnullvm aarch64-unknown-linux-musl
 

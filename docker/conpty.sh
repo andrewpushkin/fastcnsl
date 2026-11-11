@@ -2,7 +2,7 @@
 # Downloads Microsoft's ConPTY for one architecture into /opt/conpty:
 # conpty.dll and OpenConsole.exe from the Microsoft.Windows.Console.ConPTY
 # NuGet package (github.com/microsoft/terminal, MIT). Shipped next to
-# ragamuffin.exe, alacritty_terminal loads it instead of the console host
+# fastcnsl.exe, alacritty_terminal loads it instead of the console host
 # built into Windows: the same one Windows Terminal uses, about 7x faster
 # for large output (36 MB cat: 3.4 s -> 0.48 s).
 #   conpty.sh x64|arm64

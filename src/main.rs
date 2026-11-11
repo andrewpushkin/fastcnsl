@@ -1,4 +1,4 @@
-//! ragamuffin: a fast, GPU-accelerated terminal.
+//! fastcnsl: a fast, GPU-accelerated terminal.
 // Denied rather than forbidden so that render::dwrite (Windows) can make
 // its one DirectWrite call.
 #![deny(unsafe_code)]
@@ -29,7 +29,7 @@ use winit::event_loop::EventLoop;
 
 /// Version shown to users: 0.1.<commits on main>, set by the build
 /// (scripts/get_version.sh through the Makefile or CI), else Cargo's version.
-pub const VERSION: &str = match option_env!("RAGAMUFFIN_VERSION") {
+pub const VERSION: &str = match option_env!("FASTCNSL_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
 };
@@ -53,7 +53,7 @@ fn startup_hang_message() -> String {
         .or_else(|_| std::env::var("DISPLAY").map(|d| format!("X display {d}")))
         .unwrap_or_else(|_| "display server".to_owned());
     let mut msg = format!(
-        "ragamuffin: still waiting for the {display} after {}s; it is not responding.",
+        "fastcnsl: still waiting for the {display} after {}s; it is not responding.",
         STARTUP_WATCHDOG.as_secs()
     );
     if theme::is_wsl() {
@@ -81,7 +81,7 @@ fn x11_keyboard_library_installed() -> bool {
     dirs.iter().any(|d| d.join("libxkbcommon-x11.so.0").exists() || d.join("libxkbcommon-x11.so").exists())
 }
 
-/// Runs `ragamuffin new-tab/close-tab/quit` against a running window.
+/// Runs `fastcnsl new-tab/close-tab/quit` against a running window.
 /// Returns the first tab to open when there is no window to send a
 /// new-tab to, so that this process becomes the window.
 fn run_command(inv: remote::Invocation) -> (Option<String>, Vec<String>) {
@@ -91,22 +91,22 @@ fn run_command(inv: remote::Invocation) -> (Option<String>, Vec<String>) {
             std::process::exit(0);
         }
         Ok(Err(msg)) => {
-            eprintln!("ragamuffin: {msg}");
+            eprintln!("fastcnsl: {msg}");
             std::process::exit(1);
         }
         Err(remote::SendError::NoInstance) if inv.pid.is_none() => match inv.command {
             remote::Command::NewTab { name, command } => (name, command),
             _ => {
-                eprintln!("ragamuffin: no window is running");
+                eprintln!("fastcnsl: no window is running");
                 std::process::exit(1);
             }
         },
         Err(remote::SendError::NoInstance) => {
-            eprintln!("ragamuffin: no window with process id {}", inv.pid.unwrap_or_default());
+            eprintln!("fastcnsl: no window with process id {}", inv.pid.unwrap_or_default());
             std::process::exit(1);
         }
         Err(remote::SendError::Failed(e)) => {
-            eprintln!("ragamuffin: {e}");
+            eprintln!("fastcnsl: {e}");
             std::process::exit(1);
         }
     }
@@ -172,17 +172,17 @@ fn main() {
     let event_loop = match builder.build() {
         Ok(el) => el,
         Err(e) => {
-            eprintln!("ragamuffin: cannot open a window: {e}");
+            eprintln!("fastcnsl: cannot open a window: {e}");
             std::process::exit(1);
         }
     };
     let mut app = app::App::new(cfg, event_loop.create_proxy(), first_tab, parsed.gpu);
     if let Err(e) = event_loop.run_app(&mut app) {
-        eprintln!("ragamuffin: {e}");
+        eprintln!("fastcnsl: {e}");
         std::process::exit(1);
     }
     if let Some(e) = app.error {
-        eprintln!("ragamuffin: {e}");
+        eprintln!("fastcnsl: {e}");
         std::process::exit(1);
     }
 }

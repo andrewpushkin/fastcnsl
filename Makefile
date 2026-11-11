@@ -13,22 +13,22 @@
 #   make all                      every package below
 #
 #   make linux-x86_64             compile -> target/linux-x86_64/release/
-#   make linux-x86_64-deb         -> dist/ragamuffin_<ver>_amd64.deb
-#   make linux-x86_64-rpm         -> dist/ragamuffin-<ver>-1.x86_64.rpm
-#   make linux-x86_64-appimage    -> dist/Ragamuffin-<ver>-x86_64.AppImage
-#   make windows-x86_64           compile -> target/windows-x86_64/.../ragamuffin.exe
-#   make windows-x86_64-zip       -> dist/ragamuffin-<ver>-windows-x86_64.zip
-#   make windows-arm64            compile -> target/windows-arm64/.../ragamuffin.exe
-#   make windows-arm64-zip        -> dist/ragamuffin-<ver>-windows-arm64.zip
-#   make macos-arm64              compile -> target/macos-arm64/.../ragamuffin
-#   make macos-arm64-zip          -> dist/ragamuffin-<ver>-macos-arm64.zip (Ragamuffin.app)
+#   make linux-x86_64-deb         -> dist/fastcnsl_<ver>_amd64.deb
+#   make linux-x86_64-rpm         -> dist/fastcnsl-<ver>-1.x86_64.rpm
+#   make linux-x86_64-appimage    -> dist/Fastcnsl-<ver>-x86_64.AppImage
+#   make windows-x86_64           compile -> target/windows-x86_64/.../fastcnsl.exe
+#   make windows-x86_64-zip       -> dist/fastcnsl-<ver>-windows-x86_64.zip
+#   make windows-arm64            compile -> target/windows-arm64/.../fastcnsl.exe
+#   make windows-arm64-zip        -> dist/fastcnsl-<ver>-windows-arm64.zip
+#   make macos-arm64              compile -> target/macos-arm64/.../fastcnsl
+#   make macos-arm64-zip          -> dist/fastcnsl-<ver>-macos-arm64.zip (Fastcnsl.app)
 #
 # The macOS image downloads the macOS SDK while it is built. Read the
 # licensing note at the top of docker/macos-arm64.Dockerfile first.
 #
 # Development (Dockerfile.dev):
 #
-#   make build            release build for this machine -> dist/ragamuffin
+#   make build            release build for this machine -> dist/fastcnsl
 #   make run              build, then start it
 #   make debug            debug build
 #   make tests            all unit tests (also: make test)
@@ -57,14 +57,14 @@ docker_run = mkdir -p $(CARGO_CACHE) && docker run --rm $(TTY) \
 	-e USER=$(shell id -un) \
 	-e SHELL=/bin/bash \
 	-e XDG_RUNTIME_DIR=/tmp \
-	-e RAGAMUFFIN_VERSION=$(VERSION) \
+	-e FASTCNSL_VERSION=$(VERSION) \
 	-e CARGO_TARGET_DIR=/work/$(2) \
 	-v $(CURDIR):/work \
 	-v $(CARGO_CACHE):/cargo \
 	-w /work \
 	$(1)
 
-DEV_IMAGE := ragamuffin-dev
+DEV_IMAGE := fastcnsl-dev
 DEV_STAMP := target/.image-dev
 DEV_RUN    = $(call docker_run,$(DEV_IMAGE),target)
 
@@ -76,11 +76,11 @@ DEV_RUN    = $(call docker_run,$(DEV_IMAGE),target)
 all: $(PACKAGES)
 	@echo
 	@echo "Packages in dist/:"
-	@ls -1 dist | grep -v -e '^ragamuffin$$' -e '^screenshots$$' | sed 's/^/  /'
+	@ls -1 dist | grep -v -e '^fastcnsl$$' -e '^screenshots$$' | sed 's/^/  /'
 
 # Image per platform, rebuilt when its Dockerfile changes.
 target/.image-%: docker/%.Dockerfile
-	docker build -f $< -t ragamuffin-$* docker
+	docker build -f $< -t fastcnsl-$* docker
 	@mkdir -p $(dir $@) && touch $@
 
 # Windows images also download Microsoft's ConPTY with this script.
@@ -88,13 +88,13 @@ target/.image-windows-x86_64 target/.image-windows-arm64: docker/conpty.sh
 
 # macOS: same as the pattern rule, plus the optional SDK overrides.
 target/.image-macos-arm64: docker/macos-arm64.Dockerfile
-	docker build $(MACOS_SDK_ARGS) -f $< -t ragamuffin-macos-arm64 docker
+	docker build $(MACOS_SDK_ARGS) -f $< -t fastcnsl-macos-arm64 docker
 	@mkdir -p $(dir $@) && touch $@
 
-LINUX   = $(call docker_run,ragamuffin-linux-x86_64,target/linux-x86_64) scripts/package/linux-x86_64.sh
-WIN_X64 = $(call docker_run,ragamuffin-windows-x86_64,target/windows-x86_64) scripts/package/windows.sh x86_64
-WIN_ARM = $(call docker_run,ragamuffin-windows-arm64,target/windows-arm64) scripts/package/windows.sh arm64
-MACOS   = $(call docker_run,ragamuffin-macos-arm64,target/macos-arm64) scripts/package/macos-arm64.sh
+LINUX   = $(call docker_run,fastcnsl-linux-x86_64,target/linux-x86_64) scripts/package/linux-x86_64.sh
+WIN_X64 = $(call docker_run,fastcnsl-windows-x86_64,target/windows-x86_64) scripts/package/windows.sh x86_64
+WIN_ARM = $(call docker_run,fastcnsl-windows-arm64,target/windows-arm64) scripts/package/windows.sh arm64
+MACOS   = $(call docker_run,fastcnsl-macos-arm64,target/macos-arm64) scripts/package/macos-arm64.sh
 
 # Compile only.
 linux-x86_64: target/.image-linux-x86_64
@@ -128,12 +128,12 @@ $(DEV_STAMP): Dockerfile.dev
 
 build: $(DEV_STAMP)
 	$(DEV_RUN) cargo build --release
-	@mkdir -p dist && cp target/release/ragamuffin dist/
-	@echo "-> dist/ragamuffin"
+	@mkdir -p dist && cp target/release/fastcnsl dist/
+	@echo "-> dist/fastcnsl"
 
 # Built on Debian bookworm (glibc 2.36): runs on any newer Linux, incl. WSLg.
 run: build
-	./dist/ragamuffin
+	./dist/fastcnsl
 
 debug: $(DEV_STAMP)
 	$(DEV_RUN) cargo build
@@ -170,4 +170,4 @@ clean:
 
 distclean: clean
 	rm -rf .cache
-	-docker image rm $(DEV_IMAGE) $(addprefix ragamuffin-,$(PLATFORMS))
+	-docker image rm $(DEV_IMAGE) $(addprefix fastcnsl-,$(PLATFORMS))

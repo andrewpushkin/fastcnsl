@@ -1,4 +1,4 @@
-# Windows x86-64 release image: cross-compiles ragamuffin.exe with the
+# Windows x86-64 release image: cross-compiles fastcnsl.exe with the
 # MinGW-w64 toolchain (x86_64-pc-windows-gnu). The result only imports
 # system DLLs, so it runs on a stock Windows 10/11.
 
@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mingw-w64 zip unzip binutils-mingw-w64-x86-64 \
     && rm -rf /var/lib/apt/lists/*
 
-# x86_64-unknown-linux-musl: ragamuffin-wsl (wsl-relay/), the static Linux
+# x86_64-unknown-linux-musl: fastcnsl-wsl (wsl-relay/), the static Linux
 # helper for WSL tabs, linked with musl's own crt by the host gcc.
 RUN rustup target add x86_64-pc-windows-gnu x86_64-unknown-linux-musl
 

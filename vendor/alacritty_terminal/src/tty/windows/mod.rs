@@ -9,7 +9,7 @@ use crate::event::{OnResize, WindowSize};
 use crate::tty::windows::child::ChildExitWatcher;
 use crate::tty::{ChildEvent, EventedPty, EventedReadWrite, Options, Shell};
 
-// ragamuffin patch: `blocking` and `child` are public, for ragamuffin's
+// fastcnsl patch: `blocking` and `child` are public, for fastcnsl's
 // own pipe-based PTY (WSL tabs without ConPTY).
 pub mod blocking;
 pub mod child;

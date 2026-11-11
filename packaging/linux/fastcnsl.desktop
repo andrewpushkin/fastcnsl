@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=Ragamuffin
+Name=Fastcnsl
 GenericName=Terminal
 Comment=Fast GPU-accelerated terminal with search and code highlighting
-Exec=ragamuffin
-Icon=ragamuffin
+Exec=fastcnsl
+Icon=fastcnsl
 Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=shell;prompt;command;commandline;terminal;
-StartupWMClass=ragamuffin
+StartupWMClass=fastcnsl

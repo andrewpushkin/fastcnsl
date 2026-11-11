@@ -365,7 +365,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Reverse iterator and use it as the new grid storage.
         let mut reversed: Vec<Row<T>> = new_raw.drain(..).rev().collect();
-        // ragamuffin patch: count the oldest rows the reflow pushes out.
+        // fastcnsl patch: count the oldest rows the reflow pushes out.
         let keep = self.max_scroll_limit + self.lines;
         if reversed.len() > keep {
             let ends = reversed[keep..].iter().filter(|r| super::ends_line(r)).count();

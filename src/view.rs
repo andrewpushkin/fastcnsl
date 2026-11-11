@@ -1050,7 +1050,7 @@ mod tests {
         assert_eq!(fit_tab_title(2, "Tab 3: powershell", 4), "3");
         assert_eq!(fit_tab_title(11, "Tab 12: vim", 2), "12");
         assert_eq!(fit_tab_title(11, "Tab 12: vim", 0), "12", "the number shows even without room");
-        // A title set by `ragamuffin new-tab NAME` works the same way.
+        // A title set by `fastcnsl new-tab NAME` works the same way.
         assert_eq!(fit_tab_title(0, "Tab 1: logs", 8), "1: logs");
     }
 

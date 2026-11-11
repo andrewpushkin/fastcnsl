@@ -35,7 +35,7 @@ use crate::theme::{self, Palette};
 use crate::ui::{self, Fade, Scrollbar, SearchHit};
 use crate::view::{self, ChromeView, Hover, View};
 
-const TITLE: &str = "ragamuffin";
+const TITLE: &str = "fastcnsl";
 const INITIAL_COLS: u32 = 100;
 const INITIAL_LINES: u32 = 30;
 const CONFIG_POLL: Duration = Duration::from_secs(1);
@@ -58,9 +58,9 @@ pub struct App {
     state: Option<State>,
     next_poll: Instant,
     pub error: Option<String>,
-    /// Name and command of the first tab (from `ragamuffin new-tab`).
+    /// Name and command of the first tab (from `fastcnsl new-tab`).
     first_tab: (Option<String>, Vec<String>),
-    /// Listens for `ragamuffin new-tab/close-tab/quit`.
+    /// Listens for `fastcnsl new-tab/close-tab/quit`.
     _remote: Option<remote::Server>,
     /// Graphics API from `--gpu`, for this run only.
     gpu_override: Option<GpuBackend>,
@@ -86,7 +86,7 @@ struct Tab {
     bookmarked: Vec<usize>,
     /// Last program started in this tab (the shell's name until then).
     app: String,
-    /// Name given with `ragamuffin new-tab NAME`; shown instead of `app`.
+    /// Name given with `fastcnsl new-tab NAME`; shown instead of `app`.
     name: Option<String>,
     /// "Tab N: app", rebuilt when `app` or the tab's position changes.
     label: String,
@@ -177,7 +177,7 @@ const MIN_FRAME_GAP: Duration = Duration::from_millis(8);
 /// for software rendering, which competes with them for the same cores.
 const FRAME_COST_FACTOR: u32 = 3;
 
-/// Frame timings, logged every 2 s at debug level (RUST_LOG=ragamuffin=debug).
+/// Frame timings, logged every 2 s at debug level (RUST_LOG=fastcnsl=debug).
 struct FrameStats {
     since: Instant,
     count: u32,
@@ -274,9 +274,9 @@ impl App {
         let attrs = attrs.with_visible(false);
         // App id / WM_CLASS, matching StartupWMClass in the .desktop file.
         #[cfg(all(unix, not(target_os = "macos")))]
-        let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "ragamuffin", "ragamuffin");
+        let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "fastcnsl", "fastcnsl");
         #[cfg(all(unix, not(target_os = "macos")))]
-        let attrs = winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "ragamuffin", "ragamuffin");
+        let attrs = winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "fastcnsl", "fastcnsl");
         // Window buttons in the tab bar: no OS frame on Windows/Linux; on
         // macOS the native traffic lights float over the tab bar instead.
         let custom = self.cfg.title_bar.is_custom();
@@ -844,7 +844,7 @@ impl State {
             .ok_or_else(|| format!("no tab named {w}"))
     }
 
-    /// Carries out a command from `ragamuffin new-tab/close-tab/quit`.
+    /// Carries out a command from `fastcnsl new-tab/close-tab/quit`.
     /// Returns the reply and whether the app should exit.
     fn on_remote(&mut self, cfg: &Config, command: remote::Command) -> (remote::Reply, bool) {
         self.window.request_redraw();

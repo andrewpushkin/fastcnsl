@@ -136,7 +136,7 @@ pub struct Grid<T> {
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
 
-    /// ragamuffin patch: rows that left the top of the grid (scrollback
+    /// fastcnsl patch: rows that left the top of the grid (scrollback
     /// full, history cleared or shortened, reflow), and how many of them
     /// ended a line (no WRAPLINE on their last cell). With these, callers
     /// can give rows and lines numbers that don't shift as history drops.
@@ -146,7 +146,7 @@ pub struct Grid<T> {
     lines_dropped: u64,
 }
 
-/// ragamuffin patch: how many rows ahead `prefetch_recycled_rows` asks for.
+/// fastcnsl patch: how many rows ahead `prefetch_recycled_rows` asks for.
 #[cfg(target_arch = "x86_64")]
 const PREFETCH_ROWS: usize = 4;
 
@@ -286,7 +286,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Only rotate the entire history if the active region starts at the top.
         if region.start == 0 {
-            // ragamuffin patch: rows that don't fit in the history any more
+            // fastcnsl patch: rows that don't fit in the history any more
             // are recycled from its top.
             let room = self.max_scroll_limit - self.history_size();
             self.count_dropped(positions.saturating_sub(room));
@@ -331,7 +331,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
     }
 
-    /// ragamuffin patch: once the history is full, each line scrolled up
+    /// fastcnsl patch: once the history is full, each line scrolled up
     /// reuses the oldest row, which was last touched a whole scrollback ago
     /// and is far out of the CPU cache (10 000 rows of 120 cells are 29 MB).
     /// The rows are separate allocations, so the hardware can't predict the
@@ -491,13 +491,13 @@ impl<T> Grid<T> {
         &mut self[point.line][point.column]
     }
 
-    /// ragamuffin patch: rows that have left the top of the grid so far.
+    /// fastcnsl patch: rows that have left the top of the grid so far.
     #[inline]
     pub fn rows_dropped(&self) -> u64 {
         self.rows_dropped
     }
 
-    /// ragamuffin patch: lines that ended in rows that left the top of the
+    /// fastcnsl patch: lines that ended in rows that left the top of the
     /// grid so far (rows without WRAPLINE on their last cell).
     #[inline]
     pub fn lines_dropped(&self) -> u64 {
@@ -506,7 +506,7 @@ impl<T> Grid<T> {
 }
 
 impl<T: GridCell> Grid<T> {
-    /// ragamuffin patch: records that the topmost `count` rows are about to
+    /// fastcnsl patch: records that the topmost `count` rows are about to
     /// leave the grid.
     fn count_dropped(&mut self, count: usize) {
         let count = min(count, self.total_lines());
@@ -520,14 +520,14 @@ impl<T: GridCell> Grid<T> {
         self.note_dropped(count, ends);
     }
 
-    /// ragamuffin patch: adds to the dropped row and line counts.
+    /// fastcnsl patch: adds to the dropped row and line counts.
     pub(crate) fn note_dropped(&mut self, rows: usize, ends: usize) {
         self.rows_dropped += rows as u64;
         self.lines_dropped += ends as u64;
     }
 }
 
-/// ragamuffin patch: true if the row ends a line (doesn't wrap onto the next).
+/// fastcnsl patch: true if the row ends a line (doesn't wrap onto the next).
 pub(crate) fn ends_line<T: GridCell>(row: &Row<T>) -> bool {
     row.last().is_none_or(|c| !c.flags().contains(Flags::WRAPLINE))
 }

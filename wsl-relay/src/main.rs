@@ -1,15 +1,15 @@
-//! ragamuffin-wsl: runs a shell on a Linux pty inside WSL and relays it over
+//! fastcnsl-wsl: runs a shell on a Linux pty inside WSL and relays it over
 //! stdin/stdout.
 //!
-//! ragamuffin on Windows starts `wsl.exe ... -e ragamuffin-wsl ...` with
+//! fastcnsl on Windows starts `wsl.exe ... -e fastcnsl-wsl ...` with
 //! plain pipes instead of a ConPTY pseudoconsole. The output then never goes
 //! through the Windows console host, which is the slow part: `cat` of a
 //! 36 MB file takes 0.42 s through ConPTY and 0.07 s through a pipe.
 //!
 //! ```text
-//! ragamuffin-wsl COLS ROWS login                 the user's login shell
-//! ragamuffin-wsl COLS ROWS shell COMMAND-LINE    $SHELL -c COMMAND-LINE
-//! ragamuffin-wsl COLS ROWS exec PROGRAM ARGS...  PROGRAM directly
+//! fastcnsl-wsl COLS ROWS login                 the user's login shell
+//! fastcnsl-wsl COLS ROWS shell COMMAND-LINE    $SHELL -c COMMAND-LINE
+//! fastcnsl-wsl COLS ROWS exec PROGRAM ARGS...  PROGRAM directly
 //! ```
 //!
 //! stdout carries the pty output unchanged. stdin carries the input for the
@@ -37,7 +37,7 @@ const RESIZE_LEN: usize = 8;
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let usage = || -> ! {
-        eprintln!("usage: ragamuffin-wsl COLS ROWS login | shell COMMAND-LINE | exec PROGRAM ARGS...");
+        eprintln!("usage: fastcnsl-wsl COLS ROWS login | shell COMMAND-LINE | exec PROGRAM ARGS...");
         exit(2)
     };
     if args.len() < 3 {
@@ -59,7 +59,7 @@ fn main() {
     let (master, pid) = match spawn(&program, &argv, &size) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("ragamuffin-wsl: {}: {e}", program.to_string_lossy());
+            eprintln!("fastcnsl-wsl: {}: {e}", program.to_string_lossy());
             exit(127)
         }
     };
@@ -181,7 +181,7 @@ fn winsize(cols: u16, rows: u16, width: u16, height: u16) -> libc::winsize {
 
 fn cstring(bytes: &[u8]) -> CString {
     CString::new(bytes).unwrap_or_else(|_| {
-        eprintln!("ragamuffin-wsl: argument contains a NUL byte");
+        eprintln!("fastcnsl-wsl: argument contains a NUL byte");
         exit(2)
     })
 }
@@ -219,7 +219,7 @@ fn spawn(program: &CStr, argv: &[CString], size: &libc::winsize) -> io::Result<(
     let env = [
         (c"TERM", c"xterm-256color"),
         (c"COLORTERM", c"truecolor"),
-        (c"TERM_PROGRAM", c"ragamuffin"),
+        (c"TERM_PROGRAM", c"fastcnsl"),
     ];
 
     let (mut master, mut slave) = (0, 0);

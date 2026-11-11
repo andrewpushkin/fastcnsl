@@ -45,7 +45,7 @@ The section goes above the newest version and looks like this:
 ## Unreleased
 
 - Bookmarks: right-click a line or press Ctrl+Shift+B to mark it; marked lines stay tinted as they scroll.
-- `ragamuffin -V` and `--version` print the version.
+- `fastcnsl -V` and `--version` print the version.
 - Bug fixes.
 ```
 

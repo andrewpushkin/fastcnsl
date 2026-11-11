@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Windows steps. Runs in docker/windows-<arch>.Dockerfile.
-#   windows.sh x86_64|arm64 build   compile ragamuffin.exe
+#   windows.sh x86_64|arm64 build   compile fastcnsl.exe
 #   windows.sh x86_64|arm64 zip     package the compiled exe as a .zip
 source "$(dirname "$0")/common.sh"
 ARCH="${1:?usage: windows.sh x86_64|arm64 build|zip}"
@@ -13,13 +13,13 @@ case "$ARCH" in
     *) echo "unknown arch $ARCH" >&2; exit 1 ;;
 esac
 
-EXE="$TARGET_DIR/$TRIPLE/release/ragamuffin.exe"
+EXE="$TARGET_DIR/$TRIPLE/release/fastcnsl.exe"
 # The static Linux helper for WSL tabs (wsl-relay/, see src/wsl.rs).
-RELAY="$TARGET_DIR/$LINUX/release/ragamuffin-wsl"
+RELAY="$TARGET_DIR/$LINUX/release/fastcnsl-wsl"
 # Microsoft's ConPTY, downloaded into the image by docker/conpty.sh.
 CONPTY=/opt/conpty
 
-# Puts conpty.dll and OpenConsole.exe next to ragamuffin.exe in $1: the
+# Puts conpty.dll and OpenConsole.exe next to fastcnsl.exe in $1: the
 # terminal then uses them instead of Windows' own, much slower, console host.
 add_conpty() {
     if [[ -f "$CONPTY/conpty.dll" && -f "$CONPTY/OpenConsole.exe" ]]; then
@@ -30,9 +30,9 @@ add_conpty() {
 }
 
 if [[ "$STEP" == build ]]; then
-    say "compiling ragamuffin $VERSION for $TRIPLE"
+    say "compiling fastcnsl $VERSION for $TRIPLE"
     cargo build --release --locked --target "$TRIPLE"
-    say "compiling ragamuffin-wsl for $LINUX"
+    say "compiling fastcnsl-wsl for $LINUX"
     cargo build --release --locked --target "$LINUX" --manifest-path wsl-relay/Cargo.toml
     cp "$RELAY" "$(dirname "$EXE")/"
     add_conpty "$(dirname "$EXE")"
@@ -43,7 +43,7 @@ fi
 need_binary "$EXE" "windows-$ARCH"
 say "packaging .zip"
 
-STAGE="$TARGET_DIR/package-windows-$ARCH/ragamuffin"
+STAGE="$TARGET_DIR/package-windows-$ARCH/fastcnsl"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
 cp "$EXE" "$RELAY" "$STAGE/"
 cp README.md "$STAGE/" 2>/dev/null || true
@@ -61,7 +61,7 @@ for dll in $("$OBJDUMP" -p "$EXE" | sed -n 's/.*DLL Name: //p'); do
     fi
 done
 
-OUT="$DIST/ragamuffin-${VERSION}-windows-$ARCH.zip"
+OUT="$DIST/fastcnsl-${VERSION}-windows-$ARCH.zip"
 rm -f "$OUT"
-(cd "$(dirname "$STAGE")" && zip -qr "$OUT" ragamuffin)
+(cd "$(dirname "$STAGE")" && zip -qr "$OUT" fastcnsl)
 echo "-> ${OUT#$ROOT/}"
