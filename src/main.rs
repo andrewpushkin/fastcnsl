@@ -19,6 +19,8 @@ mod remote;
 mod render;
 mod search;
 mod session;
+#[cfg(test)]
+mod testterm;
 mod shortcuts;
 mod theme;
 mod ui;
