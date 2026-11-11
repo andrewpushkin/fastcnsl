@@ -32,7 +32,7 @@ pub enum Kind {
 pub enum Found {
     /// The nearest line with a match.
     Line(u64),
-    NotFound,
+    Nothing,
     /// Matches counted, stopping at the cap.
     Count { matches: usize, capped: bool },
 }
@@ -65,7 +65,7 @@ impl Searcher {
     /// (`up`) or its start.
     pub fn step(&mut self, snap: Snapshot, pattern: &str, range: Range<u64>, up: bool, owner: u64) {
         self.spawn(owner, Kind::Step, pattern, move |re, cancel| {
-            let mut found = Found::NotFound;
+            let mut found = Found::Nothing;
             let mut text = String::new();
             let _ = snap.for_each(range, up, |at, item| {
                 if cancel.load(Ordering::Relaxed) {
@@ -231,7 +231,7 @@ mod tests {
         s.step(snap.clone(), "needle", snap.first_line()..9000, true, 1);
         assert_eq!(next(&mut s), (1, Kind::Step, Found::Line(5)));
         s.step(snap.clone(), "needle", 6..9000, false, 1);
-        assert_eq!(next(&mut s), (1, Kind::Step, Found::NotFound));
+        assert_eq!(next(&mut s), (1, Kind::Step, Found::Nothing));
         assert!(!s.busy(1, Kind::Step));
     }
 

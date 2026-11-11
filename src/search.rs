@@ -271,7 +271,7 @@ impl SearchBox {
                         (Point::new(a.live.topmost_line(), Column(0)), Direction::Right, Side::Left)
                     };
                     if let Some(m) = a.live.search_next(regex, origin, dir, side, None) {
-                        a.scroller.to_bottom(a.live);
+                        a.scroller.go_bottom(a.live);
                         a.live.scroll_to_point(*m.start());
                         self.current = Some(m);
                         self.current_live = true;
@@ -526,7 +526,7 @@ impl Search {
             let Some(b) = self.boxes.iter_mut().find(|b| b.id == owner) else { continue };
             match (kind, found) {
                 (Kind::Step, Found::Line(line)) => b.land(a, line),
-                (Kind::Step, Found::NotFound) => {
+                (Kind::Step, Found::Nothing) => {
                     let snap = settled(a.live, a.history);
                     b.run_segments(a, &snap);
                 }
@@ -577,6 +577,7 @@ impl Search {
     }
 
     /// A history search or count is running for some box.
+    #[cfg(test)]
     pub fn busy(&self, searcher: &Searcher) -> bool {
         self.boxes.iter().any(|b| searcher.busy(b.id, Kind::Step) || searcher.busy(b.id, Kind::Count))
     }

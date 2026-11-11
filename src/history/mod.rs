@@ -267,6 +267,7 @@ impl History {
         self
     }
 
+    #[cfg(test)]
     pub fn ram_limit(&self) -> usize {
         self.ram_limit
     }
@@ -288,6 +289,7 @@ impl History {
 
     /// The encoded cells of the line whose first rows left the grid while
     /// its last row is still there.
+    #[cfg(test)]
     pub fn partial(&self) -> &[u8] {
         &self.partial
     }

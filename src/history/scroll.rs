@@ -176,6 +176,7 @@ impl<L: EventListener + Clone> Scroller<L> {
     }
 
     /// The position of the top screen row.
+    #[cfg(test)]
     pub fn top(&self, live: &mut Term<L>, history: &Shared) -> At {
         let snap = settled(live, history);
         self.top_in(&snap, live.grid())
@@ -239,7 +240,7 @@ impl<L: EventListener + Clone> Scroller<L> {
             }
             Err(e) => {
                 log::warn!("reading history: {e}");
-                self.to_bottom(live);
+                self.go_bottom(live);
             }
         }
     }
@@ -258,7 +259,7 @@ impl<L: EventListener + Clone> Scroller<L> {
         self.scroll(live, history, budget, if up { rows } else { -rows });
     }
 
-    pub fn to_top(&mut self, live: &mut Term<L>, history: &Shared, budget: &Budget) {
+    pub fn go_top(&mut self, live: &mut Term<L>, history: &Shared, budget: &Budget) {
         let snap = settled(live, history);
         if snap.first_line() < snap.end_line() || !snap.partial().is_empty() {
             self.place(live, &snap, budget, At { line: snap.first_line(), sub: 0 });
@@ -268,7 +269,7 @@ impl<L: EventListener + Clone> Scroller<L> {
     }
 
     /// Back to the live terminal, at the bottom.
-    pub fn to_bottom(&mut self, live: &mut Term<L>) {
+    pub fn go_bottom(&mut self, live: &mut Term<L>) {
         if self.window.take().is_some() {
             self.changes += 1;
         }
@@ -276,6 +277,7 @@ impl<L: EventListener + Clone> Scroller<L> {
     }
 
     /// Shows `at` as the top screen row, or as near as the history allows.
+    #[cfg(test)]
     pub fn set_top(&mut self, live: &mut Term<L>, history: &Shared, budget: &Budget, at: At) {
         let snap = settled(live, history);
         self.place(live, &snap, budget, at);
@@ -326,7 +328,7 @@ impl<L: EventListener + Clone> Scroller<L> {
         let Some(w) = &self.window else { return };
         let snap = settled(live, history);
         if w.generation != snap.generation() {
-            self.to_bottom(live);
+            self.go_bottom(live);
         } else if w.columns != live.grid().columns() || w.screen != live.grid().screen_lines() {
             let top = At { line: w.top().line, sub: 0 };
             self.window = None;
@@ -452,12 +454,12 @@ mod tests {
     fn page_and_top_and_bottom() {
         let mut t = T::new("page");
         t.feed_numbered(0, 2000);
-        t.s.to_top(&mut t.t.term, &t.history, &t.budget);
+        t.s.go_top(&mut t.t.term, &t.history, &t.budget);
         assert_eq!(t.row_text(0), "line 0");
         assert!(t.s.in_window());
         t.s.page(&mut t.t.term, &t.history, &t.budget, false);
         assert_eq!(t.top(), At { line: 8, sub: 0 }, "line 3 wraps to 3 rows: a page of 10 rows ends before line 8");
-        t.s.to_bottom(&mut t.t.term);
+        t.s.go_bottom(&mut t.t.term);
         assert!(!t.s.in_window());
         assert_eq!(t.t.term.grid().display_offset(), 0);
     }
@@ -497,7 +499,7 @@ mod tests {
         let (total, offset) = t.s.metrics(&t.t.term, &t.history);
         assert_eq!(total, (end - first) as usize + t.t.term.grid().history_size());
         assert_eq!(offset, 0);
-        t.s.to_top(&mut t.t.term, &t.history, &t.budget);
+        t.s.go_top(&mut t.t.term, &t.history, &t.budget);
         let mut last = t.s.metrics(&t.t.term, &t.history).1;
         assert_eq!(last, total);
         for _ in 0..500 {
@@ -583,7 +585,7 @@ mod tests {
     fn clear_leaves_window() {
         let mut t = T::new("clear");
         t.feed_numbered(0, 3000);
-        t.s.to_top(&mut t.t.term, &t.history, &t.budget);
+        t.s.go_top(&mut t.t.term, &t.history, &t.budget);
         assert!(t.s.in_window());
         t.t.feed("\x1b[3J");
         t.s.sync(&mut t.t.term, &t.history, &t.budget);

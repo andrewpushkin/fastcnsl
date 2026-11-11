@@ -272,6 +272,7 @@ fn last_text_row(grid: &Grid<Cell>) -> usize {
 }
 
 /// Writes all of a tab's text to a new file.
+#[cfg(test)]
 pub fn save_text(path: &Path, grid: &Grid<Cell>) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

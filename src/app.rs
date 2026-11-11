@@ -169,8 +169,8 @@ impl Tab {
             Scroll::Delta(n) => self.scroller.scroll(&mut live, history, &budget, i64::from(n)),
             Scroll::PageUp => self.scroller.page(&mut live, history, &budget, true),
             Scroll::PageDown => self.scroller.page(&mut live, history, &budget, false),
-            Scroll::Top => self.scroller.to_top(&mut live, history, &budget),
-            Scroll::Bottom => self.scroller.to_bottom(&mut live),
+            Scroll::Top => self.scroller.go_top(&mut live, history, &budget),
+            Scroll::Bottom => self.scroller.go_bottom(&mut live),
         }
     }
 
@@ -1481,7 +1481,7 @@ impl State {
         }
         // Typing goes back to the live terminal, at the bottom.
         let mut live = tab.session.term.lock();
-        tab.scroller.to_bottom(&mut live);
+        tab.scroller.go_bottom(&mut live);
         live.selection = None;
         drop(live);
         self.write(bytes);

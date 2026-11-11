@@ -59,6 +59,7 @@ const NAMED: [NamedColor; 29] = [
 /// Appends one logical line's cells, given its rows top to bottom. A row
 /// that wraps loses the WRAPLINE flag and the spacer a wide character left
 /// at its end; a row that doesn't loses its trailing default cells.
+#[cfg(test)]
 pub fn join_rows<'a>(rows: impl IntoIterator<Item = &'a Row<Cell>>, out: &mut Vec<Cell>) {
     let blank = Cell::default();
     for row in rows {
@@ -102,6 +103,7 @@ fn spacer_of(wide: &Cell) -> Cell {
 }
 
 /// Appends the encoded form of `cells` to `out`.
+#[cfg(test)]
 pub fn encode(cells: &[Cell], out: &mut Vec<u8>) {
     Encoder::default().encode(cells, out);
 }
@@ -408,8 +410,7 @@ fn lay_out(cells: &[Cell], columns: usize, mut cell: impl FnMut(usize, &Cell) ->
     let columns = columns.max(1);
     let mut row = 0;
     let mut col = 0;
-    let mut leading = Cell::default();
-    leading.flags = Flags::LEADING_WIDE_CHAR_SPACER;
+    let leading = Cell { flags: Flags::LEADING_WIDE_CHAR_SPACER, ..Cell::default() };
     for c in cells {
         if columns < 2 && c.flags.contains(Flags::WIDE_CHAR_SPACER) {
             continue;
