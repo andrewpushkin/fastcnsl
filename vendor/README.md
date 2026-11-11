@@ -4,8 +4,19 @@
 
 The crates.io release (Apache-2.0 OR MIT, see `vte/LICENSE-APACHE` and
 `vte/LICENSE-MIT`), without its changelog, examples and test data, plus
-one change (marked "fastcnsl patch"), together with `Term::input_ascii` in
-alacritty_terminal below. The tests are in `src/vendor_vte_tests.rs`.
+two changes (marked "fastcnsl patch"). The first goes together with
+`Term::input_ascii` in alacritty_terminal below; its tests are in
+`src/vendor_vte_tests.rs`.
+
+### Less unsafe code (`src/lib.rs`)
+
+`osc_dispatch` fills an initialised array instead of a `MaybeUninit` one,
+and `advance_partial_utf8` decodes a character split between two reads
+with checked calls instead of `from_utf8_unchecked` and
+`unwrap_unchecked`. Both run rarely (once per OSC sequence, once per split
+character, on at most 4 bytes), so the speed is unchanged. The one
+`from_utf8_unchecked` left, on text that `validate_utf8` has just
+checked, stays: a checked call would validate every read twice.
 
 ### Runs of printable ASCII and SIMD UTF-8 validation (`src/lib.rs`, `src/ansi.rs`)
 

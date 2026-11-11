@@ -29,7 +29,6 @@
 #![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use core::mem::MaybeUninit;
 use core::str;
 
 #[cfg(not(feature = "std"))]
@@ -573,19 +572,15 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
     /// The aliasing is needed here for multiple slices into self.osc_raw
     #[inline]
     fn osc_dispatch<P: Perform>(&self, performer: &mut P, byte: u8) {
-        let mut slices: [MaybeUninit<&[u8]>; MAX_OSC_PARAMS] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-
-        for (i, slice) in slices.iter_mut().enumerate().take(self.osc_num_params) {
-            let indices = self.osc_params[i];
-            *slice = MaybeUninit::new(&self.osc_raw[indices.0..indices.1]);
+        // fastcnsl patch: an initialised array instead of MaybeUninit, so no
+        // unsafe; filling 16 empty slices once per OSC costs nothing measurable.
+        let num_params = self.osc_num_params;
+        let mut slices: [&[u8]; MAX_OSC_PARAMS] = [&[]; MAX_OSC_PARAMS];
+        for (slice, indices) in slices.iter_mut().zip(&self.osc_params[..num_params]) {
+            *slice = &self.osc_raw[indices.0..indices.1];
         }
 
-        unsafe {
-            let num_params = self.osc_num_params;
-            let params = &slices[..num_params] as *const [MaybeUninit<&[u8]>] as *const [&[u8]];
-            performer.osc_dispatch(&*params, byte == 0x07);
-        }
+        performer.osc_dispatch(&slices[..num_params], byte == 0x07);
     }
 
     /// Advance the parser state from ground.
@@ -623,6 +618,9 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             // Handle invalid and partial utf8.
             Err((valid_bytes, error_len)) => {
                 // Dispatch all the valid bytes.
+                //
+                // SAFETY: `validate_utf8` just checked `bytes[..valid_bytes]`.
+                // (A checked conversion would validate the read a second time.)
                 let parsed = unsafe { str::from_utf8_unchecked(&bytes[..valid_bytes]) };
                 Self::ground_dispatch(performer, parsed);
 
@@ -674,10 +672,14 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         self.partial_utf8_len += to_copy;
 
         // Parse the unicode character.
+        //
+        // fastcnsl patch: checked instead of `unwrap_unchecked` and
+        // `from_utf8_unchecked`, so no unsafe. This runs once per character
+        // split between two reads, on at most 4 bytes.
         match str::from_utf8(&self.partial_utf8[..self.partial_utf8_len]) {
             // If the entire buffer is valid, use the first character and continue parsing.
             Ok(parsed) => {
-                let c = unsafe { parsed.chars().next().unwrap_unchecked() };
+                let c = parsed.chars().next().expect("partial UTF-8 buffer is not empty");
                 performer.print(c);
 
                 self.partial_utf8_len = 0;
@@ -689,10 +691,10 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 // utf8 character into `partial_utf8`. Since we only care about the
                 // first character, we just ignore the rest.
                 if valid_bytes > 0 {
-                    let c = unsafe {
-                        let parsed = str::from_utf8_unchecked(&self.partial_utf8[..valid_bytes]);
-                        parsed.chars().next().unwrap_unchecked()
-                    };
+                    let c = str::from_utf8(&self.partial_utf8[..valid_bytes])
+                        .ok()
+                        .and_then(|parsed| parsed.chars().next())
+                        .expect("valid UTF-8 prefix is not empty");
 
                     performer.print(c);
 

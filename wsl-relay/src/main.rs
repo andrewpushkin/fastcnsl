@@ -23,10 +23,13 @@
 //! The shell gets SIGHUP when stdin closes (the tab was closed), and the
 //! relay exits with the shell's status once the pty closes.
 
-use std::ffi::{CStr, CString};
-use std::io;
+use std::ffi::{CStr, OsStr, OsString};
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::process::exit;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::process::{Child, Command, Stdio, exit};
 use std::ptr;
 
 /// Control-message lead byte on stdin.
@@ -45,45 +48,66 @@ fn main() {
     }
     let num = |i: usize| args[i].to_str().and_then(|s| s.parse::<u16>().ok()).unwrap_or_else(|| usage());
     let size = winsize(num(0), num(1), 0, 0);
-    let argv: Vec<CString> = match (args[2].as_bytes(), &args[3..]) {
-        (b"login", []) => login_shell(),
-        (b"shell", [line]) => vec![user_shell(), c"-c".to_owned(), cstring(line.as_bytes())],
+    let mut command = match (args[2].as_bytes(), &args[3..]) {
+        (b"login", []) => {
+            // A login shell's argv[0] is "-bash"; the program is the shell's path.
+            let shell = user_shell();
+            let mut command = Command::new(&shell);
+            command.arg0(login_argv0(&shell));
+            command
+        }
+        (b"shell", [line]) => {
+            let mut command = Command::new(user_shell());
+            command.arg("-c").arg(line);
+            command
+        }
         (b"exec", [program, rest @ ..]) => {
-            std::iter::once(program).chain(rest).map(|a| cstring(a.as_bytes())).collect()
+            let mut command = Command::new(program);
+            command.args(rest);
+            command
         }
         _ => usage(),
     };
-    // A login shell's argv[0] is "-bash"; the program is the shell's path.
-    let program = if args[2].as_bytes() == b"login" { user_shell() } else { argv[0].clone() };
+    let program = command.get_program().to_owned();
 
-    let (master, pid) = match spawn(&program, &argv, &size) {
+    let (master, mut child) = match spawn(&mut command, &size) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("fastcnsl-wsl: {}: {e}", program.to_string_lossy());
             exit(127)
         }
     };
+    // Its copies of the pty's slave side would keep the pty open after
+    // the shell exits.
+    drop(command);
+    let pid = child.id() as libc::pid_t;
+    let (mut stdin, mut stdout, mut pty_in) = match (dup(io::stdin().as_fd()), dup(io::stdout().as_fd()), master.try_clone()) {
+        (Ok(i), Ok(o), Ok(p)) => (i, o, p),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+            eprintln!("fastcnsl-wsl: {e}");
+            exit(1)
+        }
+    };
 
-    // Output: pty -> stdout, on its own thread so that input (Ctrl+C!)
-    // still reaches the shell while stdout is full.
     // Output: pty -> stdout, on its own thread so that input (Ctrl+C!)
     // still reaches the shell while stdout is full. Plain blocking reads
     // and writes measured fastest: a reader thread feeding a writer thread
     // (0.32 s for a 36 MB cat) or gathering reads into big writes (0.34 s)
     // both lose to this (0.29 s); the kernel's pty is the limit.
     let output = std::thread::spawn(move || {
+        let mut master = master;
         let mut buf = vec![0u8; 1 << 16];
         loop {
-            let n = unsafe { libc::read(master, buf.as_mut_ptr().cast(), buf.len()) };
-            if n > 0 {
-                if write_all(1, &buf[..n as usize]).is_err() {
-                    break;
+            match master.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if stdout.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
                 }
-            } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
-            } else {
-                // 0 or EIO: every process holding the pty has closed it.
-                break;
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                // EIO: every process holding the pty has closed it.
+                Err(_) => break,
             }
         }
     });
@@ -93,39 +117,45 @@ fn main() {
         let mut parser = Input::default();
         let mut buf = vec![0u8; 1 << 14];
         loop {
-            let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
-            if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            if n <= 0 {
+            let n = match stdin.read(&mut buf) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Ok(n) => n,
+                Err(_) => 0,
+            };
+            if n == 0 {
                 // The tab is gone: hang up the shell's session.
+                // SAFETY: kill only sends a signal.
                 unsafe {
                     libc::kill(-pid, libc::SIGHUP);
                     libc::kill(pid, libc::SIGHUP);
                 }
                 exit(0);
             }
-            parser.feed(&buf[..n as usize], |item| match item {
+            parser.feed(&buf[..n], |item| match item {
                 Item::Data(d) => {
-                    let _ = write_all(master, d);
+                    let _ = pty_in.write_all(d);
                 }
+                // SAFETY: TIOCSWINSZ reads one winsize, from a live reference.
                 Item::Resize(ws) => unsafe {
-                    libc::ioctl(master, libc::TIOCSWINSZ, &ws);
+                    libc::ioctl(pty_in.as_raw_fd(), libc::TIOCSWINSZ, &ws);
                 },
             });
         }
     });
 
     let _ = output.join();
-    let mut status = 0;
-    unsafe { libc::waitpid(pid, &mut status, 0) };
-    exit(if libc::WIFEXITED(status) {
-        libc::WEXITSTATUS(status)
-    } else if libc::WIFSIGNALED(status) {
-        128 + libc::WTERMSIG(status)
-    } else {
-        1
+    let status = child.wait().ok();
+    exit(match (status.and_then(|s| s.code()), status.and_then(|s| s.signal())) {
+        (Some(code), _) => code,
+        (None, Some(signal)) => 128 + signal,
+        _ => 1,
     })
+}
+
+/// A file of its own on the same open file as `fd` (stdin, stdout): plain
+/// reads and writes, without std's locks and line buffering.
+fn dup(fd: std::os::fd::BorrowedFd) -> io::Result<File> {
+    fd.try_clone_to_owned().map(File::from)
 }
 
 /// Splits stdin into pty data and control messages, across reads.
@@ -179,118 +209,70 @@ fn winsize(cols: u16, rows: u16, width: u16, height: u16) -> libc::winsize {
     libc::winsize { ws_col: cols, ws_row: rows, ws_xpixel: width, ws_ypixel: height }
 }
 
-fn cstring(bytes: &[u8]) -> CString {
-    CString::new(bytes).unwrap_or_else(|_| {
-        eprintln!("fastcnsl-wsl: argument contains a NUL byte");
-        exit(2)
-    })
-}
-
 /// The user's shell: the passwd entry, else $SHELL, else /bin/sh.
-fn user_shell() -> CString {
+fn user_shell() -> OsString {
+    // SAFETY: getpwuid's result is null or points to a static entry, read
+    // here before anything else could call it (the threads start later).
     unsafe {
         let pw = libc::getpwuid(libc::getuid());
         if !pw.is_null() && !(*pw).pw_shell.is_null() {
             let shell = CStr::from_ptr((*pw).pw_shell);
             if !shell.is_empty() {
-                return shell.to_owned();
+                return OsStr::from_bytes(shell.to_bytes()).to_owned();
             }
         }
     }
     match std::env::var_os("SHELL") {
-        Some(s) if !s.is_empty() => cstring(s.as_bytes()),
-        _ => c"/bin/sh".to_owned(),
+        Some(s) if !s.is_empty() => s,
+        _ => "/bin/sh".into(),
     }
 }
 
-/// argv for a login shell: argv[0] is "-" + the shell's file name.
-fn login_shell() -> Vec<CString> {
-    let shell = user_shell();
+/// argv[0] for a login shell: "-" + the shell's file name.
+fn login_argv0(shell: &OsStr) -> OsString {
     let name = shell.as_bytes().rsplit(|&b| b == b'/').next().unwrap_or(b"sh");
-    let mut argv0 = b"-".to_vec();
-    argv0.extend_from_slice(name);
-    vec![cstring(&argv0)]
+    let mut argv0 = OsString::from("-");
+    argv0.push(OsStr::from_bytes(name));
+    argv0
 }
 
-/// Starts `program` on a new pty; returns the master fd and the child pid.
-fn spawn(program: &CStr, argv: &[CString], size: &libc::winsize) -> io::Result<(i32, libc::pid_t)> {
-    let mut argv_ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
-    argv_ptrs.push(ptr::null());
-    let env = [
-        (c"TERM", c"xterm-256color"),
-        (c"COLORTERM", c"truecolor"),
-        (c"TERM_PROGRAM", c"fastcnsl"),
-    ];
-
+/// Starts `command` on a new pty; returns the pty's master side and the
+/// child. An exec error (a missing program) comes back as Err.
+fn spawn(command: &mut Command, size: &libc::winsize) -> io::Result<(File, Child)> {
     let (mut master, mut slave) = (0, 0);
-    let size = *size;
-    if unsafe { libc::openpty(&mut master, &mut slave, ptr::null_mut(), ptr::null(), &size) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // A pipe that closes on a successful exec: an exec error comes back
-    // through it, so a missing program is reported, not a silent exit.
-    let mut err_pipe = [0; 2];
-    if unsafe { libc::pipe2(err_pipe.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if pid == 0 {
-        // Child: only async-signal-safe calls from here on.
-        unsafe {
-            libc::close(err_pipe[0]);
-            libc::setsid();
-            libc::ioctl(slave, libc::TIOCSCTTY, 0);
-            libc::dup2(slave, 0);
-            libc::dup2(slave, 1);
-            libc::dup2(slave, 2);
-            if slave > 2 {
-                libc::close(slave);
-            }
-            libc::close(master);
-            // Rust ignores SIGPIPE; the shell and its children must not.
-            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-            for (k, v) in env {
-                libc::setenv(k.as_ptr(), v.as_ptr(), 1);
-            }
-            libc::execvp(program.as_ptr(), argv_ptrs.as_ptr());
-            let errno = *libc::__errno_location();
-            libc::write(err_pipe[1], (&errno as *const i32).cast(), 4);
-            libc::_exit(127);
+    // SAFETY: openpty fills in two new file descriptors, owned from here on
+    // by the OwnedFds.
+    let (master, slave) = unsafe {
+        if libc::openpty(&mut master, &mut slave, ptr::null_mut(), ptr::null(), size) != 0 {
+            return Err(io::Error::last_os_error());
         }
-    }
+        (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave))
+    };
+    // openpty's descriptors aren't close-on-exec; copies are, so the shell
+    // inherits the pty only as its stdin, stdout and stderr. The originals
+    // are closed here (shadowing them would keep them open).
+    let cloexec = |fd: OwnedFd| fd.try_clone();
+    let (master, slave) = (cloexec(master)?, cloexec(slave)?);
 
+    command
+        .stdin(Stdio::from(slave.try_clone()?))
+        .stdout(Stdio::from(slave.try_clone()?))
+        .stderr(Stdio::from(slave))
+        .env("TERM", "xterm-256color")
+        .env("COLORTERM", "truecolor")
+        .env("TERM_PROGRAM", "fastcnsl");
+    // std resets SIGPIPE (which Rust ignores) to the default in the child.
+    // SAFETY: runs in the child between fork and exec, after the pty is its
+    // stdin, and makes only async-signal-safe calls.
     unsafe {
-        libc::close(slave);
-        libc::close(err_pipe[1]);
-        let mut errno = 0i32;
-        let n = libc::read(err_pipe[0], (&mut errno as *mut i32).cast(), 4);
-        libc::close(err_pipe[0]);
-        if n == 4 {
-            libc::waitpid(pid, ptr::null_mut(), 0);
-            libc::close(master);
-            return Err(io::Error::from_raw_os_error(errno));
-        }
+        command.pre_exec(|| {
+            libc::setsid();
+            libc::ioctl(0, libc::TIOCSCTTY, 0);
+            Ok(())
+        });
     }
-    Ok((master, pid))
-}
-
-fn write_all(fd: i32, mut buf: &[u8]) -> io::Result<()> {
-    while !buf.is_empty() {
-        let n = unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) };
-        if n < 0 {
-            let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(e);
-        }
-        buf = &buf[n as usize..];
-    }
-    Ok(())
+    let child = command.spawn()?;
+    Ok((File::from(master), child))
 }
 
 #[cfg(test)]
@@ -333,6 +315,7 @@ mod tests {
 
     #[test]
     fn login_shell_argv0_starts_with_a_dash() {
-        assert!(login_shell()[0].as_bytes().starts_with(b"-"));
+        assert_eq!(login_argv0(OsStr::new("/usr/bin/bash")), "-bash");
+        assert!(login_argv0(&user_shell()).as_bytes().starts_with(b"-"));
     }
 }
