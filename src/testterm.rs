@@ -1,6 +1,6 @@
 //! A terminal without a shell for tests: feed it text, look at its grid.
 
-use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::{Dimensions, Row};
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::test::TermSize;
@@ -9,15 +9,22 @@ use alacritty_terminal::vte::ansi::Processor;
 
 use crate::lines;
 
+/// Ignores terminal events; unlike `VoidListener` it can be cloned, as a
+/// history window's terminal needs.
+#[derive(Clone, Copy)]
+pub struct Quiet;
+
+impl EventListener for Quiet {}
+
 pub struct TestTerm {
-    pub term: Term<VoidListener>,
+    pub term: Term<Quiet>,
     parser: Processor,
 }
 
 impl TestTerm {
     pub fn new(cols: usize, lines: usize, history: usize) -> Self {
         let cfg = TermConfig { scrolling_history: history, ..TermConfig::default() };
-        Self { term: Term::new(cfg, &TermSize::new(cols, lines), VoidListener), parser: Processor::new() }
+        Self { term: Term::new(cfg, &TermSize::new(cols, lines), Quiet), parser: Processor::new() }
     }
 
     /// Feeds `s` as a program's output, `\n` as `\r\n`.

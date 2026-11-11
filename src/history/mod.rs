@@ -13,6 +13,8 @@
 
 pub mod disk;
 pub mod line;
+pub mod scroll;
+pub mod window;
 #[cfg(test)]
 mod vendor_tests;
 
