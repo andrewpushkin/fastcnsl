@@ -144,6 +144,44 @@ pub struct Grid<T> {
     rows_dropped: u64,
     #[cfg_attr(feature = "serde", serde(skip))]
     lines_dropped: u64,
+
+    /// fastcnsl patch: receives the rows that leave the top of the grid.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    sink: SinkSlot<T>,
+}
+
+/// fastcnsl patch: receives rows as they leave the top of the grid, so the
+/// caller can keep them.
+pub trait RowSink<T>: Send {
+    /// `rows` are leaving the top of the grid, oldest first (scrollback
+    /// full, history shortened, reflow). Called before they are reused.
+    fn dropped(&mut self, rows: &mut dyn Iterator<Item = &Row<T>>);
+
+    /// The history was cleared (ESC[3J, reset): its rows are gone, not
+    /// passed on. `lines_dropped` is the grid's `lines_dropped()` after the
+    /// clear.
+    fn cleared(&mut self, lines_dropped: u64);
+}
+
+/// fastcnsl patch: the grid's sink. A cloned grid has none.
+pub struct SinkSlot<T>(Option<Box<dyn RowSink<T>>>);
+
+impl<T> Default for SinkSlot<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> Clone for SinkSlot<T> {
+    fn clone(&self) -> Self {
+        Self(None)
+    }
+}
+
+impl<T> std::fmt::Debug for SinkSlot<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "RowSink" } else { "None" })
+    }
 }
 
 /// fastcnsl patch: how many rows ahead `prefetch_recycled_rows` asks for.
@@ -157,6 +195,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             max_scroll_limit,
             rows_dropped: 0,
             lines_dropped: 0,
+            sink: SinkSlot::default(),
             display_offset: 0,
             saved_cursor: Cursor::default(),
             cursor: Cursor::default(),
@@ -431,7 +470,11 @@ impl<T> Grid<T> {
     where
         T: GridCell,
     {
-        self.count_dropped(self.history_size());
+        self.count_dropped_rows(self.history_size(), false);
+        let lines_dropped = self.lines_dropped;
+        if let Some(sink) = self.sink.0.as_mut() {
+            sink.cleared(lines_dropped);
+        }
 
         // Explicitly purge all lines from history.
         self.raw.shrink_lines(self.history_size());
@@ -491,6 +534,30 @@ impl<T> Grid<T> {
         &mut self[point.line][point.column]
     }
 
+    /// fastcnsl patch: hands every row that leaves the top of the grid to
+    /// `sink` from now on.
+    pub fn set_row_sink(&mut self, sink: Box<dyn RowSink<T>>) {
+        self.sink = SinkSlot(Some(sink));
+    }
+
+    /// fastcnsl patch: replaces all rows with `rows`, top to bottom (at
+    /// least `screen_lines` of them, each `columns` wide): the last
+    /// `screen_lines` are the screen, the rest the history, which can't
+    /// grow any further. The display is at the bottom, the cursor at the
+    /// start of the last row, and the dropped-row counters are set to
+    /// `rows_dropped` and `lines_dropped`.
+    pub fn set_content(&mut self, mut rows: Vec<Row<T>>, rows_dropped: u64, lines_dropped: u64) {
+        assert!(rows.len() >= self.lines, "set_content needs a screenful of rows");
+        self.max_scroll_limit = rows.len() - self.lines;
+        rows.reverse();
+        self.raw.replace_inner(rows);
+        self.display_offset = 0;
+        self.cursor.point = Point::new(Line(self.lines as i32 - 1), Column(0));
+        self.saved_cursor.point = self.cursor.point;
+        self.rows_dropped = rows_dropped;
+        self.lines_dropped = lines_dropped;
+    }
+
     /// fastcnsl patch: rows that have left the top of the grid so far.
     #[inline]
     pub fn rows_dropped(&self) -> u64 {
@@ -509,6 +576,12 @@ impl<T: GridCell> Grid<T> {
     /// fastcnsl patch: records that the topmost `count` rows are about to
     /// leave the grid.
     fn count_dropped(&mut self, count: usize) {
+        self.count_dropped_rows(count, true);
+    }
+
+    /// fastcnsl patch: counts the topmost `count` rows as dropped and, with
+    /// `pass_on`, hands them to the sink.
+    fn count_dropped_rows(&mut self, count: usize, pass_on: bool) {
         let count = min(count, self.total_lines());
         if count == 0 {
             return;
@@ -517,6 +590,10 @@ impl<T: GridCell> Grid<T> {
         let ends = (0..count)
             .filter(|&i| ends_line(&self.raw[top + i]))
             .count();
+        if pass_on && let Some(sink) = self.sink.0.as_mut() {
+            let raw = &self.raw;
+            sink.dropped(&mut (0..count).map(|i| &raw[top + i]));
+        }
         self.note_dropped(count, ends);
     }
 

@@ -10,6 +10,7 @@ mod chrome;
 mod config;
 mod detect;
 mod highlight;
+mod history;
 mod input;
 mod lines;
 mod logging;

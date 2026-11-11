@@ -3,7 +3,7 @@
 ## alacritty_terminal 0.26.0
 
 The crates.io release (Apache-2.0, see `alacritty_terminal/LICENSE-APACHE`),
-without its test recordings, plus four changes (marked "fastcnsl patch").
+without its test recordings, plus five changes (marked "fastcnsl patch").
 
 ### Dropped-line counters (`src/grid/mod.rs`, `src/grid/resize.rs`)
 
@@ -11,6 +11,17 @@ without its test recordings, plus four changes (marked "fastcnsl patch").
 the top of the grid (scrollback full, history cleared or shortened, reflow)
 and how many lines ended in them. Line numbers (`src/lines.rs`) use them
 to keep counting from the start of the tab after old lines are gone.
+
+### Row sink (`src/grid/mod.rs`, `src/grid/resize.rs`)
+
+`Grid::set_row_sink()` installs a `RowSink` that gets every row leaving
+the top of the grid (scrollback full, history shortened, reflow) before it
+is reused, and is told when the history is cleared. fastcnsl keeps those
+rows as the tab's history (`src/history/`), so the grid itself stays small.
+`Grid::set_content()` fills a grid with given rows: fastcnsl shows archived
+history through a read-only terminal built that way. The tests are in
+`src/history/vendor_tests.rs`, since a patched dependency's own tests don't
+run.
 
 ### Windows output stall (`src/tty/windows/blocking.rs`)
 

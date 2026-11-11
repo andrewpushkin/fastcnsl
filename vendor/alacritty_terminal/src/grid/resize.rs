@@ -369,6 +369,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let keep = self.max_scroll_limit + self.lines;
         if reversed.len() > keep {
             let ends = reversed[keep..].iter().filter(|r| super::ends_line(r)).count();
+            if let Some(sink) = self.sink.0.as_mut() {
+                sink.dropped(&mut reversed[keep..].iter().rev());
+            }
             self.note_dropped(reversed.len() - keep, ends);
         }
         reversed.truncate(keep);
