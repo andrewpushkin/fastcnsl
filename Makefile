@@ -38,6 +38,19 @@
 #   make screenshot       run on a virtual display -> dist/screenshots/
 #   make shell            interactive shell in the dev container
 #
+# Benchmark against Konsole, xterm, Ptyxis and GNOME Terminal on Ubuntu
+# 26.04 (docker/bench-ubuntu-26.04.Dockerfile, scripts/bench/):
+#
+#   make bench            on Xvfb, software rendering -> dist/bench/
+#   make bench-host       on this machine's display (WSLg) and GPU -> dist/bench-host/
+#   make bench BENCH_ARGS="--reps 5 --terminals fastcnsl,xterm --tests ascii"
+#
+# From WSL, natively on Windows (no Docker except to compile), against
+# Windows Terminal and the classic console (scripts/bench/windows/):
+#
+#   make bench-windows    -> dist/bench-windows/
+#   make bench-windows WIN_BENCH_ARGS="-Reps 5 -Terminals fastcnsl,wt"
+#
 #   make clean            remove build output (target/, dist/), no Docker needed
 #   make distclean        also remove the crate cache and the Docker images
 
@@ -69,7 +82,7 @@ DEV_STAMP := target/.image-dev
 DEV_RUN    = $(call docker_run,$(DEV_IMAGE),target)
 
 .PHONY: all $(PLATFORMS) $(PACKAGES) \
-	build run debug tests test clippy fmt check-all screenshot shell clean distclean
+	build run debug tests test clippy fmt check-all screenshot shell bench bench-host bench-windows clean distclean
 
 # ---------------------------------------------------------------- releases
 
@@ -162,6 +175,27 @@ screenshot: build
 
 shell: $(DEV_STAMP)
 	$(DEV_RUN) bash
+
+# ---------------------------------------------------------------- benchmark
+
+BENCH_IMAGE := fastcnsl-bench-ubuntu-26.04
+BENCH_RUN    = $(call docker_run,$(1) $(BENCH_IMAGE),target/bench-ubuntu-26.04) scripts/bench/run.sh $(BENCH_ARGS)
+# The host's X display; on WSL also its GPU, through Mesa's d3d12 driver.
+# That driver is OpenGL only (Ubuntu's Mesa has no dzn Vulkan), so
+# fastcnsl is started with --gpu opengl there.
+BENCH_HOST  := -e BENCH_DISPLAY=host -e BENCH_OUT=dist/bench-host -e DISPLAY=$(DISPLAY) \
+	-v /tmp/.X11-unix:/tmp/.X11-unix \
+	$(if $(wildcard /dev/dxg),--device /dev/dxg -v /usr/lib/wsl:/usr/lib/wsl:ro \
+		-e LD_LIBRARY_PATH=/usr/lib/wsl/lib -e GALLIUM_DRIVER=d3d12 -e FASTCNSL_GPU=opengl)
+
+bench: target/.image-bench-ubuntu-26.04
+	$(call BENCH_RUN,)
+
+bench-host: target/.image-bench-ubuntu-26.04
+	$(call BENCH_RUN,$(BENCH_HOST))
+
+bench-windows: windows-x86_64
+	scripts/bench/windows.sh $(WIN_BENCH_ARGS)
 
 # ------------------------------------------------------------------ cleanup
 
