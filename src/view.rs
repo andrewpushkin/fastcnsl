@@ -701,10 +701,13 @@ fn draw_search_box(p: &mut Painter<'_>, v: &View<'_>, g: &ui::SearchGeometry, i:
         String::new()
     } else if s.invalid {
         "bad regex".to_owned()
+    } else if s.total == 0 && s.counting {
+        "…".to_owned()
     } else if s.total == 0 {
         "no results".to_owned()
     } else {
-        let plus = if s.total_capped() { "+" } else { "" };
+        // "…" while the history is still being counted.
+        let plus = if s.counting { "…" } else if s.total_capped() { "+" } else { "" };
         match s.index {
             Some(i) => format!("{i}/{}{plus}", s.total),
             None => format!("{}{plus}", s.total),
@@ -1086,7 +1089,7 @@ mod tests {
         let mut f = Fixture::new();
         f.search.open();
         f.search.set_query("foo".into(), &mut t);
-        f.search.refresh(&t);
+        f.search.refresh(&t, &t);
         c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec![])));
         let bg = c.layer(Layer::Background);
         let current = bg.iter().filter(|i| i.color == f.palette.current_match_bg.rgba(1.0)).count();
@@ -1109,7 +1112,7 @@ mod tests {
         f.search.add_box(0);
         f.search.type_text("bar", &mut t);
         f.search.set_color(1, 3);
-        f.search.refresh(&t);
+        f.search.refresh(&t, &t);
         c.paint(400.0, 300.0, |p| draw(p, &t, &f.view(), &chrome(vec![])));
         let bg = c.layer(Layer::Background);
         let count = |col: Rgb| bg.iter().filter(|i| i.color == col.rgba(1.0)).count();

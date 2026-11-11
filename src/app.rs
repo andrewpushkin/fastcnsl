@@ -24,12 +24,13 @@ use crate::config::{Config, ConfigWatcher, GpuBackend, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
 use crate::history::scroll::Scroller;
+use crate::history::search::Searcher;
 use crate::input::{self, MouseButton};
 use crate::lines::{self, LineIndex};
 use crate::logging::{self, TabLog, Upto};
 use crate::remote;
 use crate::render::Renderer;
-use crate::search::Search;
+use crate::search::{Across, Search};
 use crate::shortcuts::{Combo, Command, Keymap};
 use crate::session::{EventProxy, Session, UserEvent};
 use crate::theme::{self, Palette};
@@ -101,6 +102,10 @@ struct Tab {
     scroller: Scroller<EventProxy>,
     /// `scroller.changes()` when line positions were last computed.
     shown_changes: u64,
+    /// Searches through the history, on their own threads.
+    searcher: Searcher,
+    /// `scroller.changes()` when search matches were last placed.
+    search_view: u64,
 }
 
 impl Tab {
@@ -111,10 +116,46 @@ impl Tab {
         f(self.scroller.shown_mut(&mut live))
     }
 
-    /// Runs `f` on the search and the terminal shown.
+    /// Runs `f` on the search and the terminal shown, then goes on into
+    /// the history where that found nothing.
     fn search_with<R>(&mut self, f: impl FnOnce(&mut Search, &mut Term<EventProxy>) -> R) -> R {
+        if self.scroller.changes() != self.search_view {
+            self.search.forget_current();
+        }
+        let r = {
+            let mut live = self.session.term.lock();
+            f(&mut self.search, self.scroller.shown_mut(&mut live))
+        };
+        self.search_follow_up();
+        r
+    }
+
+    /// See `Search::follow_up`.
+    fn search_follow_up(&mut self) {
         let mut live = self.session.term.lock();
-        f(&mut self.search, self.scroller.shown_mut(&mut live))
+        let mut a = Across {
+            live: &mut live,
+            scroller: &mut self.scroller,
+            history: &self.session.history,
+            budget: self.session.budget(),
+            searcher: &mut self.searcher,
+        };
+        self.search.follow_up(&mut a);
+        self.search_view = self.scroller.changes();
+    }
+
+    /// The history searcher has results.
+    fn search_results(&mut self) {
+        let mut live = self.session.term.lock();
+        let mut a = Across {
+            live: &mut live,
+            scroller: &mut self.scroller,
+            history: &self.session.history,
+            budget: self.session.budget(),
+            searcher: &mut self.searcher,
+        };
+        self.search.on_results(&mut a);
+        self.search_view = self.scroller.changes();
     }
 
     /// Scrolls like `Term::scroll_display`, through the whole history.
@@ -728,6 +769,10 @@ impl State {
             None => cfg,
         };
         let listener = EventProxy::new(self.proxy.clone(), id);
+        let proxy = self.proxy.clone();
+        let searcher = Searcher::new(move || {
+            let _ = proxy.send_event(UserEvent::History(id));
+        });
         let session = Session::spawn(cfg, self.grid, listener.clone())
             .map_err(|e| format!("starting {}: {e}", if cfg.shell.is_empty() { "shell" } else { &cfg.shell }))?;
         let code_theme = if self.palette.dark { &cfg.code_theme_dark } else { &cfg.code_theme_light };
@@ -747,6 +792,8 @@ impl State {
             activity: false,
             scroller: Scroller::new(listener),
             shown_changes: 0,
+            searcher,
+            search_view: 0,
         });
         self.relabel();
         self.select_tab(self.tabs.len() - 1);
@@ -1075,7 +1122,19 @@ impl State {
                 tab.bookmarked.clear();
             }
             if tab.search.open {
-                tab.search.refresh(tab.scroller.shown(&live));
+                if tab.scroller.changes() != tab.search_view {
+                    tab.search.forget_current();
+                    tab.search_view = tab.scroller.changes();
+                }
+                tab.search.refresh(tab.scroller.shown(&live), &live);
+                let mut a = Across {
+                    live: &mut live,
+                    scroller: &mut tab.scroller,
+                    history: &tab.session.history,
+                    budget,
+                    searcher: &mut tab.searcher,
+                };
+                tab.search.count_history(&mut a);
             }
             // Code in a window onto older lines: colour what is in view.
             if let Some(w) = tab.scroller.window.as_mut() {
@@ -1134,7 +1193,7 @@ impl State {
         self.last_frame = end;
 
         let tab = &self.tabs[self.active];
-        if animating || self.renderer.needs_rebuild() || tab.search.recount_pending() {
+        if animating || self.renderer.needs_rebuild() || tab.search.recount_pending() || tab.search.boxes.iter().any(|b| b.counting) {
             self.window.request_redraw();
         }
     }
@@ -1396,6 +1455,15 @@ impl State {
     }
 
     fn on_search_key(&mut self, event: &KeyEvent) {
+        let tab = &mut self.tabs[self.active];
+        if tab.scroller.changes() != tab.search_view {
+            tab.search.forget_current();
+        }
+        self.on_search_key_in_view(event);
+        self.tabs[self.active].search_follow_up();
+    }
+
+    fn on_search_key_in_view(&mut self, event: &KeyEvent) {
         let m = self.mods;
         let tab = &mut self.tabs[self.active];
         let mut live = tab.session.term.lock();
@@ -1699,8 +1767,7 @@ impl State {
                             s.focus(i);
                             s.picker = None;
                             let dir = if hit == SearchHit::Prev(i) { Direction::Left } else { Direction::Right };
-                            let mut live = tab.session.term.lock();
-                            s.step(tab.scroller.shown_mut(&mut live), dir);
+                            tab.search_with(|search, term| search.step(term, dir));
                         }
                         SearchHit::Bar(i) => {
                             s.focus(i);
@@ -1941,6 +2008,15 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Term(id, event) => {
                 if st.on_term_event(id, event) {
                     el.exit();
+                }
+            }
+            UserEvent::History(id) => {
+                if let Some(i) = st.tabs.iter().position(|t| t.id == id) {
+                    st.tabs[i].search_results();
+                    if i == st.active {
+                        st.scrolled();
+                        st.window.request_redraw();
+                    }
                 }
             }
             UserEvent::Remote(command, reply) => {

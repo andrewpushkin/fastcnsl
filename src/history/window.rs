@@ -236,6 +236,16 @@ impl<L: EventListener> Window<L> {
         Ok(window)
     }
 
+    /// The global line of the first row.
+    pub fn first_line(&self) -> u64 {
+        self.rows.first().map_or(0, |a| a.line)
+    }
+
+    /// The global line of the last row.
+    pub fn last_line(&self) -> u64 {
+        self.rows.last().map_or(0, |a| a.line)
+    }
+
     /// Absolute rows of history above the screen.
     pub fn history(&self) -> usize {
         self.rows.len() - self.screen

@@ -33,6 +33,8 @@ use crate::history::{self, Budget, History};
 pub enum UserEvent {
     /// An event from the terminal of the tab with this id.
     Term(u64, Event),
+    /// A search through the history of the tab with this id has results.
+    History(u64),
     /// A command from `fastcnsl new-tab/close-tab/quit`, and where to
     /// send the answer.
     Remote(crate::remote::Command, std::sync::mpsc::Sender<crate::remote::Reply>),

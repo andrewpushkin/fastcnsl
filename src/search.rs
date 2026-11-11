@@ -6,7 +6,16 @@
 //! Several searches can run at once, one per box, each highlighting its
 //! matches in its own colour. Typing and match navigation go to the
 //! focused box.
+//!
+//! Searching works on the terminal shown (the live one, or a window onto
+//! older lines). When that has no match in the direction stepped,
+//! [`Search::follow_up`] goes on in the rest of the tab's history (see
+//! `crate::history::search`), in order, before going round. Counts add the
+//! history's matches to the live terminal's.
 
+use std::collections::VecDeque;
+use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::EventListener;
@@ -15,6 +24,9 @@ use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 
+use crate::history::scroll::{At, Scroller, settled};
+use crate::history::search::{Found, Kind, Searcher};
+use crate::history::{Budget, Shared, Snapshot, lock};
 use crate::theme::SEARCH_COLORS;
 
 /// Counting every match in a huge scrollback is bounded.
@@ -41,11 +53,68 @@ pub struct SearchBox {
     pub color: usize,
     count_dirty: bool,
     last_count: Option<Instant>,
+    /// Names the box to the history searcher; never changes.
+    id: u64,
+    /// Goes up when the query changes.
+    query_gen: u64,
+    /// The last step in the terminal shown: its direction, and whether it
+    /// found a match without going round.
+    stepped: Option<(Direction, bool)>,
+    /// Where that step goes on looking, beyond the terminal shown.
+    segments: VecDeque<Segment>,
+    step_dir: Direction,
+    /// Matches in the live terminal, and the current one's place among them.
+    live_total: usize,
+    live_index: Option<usize>,
+    /// The current match is in the live terminal.
+    current_live: bool,
+    /// Matches in history: counted for the query `hist_gen`, in history
+    /// generation `.0` up to line `.1`.
+    hist_total: usize,
+    hist_capped: bool,
+    hist_counted: Option<(u64, u64)>,
+    hist_gen: u64,
+    last_hist_count: Option<Instant>,
+    /// History is still being counted.
+    pub counting: bool,
+}
+
+/// Where a step goes on looking: lines in history (`up` from the end of
+/// the range, or down from its start), or the live terminal from its
+/// bottom (`up`) or top.
+#[derive(Debug, Clone, PartialEq)]
+enum Segment {
+    History(Range<u64>, bool),
+    Live(bool),
+}
+
+/// The tab's terminals and history, for searching beyond the terminal shown.
+pub struct Across<'a, L: EventListener> {
+    pub live: &'a mut Term<L>,
+    pub scroller: &'a mut Scroller<L>,
+    pub history: &'a Shared,
+    pub budget: Budget,
+    pub searcher: &'a mut Searcher,
 }
 
 impl SearchBox {
     fn new(color: usize) -> Self {
+        static IDS: AtomicU64 = AtomicU64::new(0);
         Self {
+            id: IDS.fetch_add(1, Ordering::Relaxed),
+            query_gen: 0,
+            stepped: None,
+            segments: VecDeque::new(),
+            step_dir: Direction::Left,
+            live_total: 0,
+            live_index: None,
+            current_live: true,
+            hist_total: 0,
+            hist_capped: false,
+            hist_counted: None,
+            hist_gen: 0,
+            last_hist_count: None,
+            counting: false,
             query: String::new(),
             regex_mode: false,
             invalid: false,
@@ -61,7 +130,22 @@ impl SearchBox {
     }
 
     pub fn total_capped(&self) -> bool {
-        self.total >= COUNT_CAP
+        self.total >= COUNT_CAP || self.hist_capped
+    }
+
+    /// The pattern searched for, None without a valid query.
+    fn pattern(&self) -> Option<String> {
+        self.regex.as_ref()?;
+        Some(if self.regex_mode { self.query.clone() } else { escape(&self.query) })
+    }
+
+    /// Total and position from the history's and the live terminal's counts.
+    fn combine(&mut self) {
+        self.total = (self.hist_total + self.live_total).min(COUNT_CAP);
+        self.index = match self.live_index {
+            Some(i) if self.current_live && !self.hist_capped && self.hist_total + i <= COUNT_CAP => Some(self.hist_total + i),
+            _ => None,
+        };
     }
 
     fn set_query<T: EventListener>(&mut self, query: String, term: &mut Term<T>) {
@@ -83,6 +167,11 @@ impl SearchBox {
     fn rebuild(&mut self) {
         self.invalid = false;
         self.regex = None;
+        self.query_gen += 1;
+        self.hist_total = 0;
+        self.hist_capped = false;
+        self.hist_counted = None;
+        self.segments.clear();
         if self.query.is_empty() {
             return;
         }
@@ -108,44 +197,112 @@ impl SearchBox {
             Direction::Right => Side::Left,
             Direction::Left => Side::Right,
         };
-        if let Some(m) = term.search_next(regex, origin, dir, side, None) {
-            term.scroll_to_point(*m.start());
-            self.current = Some(m);
-            self.count(term);
+        match term.search_next(regex, origin, dir, side, None) {
+            Some(m) => {
+                // Ahead of the origin, or found by going round the end.
+                let ahead = match dir {
+                    Direction::Right => *m.start() >= origin,
+                    Direction::Left => *m.end() <= origin,
+                };
+                self.stepped = Some((dir, ahead));
+                term.scroll_to_point(*m.start());
+                self.current = Some(m);
+                self.count(term);
+            }
+            None => self.stepped = Some((dir, false)),
         }
     }
 
-    fn refresh<T>(&mut self, term: &Term<T>) {
+    /// Matches on the screen of `shown`; the live terminal's count when due.
+    fn refresh<T>(&mut self, shown: &Term<T>, live: &Term<T>) {
         self.visible.clear();
         let Some(regex) = self.regex.as_mut() else { return };
-        let offset = term.grid().display_offset() as i32;
+        let offset = shown.grid().display_offset() as i32;
         let start = Point::new(Line(-offset), Column(0));
-        let end = Point::new(Line(term.screen_lines() as i32 - 1 - offset), term.last_column());
-        self.visible.extend(RegexIter::new(start, end, Direction::Right, term, regex));
+        let end = Point::new(Line(shown.screen_lines() as i32 - 1 - offset), shown.last_column());
+        self.visible.extend(RegexIter::new(start, end, Direction::Right, shown, regex));
 
         let due = self.last_count.is_none_or(|t| t.elapsed() >= RECOUNT_EVERY);
         if self.count_dirty && due {
-            self.count(term);
+            self.count(live);
         }
     }
 
+    /// Counts the matches in `term`, the live terminal.
     fn count<T>(&mut self, term: &Term<T>) {
         self.count_dirty = false;
         self.last_count = Some(Instant::now());
-        self.total = 0;
-        self.index = None;
+        self.live_total = 0;
+        self.live_index = None;
+        self.combine();
         let Some(regex) = self.regex.as_mut() else { return };
         let start = Point::new(term.topmost_line(), Column(0));
         let end = Point::new(term.bottommost_line(), term.last_column());
         let current_start = self.current.as_ref().map(|m| *m.start());
         for m in RegexIter::new(start, end, Direction::Right, term, regex) {
-            self.total += 1;
+            self.live_total += 1;
             if Some(*m.start()) == current_start {
-                self.index = Some(self.total);
+                self.live_index = Some(self.live_total);
             }
-            if self.total >= COUNT_CAP {
+            if self.live_total >= COUNT_CAP {
                 break;
             }
+        }
+        self.combine();
+    }
+
+    /// Goes on looking along the segments left, after the terminal shown
+    /// had no match: a history segment starts a search and waits for it.
+    fn run_segments<L: EventListener + Clone>(&mut self, a: &mut Across<'_, L>, snap: &Snapshot) {
+        let Some(pattern) = self.pattern() else { return };
+        while let Some(segment) = self.segments.pop_front() {
+            match segment {
+                Segment::History(range, up) => {
+                    if !range.is_empty() {
+                        a.searcher.step(snap.clone(), &pattern, range, up, self.id);
+                        return;
+                    }
+                }
+                Segment::Live(up) => {
+                    let Some(regex) = self.regex.as_mut() else { return };
+                    let (origin, dir, side) = if up {
+                        (Point::new(a.live.bottommost_line(), a.live.last_column()), Direction::Left, Side::Right)
+                    } else {
+                        (Point::new(a.live.topmost_line(), Column(0)), Direction::Right, Side::Left)
+                    };
+                    if let Some(m) = a.live.search_next(regex, origin, dir, side, None) {
+                        a.scroller.to_bottom(a.live);
+                        a.live.scroll_to_point(*m.start());
+                        self.current = Some(m);
+                        self.current_live = true;
+                        self.count(a.live);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// A history search found a match on global line `line`: shows it and
+    /// makes the match there the current one.
+    fn land<L: EventListener + Clone>(&mut self, a: &mut Across<'_, L>, line: u64) {
+        a.scroller.show_line(a.live, a.history, &a.budget, line);
+        let up = self.step_dir == Direction::Left;
+        let Some(regex) = self.regex.as_mut() else { return };
+        let Some(w) = a.scroller.window.as_mut() else { return };
+        let Some(row) = w.row_of(At { line, sub: if up { u32::MAX } else { 0 } }) else { return };
+        let term = &mut w.term;
+        let hist = term.grid().history_size() as i32;
+        let (origin, side) = if up {
+            (Point::new(Line(row as i32 - hist), term.last_column()), Side::Right)
+        } else {
+            (Point::new(Line(row as i32 - hist), Column(0)), Side::Left)
+        };
+        if let Some(m) = term.search_next(regex, origin, self.step_dir, side, None) {
+            term.scroll_to_point(*m.start());
+            self.current = Some(m);
+            self.current_live = false;
+            self.combine();
         }
     }
 }
@@ -309,10 +466,126 @@ impl Search {
         self.picker = None;
     }
 
-    /// Recomputes on-screen matches, and the totals when due.
-    pub fn refresh<T>(&mut self, term: &Term<T>) {
+    /// Recomputes on-screen matches in `shown`, and the live terminal's
+    /// totals when due.
+    pub fn refresh<T>(&mut self, shown: &Term<T>, live: &Term<T>) {
         for b in &mut self.boxes {
-            b.refresh(term);
+            b.refresh(shown, live);
+        }
+    }
+
+    /// After searching the terminal shown: where a step found no match
+    /// ahead, goes on in the rest of the history before going round.
+    pub fn follow_up<L: EventListener + Clone>(&mut self, a: &mut Across<'_, L>) {
+        for b in &mut self.boxes {
+            let Some((dir, ahead)) = b.stepped.take() else { continue };
+            a.searcher.cancel_step(b.id);
+            b.segments.clear();
+            b.current_live = !a.scroller.in_window();
+            if a.scroller.in_window() {
+                // The step counted the window's matches: count the live terminal's.
+                b.count(a.live);
+            }
+            if ahead || b.regex.is_none() {
+                continue;
+            }
+            let snap = settled(a.live, a.history);
+            let (first, end) = (snap.first_line(), snap.end_line());
+            let up = dir == Direction::Left;
+            b.step_dir = dir;
+            b.segments = match &a.scroller.window {
+                None => [Segment::History(first..end, up)].into(),
+                Some(w) => {
+                    let (top, bottom) = (w.first_line(), (w.last_line() + 1).min(end));
+                    let above = Segment::History(first..top, up);
+                    let below = Segment::History(bottom..end, up);
+                    let mut s = VecDeque::new();
+                    if up {
+                        s.push_back(above);
+                        if !w.reaches_end {
+                            s.push_back(Segment::Live(true));
+                        }
+                        s.push_back(below);
+                    } else {
+                        s.push_back(below);
+                        if !w.reaches_end {
+                            s.push_back(Segment::Live(false));
+                        }
+                        s.push_back(above);
+                    }
+                    s
+                }
+            };
+            b.run_segments(a, &snap);
+        }
+    }
+
+    /// Takes the history searcher's results: matches found, counts.
+    pub fn on_results<L: EventListener + Clone>(&mut self, a: &mut Across<'_, L>) {
+        for (owner, kind, found) in a.searcher.poll() {
+            let Some(b) = self.boxes.iter_mut().find(|b| b.id == owner) else { continue };
+            match (kind, found) {
+                (Kind::Step, Found::Line(line)) => b.land(a, line),
+                (Kind::Step, Found::NotFound) => {
+                    let snap = settled(a.live, a.history);
+                    b.run_segments(a, &snap);
+                }
+                (Kind::Count, Found::Count { matches, capped }) => {
+                    b.hist_total += matches;
+                    b.hist_capped |= capped || b.hist_total >= COUNT_CAP;
+                    b.combine();
+                }
+                _ => {}
+            }
+        }
+        for b in &mut self.boxes {
+            b.counting = a.searcher.busy(b.id, Kind::Count);
+        }
+    }
+
+    /// Counts matches in history, adding lines as they arrive; a cleared
+    /// history is counted again. Call once a frame while search is open.
+    pub fn count_history<L: EventListener>(&mut self, a: &mut Across<'_, L>) {
+        let (first, end, generation) = {
+            let h = lock(a.history);
+            (h.first_line(), h.end_line(), h.generation())
+        };
+        for b in &mut self.boxes {
+            if b.hist_counted.is_some_and(|(g, _)| g != generation) || (b.hist_gen != b.query_gen && a.searcher.busy(b.id, Kind::Count)) {
+                // Cleared, or counting for a query since changed.
+                a.searcher.cancel(b.id);
+                b.segments.clear();
+                b.hist_total = 0;
+                b.hist_capped = false;
+                b.hist_counted = None;
+            }
+            b.counting = a.searcher.busy(b.id, Kind::Count);
+            let Some(pattern) = b.pattern() else { continue };
+            let from = b.hist_counted.map_or(first, |(_, to)| to.max(first));
+            let due = b.last_hist_count.is_none_or(|t| t.elapsed() >= RECOUNT_EVERY) || b.hist_counted.is_none();
+            if b.hist_capped || b.counting || end <= from || !due {
+                b.combine();
+                continue;
+            }
+            let snap = lock(a.history).snapshot();
+            a.searcher.count(snap, &pattern, from..end, COUNT_CAP - b.hist_total, b.id);
+            b.hist_counted = Some((generation, end));
+            b.hist_gen = b.query_gen;
+            b.last_hist_count = Some(Instant::now());
+            b.counting = true;
+        }
+    }
+
+    /// A history search or count is running for some box.
+    pub fn busy(&self, searcher: &Searcher) -> bool {
+        self.boxes.iter().any(|b| searcher.busy(b.id, Kind::Step) || searcher.busy(b.id, Kind::Count))
+    }
+
+    /// The terminal shown changed under the matches: they no longer point
+    /// at the right text.
+    pub fn forget_current(&mut self) {
+        for b in &mut self.boxes {
+            b.current = None;
         }
     }
 
@@ -345,7 +618,7 @@ mod tests {
         let mut s = Search::new();
         s.open();
         s.set_query("foo".into(), &mut term);
-        s.refresh(&term);
+        s.refresh(&term, &term);
         assert_eq!(s.active_box().visible.len(), 3);
         assert_eq!(s.active_box().total, 3);
         assert!(s.active_box().current.is_some());
@@ -386,7 +659,7 @@ mod tests {
         let mut s = Search::new();
         s.open();
         s.set_query(String::new(), &mut term);
-        s.refresh(&term);
+        s.refresh(&term, &term);
         assert!(s.active_box().visible.is_empty());
         assert_eq!((s.active_box().total, s.active_box().index, s.active_box().current.is_some()), (0, None, false));
     }
@@ -397,7 +670,7 @@ mod tests {
         let mut s = Search::new();
         s.open();
         s.set_query("foo".into(), &mut term);
-        s.refresh(&term);
+        s.refresh(&term, &term);
         assert_eq!(s.active_box().visible.len(), 2);
         s.close();
         assert!(!s.open && !s.focused);
@@ -432,10 +705,10 @@ mod tests {
         s.open();
         s.content_changed();
         assert!(s.recount_pending());
-        s.refresh(&term);
+        s.refresh(&term, &term);
         assert!(s.recount_pending(), "throttled: set_query counted just now");
         std::thread::sleep(RECOUNT_EVERY);
-        s.refresh(&term);
+        s.refresh(&term, &term);
         assert!(!s.recount_pending(), "recounted once the throttle window passed");
     }
 
@@ -459,7 +732,7 @@ mod tests {
         let mut s = Search::new();
         s.open();
         s.set_query("foo".into(), &mut term);
-        s.refresh(&term);
+        s.refresh(&term, &term);
         assert_eq!(s.active_box().visible.len(), 2);
         assert_eq!(s.active_box().visible[0].start().column.0, 5, "after two double-width chars and a space");
     }
@@ -496,7 +769,7 @@ mod tests {
         assert_ne!(s.boxes[1].color, s.boxes[0].color, "with a colour of its own");
         s.type_text("ba", &mut term);
         s.type_text("r", &mut term);
-        s.refresh(&term);
+        s.refresh(&term, &term);
         assert_eq!((s.boxes[0].query.as_str(), s.boxes[0].total), ("foo", 2));
         assert_eq!((s.boxes[1].query.as_str(), s.boxes[1].total), ("bar", 2));
         assert_eq!((s.boxes[0].visible.len(), s.boxes[1].visible.len()), (2, 2));
@@ -576,4 +849,122 @@ mod tests {
         s.content_changed();
         assert!(s.boxes.iter().all(|b| b.count_dirty));
     }
+
+    /// Search through a tab that keeps its history.
+    mod across {
+        use std::time::{Duration, Instant};
+
+        use alacritty_terminal::grid::Dimensions;
+
+        use super::super::*;
+        use crate::history::scroll::Scroller;
+        use crate::history::search::Searcher;
+        use crate::history::{Budget, CELL_BYTES, History, Shared, start};
+        use crate::testterm::{Quiet, TestTerm, temp_dir};
+
+        struct A {
+            t: TestTerm,
+            history: Shared,
+            budget: Budget,
+            scroller: Scroller<Quiet>,
+            searcher: Searcher,
+            search: Search,
+        }
+
+        impl A {
+            /// 20 000 lines, "needle" on lines 5, 9000 and 19 990 (live).
+            fn new(tag: &str) -> Self {
+                let (history, sink) = start(History::new(4096, temp_dir(tag)).with_chunk_bytes(512));
+                let mut t = TestTerm::new(20, 10, 50);
+                t.term.grid_mut().set_row_sink(Box::new(sink));
+                let text: String = (0..20_000).map(|i| if [5, 9000, 19_990].contains(&i) { format!("a needle {i}\n") } else { format!("hay {i}\n") }).collect();
+                t.feed(&text);
+                let mut search = Search::new();
+                search.open();
+                Self { t, history, budget: Budget { bytes: 200 * 4 * 20 * CELL_BYTES }, scroller: Scroller::new(Quiet), searcher: Searcher::new(|| {}), search }
+            }
+
+            fn with<R>(&mut self, f: impl FnOnce(&mut Search, &mut Across<'_, Quiet>) -> R) -> R {
+                let mut a = Across { live: &mut self.t.term, scroller: &mut self.scroller, history: &self.history, budget: self.budget, searcher: &mut self.searcher };
+                f(&mut self.search, &mut a)
+            }
+
+            /// What the app does around a search action on the terminal shown.
+            fn act(&mut self, f: impl FnOnce(&mut Search, &mut Term<Quiet>)) {
+                f(&mut self.search, self.scroller.shown_mut(&mut self.t.term));
+                self.with(|s, a| s.follow_up(a));
+                self.settle();
+            }
+
+            /// Takes results until no history search runs.
+            fn settle(&mut self) {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    self.with(|s, a| s.on_results(a));
+                    if !self.search.busy(&self.searcher) {
+                        return;
+                    }
+                    assert!(Instant::now() < deadline, "search never finished");
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+
+            /// Text of the current match's row, which must be on screen.
+            fn current(&self) -> String {
+                let term = self.scroller.shown(&self.t.term);
+                let m = self.search.active_box().current.clone().expect("a current match");
+                let grid = term.grid();
+                let top = -(grid.display_offset() as i32);
+                assert!((top..top + grid.screen_lines() as i32).contains(&m.start().line.0), "on screen");
+                let row = &grid[m.start().line];
+                (0..grid.columns()).map(|c| row[Column(c)].c).collect::<String>().trim_end().to_owned()
+            }
+        }
+
+        #[test]
+        fn shift_enter_walks_history_and_wraps() {
+            let mut a = A::new("walk");
+            a.act(|s, t| s.set_query("needle".into(), t));
+            assert_eq!(a.current(), "a needle 19990");
+            assert!(!a.scroller.in_window());
+            let mut seen = Vec::new();
+            for _ in 0..3 {
+                a.act(|s, t| s.step(t, Direction::Left));
+                seen.push(a.current());
+            }
+            assert_eq!(seen, ["a needle 9000", "a needle 5", "a needle 19990"]);
+            assert!(!a.scroller.in_window(), "back in the live terminal");
+            // And down again.
+            a.act(|s, t| s.step(t, Direction::Right));
+            assert_eq!(a.current(), "a needle 5");
+            a.act(|s, t| s.step(t, Direction::Right));
+            assert_eq!(a.current(), "a needle 9000");
+        }
+
+        #[test]
+        fn count_spans_history() {
+            let mut a = A::new("count");
+            a.act(|s, t| s.set_query("needle".into(), t));
+            a.with(|s, x| s.count_history(x));
+            a.settle();
+            let b = a.search.active_box();
+            assert_eq!((b.total, b.index, b.counting), (3, Some(3), false));
+        }
+
+        #[test]
+        fn clear_cancels_history_search() {
+            let mut a = A::new("clear");
+            a.act(|s, t| s.set_query("needle".into(), t));
+            a.with(|s, x| s.count_history(x));
+            a.t.feed("\x1b[3J");
+            a.t.term.flush_row_sink();
+            crate::history::sync(&a.history);
+            a.with(|s, x| s.count_history(x));
+            a.settle();
+            a.with(|s, x| s.count_history(x));
+            a.settle();
+            assert_eq!(a.search.active_box().total, 1, "only the live terminal's match is left");
+        }
+    }
 }
+
