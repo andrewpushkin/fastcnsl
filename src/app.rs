@@ -106,6 +106,8 @@ struct Tab {
     searcher: Searcher,
     /// `scroller.changes()` when search matches were last placed.
     search_view: u64,
+    /// The log is still writing lines from history (see `TabLog::write_new`).
+    log_behind: bool,
 }
 
 impl Tab {
@@ -182,6 +184,25 @@ impl Tab {
         let mut live = self.session.term.lock();
         let budget = self.session.budget();
         self.scroller.set_offset(&mut live, &self.session.history, &budget, offset);
+    }
+
+    /// One pass of the log, if there is one: from history while it is
+    /// behind. Returns true while there is more to write from history.
+    fn log_pass(&mut self, upto: Upto) -> std::io::Result<bool> {
+        let Some(log) = self.log.as_mut() else { return Ok(false) };
+        let mut term = self.session.term.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return Ok(false);
+        }
+        let snap = log.behind(term.grid()).then(|| crate::history::scroll::settled(&mut term, &self.session.history));
+        log.write_new(snap.as_ref(), term.grid(), upto)
+    }
+
+    /// A settled snapshot of the history and the live grid's text.
+    fn text_snapshot(&self) -> (crate::history::Snapshot, String) {
+        let mut term = self.session.term.lock();
+        let snap = crate::history::scroll::settled(&mut term, &self.session.history);
+        (snap, logging::all_text(term.grid()))
     }
 
     /// Drops a stale window (history cleared, size changed).
@@ -794,6 +815,7 @@ impl State {
             shown_changes: 0,
             searcher,
             search_view: 0,
+            log_behind: false,
         });
         self.relabel();
         self.select_tab(self.tabs.len() - 1);
@@ -827,27 +849,38 @@ impl State {
         tab.name.as_deref().unwrap_or(&tab.app)
     }
 
-    /// Copies all of tab `i`'s text to the clipboard.
+    /// Copies tab `i`'s text to the clipboard: its last `COPY_LINES` lines.
     fn copy_tab_text(&mut self, i: usize) {
-        let text = logging::all_text(self.tabs[i].session.term.lock().grid());
-        let lines = text.lines().count();
+        let (text, lines, capped) = {
+            let tab = &self.tabs[i];
+            let mut term = tab.session.term.lock();
+            let snap = crate::history::scroll::settled(&mut term, &tab.session.history);
+            logging::tail_text(&snap, term.grid(), logging::COPY_LINES)
+        };
         let label = self.tabs[i].label.clone();
+        let copied = if capped { format!("Copied the last {lines} lines of {label}") } else { format!("Copied {lines} lines of {label}") };
         match self.clipboard.as_mut().map(|cb| cb.set_text(text)) {
-            Some(Ok(())) => self.show(format!("Copied {lines} lines of {label}")),
+            Some(Ok(())) => self.show(copied),
             Some(Err(e)) => self.show(format!("Could not copy: {e}")),
             None => self.show("No clipboard available".to_owned()),
         }
     }
 
-    /// Saves all of tab `i`'s text to a new file in the logs folder.
+    /// Saves all of tab `i`'s text to a new file in the logs folder, on a
+    /// thread of its own: a long history takes a while.
     fn save_tab_text(&mut self, cfg: &Config, i: usize) {
         let path = logging::new_file(&cfg.log_dir(), i + 1, self.tab_file_name(i), "txt");
-        let result = logging::save_text(&path, self.tabs[i].session.term.lock().grid());
+        let (snap, live_text) = self.tabs[i].text_snapshot();
         let shown = logging::display_path(&path);
-        match result {
-            Ok(()) => self.show(format!("Saved {} to {shown}", self.tabs[i].label)),
-            Err(e) => self.show(format!("Could not save {shown}: {e}")),
-        }
+        let label = self.tabs[i].label.clone();
+        let proxy = self.proxy.clone();
+        logging::save_text_in_background(path, snap, live_text, move |result| {
+            let message = match result {
+                Ok(()) => format!("Saved {label} to {shown}"),
+                Err(e) => format!("Could not save {shown}: {e}"),
+            };
+            let _ = proxy.send_event(UserEvent::Notice(message));
+        });
     }
 
     /// Starts logging tab `i` to a new file, beginning with the text it
@@ -882,30 +915,29 @@ impl State {
     /// full-screen program's screen isn't logged; its output is, after it.
     fn write_log(&mut self, i: usize) {
         let tab = &mut self.tabs[i];
-        let Some(log) = tab.log.as_mut() else { return };
-        let term = tab.session.term.lock();
-        if term.mode().contains(TermMode::ALT_SCREEN) {
-            return;
-        }
-        if let Err(e) = log.write_new(term.grid(), Upto::Complete) {
-            let shown = logging::display_path(log.path());
-            drop(term);
-            tab.log = None;
-            self.show(format!("Stopped logging to {shown}: {e}"));
+        match tab.log_pass(Upto::Complete) {
+            Ok(behind) => tab.log_behind = behind,
+            Err(e) => {
+                let shown = tab.log.as_ref().map(|l| logging::display_path(l.path())).unwrap_or_default();
+                tab.log = None;
+                tab.log_behind = false;
+                self.show(format!("Stopped logging to {shown}: {e}"));
+            }
         }
     }
 
     /// Stops logging tab `i`, writing the line the cursor is on too.
     fn finish_log(&mut self, i: usize) -> Option<std::path::PathBuf> {
         let tab = &mut self.tabs[i];
-        let mut log = tab.log.take()?;
-        let term = tab.session.term.lock();
-        if !term.mode().contains(TermMode::ALT_SCREEN)
-            && let Err(e) = log.write_new(term.grid(), Upto::Cursor)
-        {
-            log::warn!("logging to {}: {e}", log.path().display());
+        let path = tab.log.as_ref()?.path().to_owned();
+        // Everything still waiting in history first.
+        while let Ok(true) = tab.log_pass(Upto::Complete) {}
+        if let Err(e) = tab.log_pass(Upto::Cursor) {
+            log::warn!("logging to {}: {e}", path.display());
         }
-        Some(log.path().to_owned())
+        tab.log = None;
+        tab.log_behind = false;
+        Some(path)
     }
 
     fn stop_log(&mut self, i: usize) {
@@ -1082,8 +1114,15 @@ impl State {
     }
 
     fn redraw(&mut self, cfg: &Config) {
+        // Logs started on a long history catch up a pass a frame.
+        for i in 0..self.tabs.len() {
+            if self.tabs[i].log_behind {
+                self.write_log(i);
+            }
+        }
         let idle = cfg.ui_idle_opacity;
         let mut animating = self.scrollbar.fade.update(if self.scrollbar.active() { 1.0 } else { idle });
+        animating |= self.tabs.iter().any(|t| t.log_behind);
         let search_target = if self.tab().search.focused || self.search_hover { 1.0 } else { idle };
         animating |= self.search_fade.update(search_target);
 
@@ -1267,7 +1306,7 @@ impl State {
     }
 
     fn copy_selection(&mut self) {
-        let text = self.tab_mut().shown(|t| t.selection_to_string());
+        let text = self.tab_mut().shown(|t| t.selection_to_string()).map(|t| logging::keep_last_lines(t, logging::COPY_LINES).0);
         if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut())
             && let Err(e) = cb.set_text(text)
         {
@@ -1431,15 +1470,15 @@ impl State {
             let line = highlight::command_line(term.grid());
             tab.code.on_enter(term.grid(), &line);
             tab.lines.on_enter(term.grid());
+            ran = detect::program_name(&line).filter(|name| *name != tab.app);
+            drop(term);
             // The command line goes into the log as entered.
-            if let Some(log) = tab.log.as_mut()
-                && let Err(e) = log.write_new(term.grid(), Upto::Cursor)
-            {
+            if let Err(e) = tab.log_pass(Upto::Cursor) {
                 log::warn!("logging: {e}");
             }
-            ran = detect::program_name(&line).filter(|name| *name != tab.app);
+        } else {
+            drop(term);
         }
-        drop(term);
         // Typing goes back to the live terminal, at the bottom.
         let mut live = tab.session.term.lock();
         tab.scroller.to_bottom(&mut live);
@@ -2010,6 +2049,7 @@ impl ApplicationHandler<UserEvent> for App {
                     el.exit();
                 }
             }
+            UserEvent::Notice(message) => st.show(message),
             UserEvent::History(id) => {
                 if let Some(i) = st.tabs.iter().position(|t| t.id == id) {
                     st.tabs[i].search_results();

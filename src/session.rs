@@ -35,6 +35,9 @@ pub enum UserEvent {
     Term(u64, Event),
     /// A search through the history of the tab with this id has results.
     History(u64),
+    /// A message for the notice at the bottom of the window (work done on
+    /// another thread, such as saving a tab's text).
+    Notice(String),
     /// A command from `fastcnsl new-tab/close-tab/quit`, and where to
     /// send the answer.
     Remote(crate::remote::Command, std::sync::mpsc::Sender<crate::remote::Reply>),
