@@ -22,7 +22,7 @@ use crate::lines::{self, Pos};
 pub const COPY_LINES: usize = 100_000;
 /// Lines a log writes from history in one pass, so catching up on a long
 /// history doesn't hold up the window.
-const CATCH_UP: u64 = 50_000;
+const CATCH_UP: u64 = 10_000;
 
 /// Writes history lines `range` of `snap`, each after `stamp`; a range lost
 /// to a disk error as its marker line.
@@ -104,6 +104,45 @@ impl TabLog {
     /// history to [`Self::write_new`].
     pub fn behind(&self, grid: &Grid<Cell>) -> bool {
         self.next.is_none_or(|next| next < grid.lines_dropped())
+    }
+
+    /// Writes everything left, the cursor's line too, and closes the log:
+    /// the lines from history on a thread of its own, since a log started
+    /// on a long history can be far behind. `snap` is the history, settled.
+    /// The live grid's part is taken now. `done` gets the result there.
+    pub fn finish_in_background(
+        mut self,
+        snap: Snapshot,
+        grid: &Grid<Cell>,
+        done: impl FnOnce(io::Result<()>) + Send + 'static,
+    ) -> std::thread::JoinHandle<()> {
+        let dropped = grid.lines_dropped();
+        let stamp = if self.timestamps { format!("[{}] ", local_time("%H:%M:%S")) } else { String::new() };
+        let mut next = self.next.unwrap_or(snap.first_line());
+        let mut head = Vec::new();
+        let first = snap.first_line().min(dropped);
+        if next < first {
+            let lost = first - next;
+            let _ = writeln!(head, "[fastcnsl: {lost} lines scrolled out of the scrollback before they could be logged]");
+            next = first;
+        }
+        let from_history = next..dropped.min(snap.end_line());
+        let mut live = Vec::new();
+        let mut live_next = next.max(dropped);
+        let lead = partial_text(&snap);
+        let _ = write_lines(&mut live, grid, Upto::Cursor, &mut live_next, &mut None, &stamp, &mut String::new(), &lead);
+        std::thread::Builder::new()
+            .name("finish log".into())
+            .spawn(move || {
+                let result = (|| {
+                    self.out.write_all(&head)?;
+                    write_history(&mut self.out, &snap, from_history, &stamp)?;
+                    self.out.write_all(&live)?;
+                    self.out.flush()
+                })();
+                done(result);
+            })
+            .expect("log thread")
     }
 
     /// [`Self::write_new`] up to `upto` needs the tab's history: lines that
@@ -565,6 +604,23 @@ mod tests {
             t.feed("\nafter\n");
             pass(&mut t, &mut log);
             assert_eq!(read(&path), format!("before\n{long}\nafter\n"));
+        }
+
+        #[test]
+        fn stopping_a_log_far_behind_finishes_it_in_the_background() {
+            let (mut t, history) = tab("finish");
+            numbered(&mut t, 0, 120_000);
+            t.feed("$ ");
+            let path = temp_dir("finish-out").join("f.log");
+            let log = TabLog::create(&path, false).unwrap();
+            assert!(log.needs_history(t.term.grid(), Upto::Cursor));
+            let snap = snap(&mut t, &history);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = log.finish_in_background(snap, t.term.grid(), move |r| tx.send(r.is_ok()).unwrap());
+            assert!(rx.recv_timeout(Duration::from_secs(30)).unwrap());
+            worker.join().unwrap();
+            let want: String = (0..120_000).map(|i| format!("line {i}\n")).collect::<String>() + "$\n";
+            assert!(read(&path) == want, "every line once, the cursor's last");
         }
 
         #[test]

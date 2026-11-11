@@ -253,6 +253,8 @@ struct State {
     wake_at: Option<Instant>,
     /// Window buttons are in the tab bar rather than an OS title bar.
     custom_title_bar: bool,
+    /// Logs being finished from history on their own threads.
+    finishing_logs: Vec<std::thread::JoinHandle<()>>,
     /// For double-click on the empty tab bar (maximize).
     last_bar_click: Option<Instant>,
     /// Cursor last sent to the window system.
@@ -474,6 +476,7 @@ impl App {
             grid,
             wake_at: None,
             custom_title_bar: custom,
+            finishing_logs: Vec::new(),
             last_bar_click: None,
             cursor: CursorIcon::Text,
             startup: String::new(),
@@ -930,13 +933,31 @@ impl State {
     fn finish_log(&mut self, i: usize) -> Option<std::path::PathBuf> {
         let tab = &mut self.tabs[i];
         let path = tab.log.as_ref()?.path().to_owned();
-        // Everything still waiting in history first.
-        while let Ok(true) = tab.log_pass(Upto::Complete) {}
+        tab.log_behind = false;
+        let mut term = tab.session.term.lock();
+        let needs_history = !term.mode().contains(TermMode::ALT_SCREEN)
+            && tab.log.as_ref().is_some_and(|l| l.needs_history(term.grid(), Upto::Cursor));
+        if needs_history {
+            // Lines still waiting in history: written on a thread of their own.
+            let snap = crate::history::scroll::settled(&mut term, &tab.session.history);
+            let log = tab.log.take()?;
+            let proxy = self.proxy.clone();
+            let shown = logging::display_path(&path);
+            let worker = log.finish_in_background(snap, term.grid(), move |result| {
+                if let Err(e) = result {
+                    let _ = proxy.send_event(UserEvent::Notice(format!("Could not finish {shown}: {e}")));
+                }
+            });
+            drop(term);
+            self.finishing_logs.retain(|t| !t.is_finished());
+            self.finishing_logs.push(worker);
+            return Some(path);
+        }
+        drop(term);
         if let Err(e) = tab.log_pass(Upto::Cursor) {
             log::warn!("logging to {}: {e}", path.display());
         }
         tab.log = None;
-        tab.log_behind = false;
         Some(path)
     }
 
@@ -2161,6 +2182,10 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(st) = self.state.as_mut() {
             for i in 0..st.tabs.len() {
                 st.finish_log(i);
+            }
+            // Logs finishing from history are written to the end.
+            for worker in st.finishing_logs.drain(..) {
+                let _ = worker.join();
             }
         }
     }

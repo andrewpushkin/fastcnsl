@@ -390,6 +390,7 @@ fn for_each_cell(bytes: &[u8], mut f: impl FnMut(&Cell) -> bool) {
 }
 
 /// Appends the cells of an encoded line to `out`.
+#[cfg(test)]
 pub fn decode(bytes: &[u8], out: &mut Vec<Cell>) {
     for_each_cell(bytes, |cell| {
         out.push(cell.clone());
@@ -450,6 +451,7 @@ fn lay_out(source: Source<'_>, columns: usize, mut cell: impl FnMut(usize, &Cell
     }
 }
 
+#[cfg(test)]
 fn from_cells(cells: &[Cell]) -> impl FnMut(&mut dyn FnMut(&Cell) -> bool) + '_ {
     move |f| {
         for c in cells {
@@ -468,6 +470,7 @@ fn from_bytes(bytes: &[u8]) -> impl FnMut(&mut dyn FnMut(&Cell) -> bool) + '_ {
 /// a wide character that doesn't fit moved to the next row behind a
 /// LEADING_WIDE_CHAR_SPACER, each row padded to `columns` with default
 /// cells. An empty line is one row.
+#[cfg(test)]
 pub fn wrap(cells: &[Cell], columns: usize, from: usize, to: usize, out: &mut Vec<Row<Cell>>) {
     wrap_from(&mut from_cells(cells), columns, from, to, out);
 }
@@ -512,6 +515,7 @@ fn wrap_from(source: Source<'_>, columns: usize, from: usize, to: usize, out: &m
 }
 
 /// How many rows the line takes at `columns`.
+#[cfg(test)]
 pub fn row_count(cells: &[Cell], columns: usize) -> usize {
     count_rows(&mut from_cells(cells), columns)
 }
