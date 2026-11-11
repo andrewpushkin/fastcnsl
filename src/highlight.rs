@@ -13,17 +13,43 @@
 //! that is detected by checking that each block's command line is still
 //! where we left it.
 
+use std::ops::Range;
 use std::sync::OnceLock;
 
-use alacritty_terminal::grid::{Dimensions, Grid};
+use alacritty_terminal::grid::{Dimensions, Grid, Row};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::{Color, Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::detect::{self, Hint};
+use crate::lines;
 use crate::theme::Rgb;
+
+/// Code colours by row, for drawing.
+pub trait CodeRows {
+    /// Colour spans for an absolute row, sorted by column.
+    fn row(&self, abs_row: i64) -> &[Span];
+}
+
+impl CodeRows for CodeHighlighter {
+    fn row(&self, abs_row: i64) -> &[Span] {
+        CodeHighlighter::row(self, abs_row)
+    }
+}
+
+/// Output lines of a command that were found to be code, by global line
+/// (see `lines.rs`), kept after they leave the grid.
+struct CodeRange {
+    start: u64,
+    /// One past the last line, once the next command was entered.
+    end: Option<u64>,
+    syntax: &'static SyntaxReference,
+}
+
+/// Code ranges kept: the newest commands' output.
+const MAX_RANGES: usize = 4096;
 
 struct Assets {
     syntaxes: SyntaxSet,
@@ -80,6 +106,9 @@ struct Block {
     highlighter: Option<HighlightLines<'static>>,
     /// Next row to highlight.
     next_row: i64,
+    /// Global line of the first output line, and one past the last.
+    first_line: u64,
+    end_line: Option<u64>,
     /// Spans for rows `start..next_row`.
     rows: Vec<Vec<Span>>,
 }
@@ -91,6 +120,7 @@ const SNIFF_ROWS: i64 = 8;
 pub struct CodeHighlighter {
     pub enabled: bool,
     blocks: Vec<Block>,
+    ranges: Vec<CodeRange>,
     theme_name: String,
     /// Reused per-line buffers.
     text: String,
@@ -102,6 +132,7 @@ impl CodeHighlighter {
         Self {
             enabled,
             blocks: Vec::new(),
+            ranges: Vec::new(),
             theme_name: theme_name.to_owned(),
             text: String::new(),
             map: Vec::new(),
@@ -124,6 +155,25 @@ impl CodeHighlighter {
     /// Forget all blocks (screen cleared, window resized and text reflowed).
     pub fn clear(&mut self) {
         self.blocks.clear();
+        self.ranges.clear();
+    }
+
+    pub fn theme_name(&self) -> &str {
+        &self.theme_name
+    }
+
+    /// The code among global lines `lines`: ranges clipped to them, in order.
+    pub fn code_ranges(&self, lines: Range<u64>) -> Vec<(Range<u64>, &'static SyntaxReference)> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        self.ranges
+            .iter()
+            .filter_map(|r| {
+                let range = r.start.max(lines.start)..r.end.unwrap_or(u64::MAX).min(lines.end);
+                (!range.is_empty()).then_some((range, r.syntax))
+            })
+            .collect()
     }
 
     /// Call when the user presses Enter, before the key reaches the shell,
@@ -135,8 +185,13 @@ impl CodeHighlighter {
         let hist = grid.history_size() as i64;
         let cursor = grid.cursor.point.line;
         let first = logical_line_start(grid, cursor);
+        let cmd_line = lines::ends_before(grid, &mut None, lines::line_start(grid, lines::cursor_row(grid)));
         if let Some(open) = self.blocks.last_mut().filter(|b| b.end.is_none()) {
             open.end = Some(hist + first.0 as i64);
+            open.end_line = Some(cmd_line);
+        }
+        if let Some(open) = self.ranges.last_mut().filter(|r| r.end.is_none()) {
+            open.end = Some(cmd_line);
         }
         let Some(hint) = detect::command_hint(line.trim_end()) else { return };
 
@@ -156,6 +211,8 @@ impl CodeHighlighter {
             highlighter: None,
             next_row: cmd_row + 1,
             rows: Vec::new(),
+            first_line: cmd_line + 1,
+            end_line: None,
         });
     }
 
@@ -177,6 +234,12 @@ impl CodeHighlighter {
             let limit = b.end.unwrap_or(cursor_abs);
             if matches!(b.lang, Lang::Pending) {
                 b.lang = decide_lang(assets, b, grid, limit, &mut self.text);
+                if let Lang::Code(syntax) = b.lang {
+                    if self.ranges.len() == MAX_RANGES {
+                        self.ranges.remove(0);
+                    }
+                    self.ranges.push(CodeRange { start: b.first_line, end: b.end_line, syntax });
+                }
             }
             let Lang::Code(syntax) = b.lang else { continue };
             let hl = b.highlighter.get_or_insert_with(|| HighlightLines::new(syntax, theme));
@@ -195,29 +258,9 @@ impl CodeHighlighter {
                 self.text.clear();
                 self.map.clear();
                 for (off, r) in (first..=last).enumerate() {
-                    collect_row(&mut self.text, &mut self.map, grid, abs_line(r, hist), off as u16);
+                    collect_row(&mut self.text, &mut self.map, &grid[abs_line(r, hist)], off as u16);
                 }
-                let trimmed = self.text.trim_end().len();
-                self.text.truncate(trimmed);
-
-                let mut row_spans: Vec<Vec<Span>> = vec![Vec::new(); (last - first + 1) as usize];
-                if let Ok(ranges) = hl.highlight_line(&self.text, &assets.syntaxes) {
-                    let mut byte = 0usize;
-                    let mut mi = 0usize;
-                    for (style, piece) in ranges {
-                        let end = byte + piece.len();
-                        let fg = style.foreground;
-                        let colored = Some(fg) != default_fg;
-                        while mi < self.map.len() && self.map[mi].0 < end {
-                            let (_, row_off, col) = self.map[mi];
-                            if colored {
-                                push_span(&mut row_spans[row_off as usize], col, Rgb { r: fg.r, g: fg.g, b: fg.b });
-                            }
-                            mi += 1;
-                        }
-                        byte = end;
-                    }
-                }
+                let row_spans = spans_of_line(hl, &assets.syntaxes, default_fg, &mut self.text, &self.map, (last - first + 1) as usize);
                 b.rows.extend(row_spans);
                 b.next_row = last + 1;
             }
@@ -394,15 +437,83 @@ fn row_equals(grid: &Grid<Cell>, line: Line, text: &str) -> bool {
 
 /// Appends a row's characters to `text` and records, for each character,
 /// (byte offset, row offset within the logical line, column).
-fn collect_row(text: &mut String, map: &mut Vec<(usize, u16, u16)>, grid: &Grid<Cell>, line: Line, row_off: u16) {
-    let row = &grid[line];
-    for col in 0..grid.columns() {
-        let cell = &row[Column(col)];
+fn collect_row(text: &mut String, map: &mut Vec<(usize, u16, u16)>, row: &Row<Cell>, row_off: u16) {
+    for (col, cell) in row[..].iter().enumerate() {
         if is_spacer(cell) {
             continue;
         }
         map.push((text.len(), row_off, col as u16));
         text.push(cell.c);
+    }
+}
+
+/// Highlights one logical line, `text` with `map` from `collect_row`,
+/// into colour spans for each of its `rows` rows.
+fn spans_of_line(
+    hl: &mut HighlightLines<'static>,
+    syntaxes: &SyntaxSet,
+    default_fg: Option<Color>,
+    text: &mut String,
+    map: &[(usize, u16, u16)],
+    rows: usize,
+) -> Vec<Vec<Span>> {
+    let trimmed = text.trim_end().len();
+    text.truncate(trimmed);
+    let mut row_spans: Vec<Vec<Span>> = vec![Vec::new(); rows];
+    if let Ok(ranges) = hl.highlight_line(text, syntaxes) {
+        let mut byte = 0usize;
+        let mut mi = 0usize;
+        for (style, piece) in ranges {
+            let end = byte + piece.len();
+            let fg = style.foreground;
+            let colored = Some(fg) != default_fg;
+            while mi < map.len() && map[mi].0 < end {
+                let (_, row_off, col) = map[mi];
+                if colored {
+                    push_span(&mut row_spans[row_off as usize], col, Rgb { r: fg.r, g: fg.g, b: fg.b });
+                }
+                mi += 1;
+            }
+            byte = end;
+        }
+    }
+    row_spans
+}
+
+/// Highlights lines one after another, as a block of code is read: for
+/// code that has left the grid (see `history::window`).
+pub struct LineHighlighter {
+    hl: HighlightLines<'static>,
+    default_fg: Option<Color>,
+    text: String,
+    map: Vec<(usize, u16, u16)>,
+}
+
+impl LineHighlighter {
+    /// None until the syntax definitions are loaded.
+    pub fn new(syntax: &'static SyntaxReference, theme_name: &str) -> Option<Self> {
+        let assets = ASSETS.get()?;
+        let theme = theme(assets, theme_name);
+        Some(Self { hl: HighlightLines::new(syntax, theme), default_fg: theme.settings.foreground, text: String::new(), map: Vec::new() })
+    }
+
+    /// A line before the ones to colour, read for what it opens or closes
+    /// (comments, strings).
+    pub fn context(&mut self, text: &str) {
+        if let Some(assets) = ASSETS.get() {
+            let _ = self.hl.highlight_line(text.trim_end(), &assets.syntaxes);
+        }
+    }
+
+    /// Colour spans for each row of one line, given its rows.
+    pub fn rows(&mut self, rows: &[&Row<Cell>]) -> Vec<Vec<Span>> {
+        let Some(assets) = ASSETS.get() else { return vec![Vec::new(); rows.len()] };
+        self.text.clear();
+        self.map.clear();
+        for (off, row) in rows.iter().enumerate() {
+            collect_row(&mut self.text, &mut self.map, row, off as u16);
+        }
+        spans_of_line(&mut self.hl, &assets.syntaxes, self.default_fg, &mut self.text, &self.map, rows.len())
     }
 }
 
@@ -624,4 +735,23 @@ mod tests {
         assert!(!row_equals(term.grid(), Line(0), "abd"));
         assert!(!row_equals(term.grid(), Line(0), "ab"));
     }
+
+    #[test]
+    fn code_ranges_follow_global_lines() {
+        ready();
+        let mut t = Tty::new(40, 10, 100);
+        let mut hl = CodeHighlighter::new(true, "base16-ocean.dark");
+        t.feed("intro\r\n");
+        t.run(&mut hl, "$ cat x.rs");
+        t.feed("fn main() {}\r\nlet x = 1;\r\n");
+        hl.update(t.term.grid());
+        t.run(&mut hl, "$ ls");
+        hl.update(t.term.grid());
+        let ranges: Vec<(std::ops::Range<u64>, &str)> = hl.code_ranges(0..100).into_iter().map(|(r, s)| (r, s.name.as_str())).collect();
+        assert_eq!(ranges, vec![(2..4, "Rust")]);
+        assert_eq!(hl.code_ranges(3..100).len(), 1, "clipped, not dropped");
+        assert_eq!(hl.code_ranges(3..100)[0].0, 3..4);
+        assert!(hl.code_ranges(4..100).is_empty());
+    }
 }
+

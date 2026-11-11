@@ -4,18 +4,23 @@
 //! numbers work on it as on the live terminal.
 
 use std::io;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::{Dimensions, Grid, Row, Scroll};
-use alacritty_terminal::index::Column;
+use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config as TermConfig, Term};
 use alacritty_terminal::vte::ansi::{Handler, NamedPrivateMode, PrivateMode};
 
 use super::{Item, Snapshot, line, lost_text};
+use crate::highlight::{CodeHighlighter, CodeRows, LineHighlighter, Span};
 use crate::lines;
+
+/// Lines read before the first coloured one, for the state they leave the
+/// highlighter in (comments, strings).
+const CONTEXT: u64 = 200;
 
 /// A row of the whole history: row `sub` (at the current width) of global
 /// line `line`. Rows of the line whose start already left the grid (the
@@ -97,6 +102,18 @@ pub struct Window<L: EventListener> {
     pub generation: u64,
     pub columns: usize,
     pub screen: usize,
+    /// What it was built from, to read lines before it.
+    snap: Snapshot,
+    /// Code colours per row, `coloured` once worked out with `code_theme`.
+    spans: Vec<Vec<Span>>,
+    coloured: Vec<bool>,
+    code_theme: Option<String>,
+}
+
+impl<L: EventListener> CodeRows for Window<L> {
+    fn row(&self, abs_row: i64) -> &[Span] {
+        usize::try_from(abs_row).ok().and_then(|r| self.spans.get(r)).map_or(&[], Vec::as_slice)
+    }
 }
 
 impl<L: EventListener> Window<L> {
@@ -201,7 +218,19 @@ impl<L: EventListener> Window<L> {
         let mut term = Term::new(config, &TermSize::new(columns, screen), listener);
         term.grid_mut().set_content(rows, 0, first_line);
         term.unset_private_mode(PrivateMode::Named(NamedPrivateMode::ShowCursor));
-        let mut window = Self { term, rows: ats, reaches_end, generation: snap.generation(), columns, screen };
+        let count = ats.len();
+        let mut window = Self {
+            term,
+            rows: ats,
+            reaches_end,
+            generation: snap.generation(),
+            columns,
+            screen,
+            snap: snap.clone(),
+            spans: vec![Vec::new(); count],
+            coloured: vec![false; count],
+            code_theme: None,
+        };
         let k = window.row_of(top).unwrap_or(0);
         window.set_top(k);
         Ok(window)
@@ -241,8 +270,124 @@ impl<L: EventListener> Window<L> {
         self.term.scroll_display(Scroll::Delta(offset - now));
     }
 
+    /// Works out code colours for absolute rows `rows`, if not done yet
+    /// with `code`'s theme.
+    pub fn colour(&mut self, rows: Range<usize>, code: &CodeHighlighter) {
+        if self.code_theme.as_deref() != Some(code.theme_name()) {
+            self.spans.iter_mut().for_each(Vec::clear);
+            self.coloured.fill(false);
+            self.code_theme = Some(code.theme_name().to_owned());
+        }
+        let rows = rows.start.min(self.rows.len())..rows.end.min(self.rows.len());
+        if rows.is_empty() || self.coloured[rows.clone()].iter().all(|&c| c) {
+            return;
+        }
+        let first = self.rows[rows.start].line;
+        let last = self.rows[rows.end - 1].line;
+        let window_first = self.rows[0].line;
+        let hist = self.term.grid().history_size() as i32;
+        for (range, syntax) in code.code_ranges(first.saturating_sub(CONTEXT)..last + 1) {
+            let Some(mut hl) = LineHighlighter::new(syntax, code.theme_name()) else { return };
+            let from = range.start.max(first.saturating_sub(CONTEXT));
+            // Lines before the window: their text, for context only.
+            if from < window_first {
+                let mut text = String::new();
+                let _ = self.snap.for_each(from..window_first.min(range.end), false, |_, item| {
+                    if let Item::Line(bytes) = item {
+                        text.clear();
+                        line::text(bytes, &mut text);
+                        hl.context(&text);
+                    }
+                    ControlFlow::Continue(())
+                });
+            }
+            for at_line in from.max(window_first)..range.end.min(last + 1) {
+                let lo = self.rows.partition_point(|a| a.line < at_line);
+                let hi = self.rows.partition_point(|a| a.line <= at_line);
+                if lo == hi {
+                    continue;
+                }
+                let grid = self.term.grid();
+                let line_rows: Vec<&Row<Cell>> = (lo..hi).map(|r| &grid[Line(r as i32 - hist)]).collect();
+                for (r, spans) in (lo..hi).zip(hl.rows(&line_rows)) {
+                    self.spans[r] = spans;
+                    self.coloured[r] = true;
+                }
+            }
+        }
+        self.coloured[rows].fill(true);
+    }
+
     /// Absolute row `abs` is followed by a full screen within the window.
     pub fn can_top(&self, abs: usize) -> bool {
         abs <= self.history() || self.reaches_end
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alacritty_terminal::grid::Dimensions;
+
+    use crate::highlight::{self, CodeHighlighter, CodeRows};
+    use crate::history::scroll::{At, Scroller};
+    use crate::history::{Budget, CELL_BYTES, History, start};
+    use crate::testterm::{Quiet, TestTerm, temp_dir};
+
+    /// `cat a.rs` with 300 lines of Rust, line 150 a function; then filler.
+    fn archived_code() -> (TestTerm, crate::history::Shared, CodeHighlighter, Vec<highlight::Span>) {
+        highlight::preload_blocking();
+        let (history, sink) = start(History::new(4096, temp_dir("code")).with_chunk_bytes(512));
+        let mut t = TestTerm::new(40, 10, 400);
+        t.term.grid_mut().set_row_sink(Box::new(sink));
+        let mut code = CodeHighlighter::new(true, "base16-ocean.dark");
+        t.feed("$ cat a.rs");
+        let line = highlight::command_line(t.term.grid());
+        code.on_enter(t.term.grid(), &line);
+        t.feed("\n");
+        let file: String = (0..300).map(|k| if k == 150 { "fn special() { return; }\n".to_owned() } else { format!("let x{k} = {k};\n") }).collect();
+        t.feed(&file);
+        code.update(t.term.grid());
+        // The live highlighter's colours for the function's row.
+        let grid = t.term.grid();
+        let abs = (0..grid.total_lines()).find(|&a| {
+            let mut s = String::new();
+            crate::lines::push_row(&mut s, grid, a);
+            s.starts_with("fn special")
+        }).expect("on the grid");
+        let live = CodeRows::row(&code, abs as i64).to_vec();
+        assert!(!live.is_empty());
+        t.feed("$ ls");
+        let line = highlight::command_line(t.term.grid());
+        code.on_enter(t.term.grid(), &line);
+        t.feed("\n");
+        let filler: String = (0..5000).map(|k| format!("filler {k}\n")).collect();
+        t.feed(&filler);
+        (t, history, code, live)
+    }
+
+    fn window_spans(t: &mut TestTerm, history: &crate::history::Shared, code: &CodeHighlighter) -> Vec<highlight::Span> {
+        let budget = Budget { bytes: 300 * 4 * 40 * CELL_BYTES };
+        let mut s = Scroller::new(Quiet);
+        // `fn special` is line 151: the command is line 0.
+        s.set_top(&mut t.term, history, &budget, At { line: 151, sub: 0 });
+        let w = s.window.as_mut().expect("a window");
+        let top = w.history() - w.term.grid().display_offset();
+        w.colour(top..top + 10, code);
+        CodeRows::row(&*w, top as i64).to_vec()
+    }
+
+    #[test]
+    fn archived_code_keeps_colours() {
+        let (mut t, history, code, live) = archived_code();
+        assert_eq!(window_spans(&mut t, &history, &code), live);
+    }
+
+    #[test]
+    fn theme_switch_recolours_window() {
+        let (mut t, history, mut code, live) = archived_code();
+        code.set_theme("InspiredGitHub");
+        let spans = window_spans(&mut t, &history, &code);
+        assert!(!spans.is_empty());
+        assert_ne!(spans, live);
     }
 }

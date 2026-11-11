@@ -14,7 +14,7 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 
 use crate::chrome::{self, ButtonStyle, Caption, Menu, Metrics, Panel, TextStyle};
 use crate::config::LineNumbers;
-use crate::highlight::{CodeHighlighter, Span};
+use crate::highlight::{CodeRows, Span};
 use crate::render::glyphs::GlyphStyle;
 use crate::render::{Layer, Painter};
 use crate::search::Search;
@@ -25,7 +25,8 @@ use crate::ui;
 pub struct View<'a> {
     pub palette: &'a Palette,
     pub search: &'a Search,
-    pub code: &'a CodeHighlighter,
+    /// Code colours of the rows of the terminal drawn.
+    pub code: &'a dyn CodeRows,
     pub focused: bool,
     pub bold_is_bright: bool,
     pub scale: f32,
@@ -795,12 +796,12 @@ mod tests {
     struct Fixture {
         palette: Palette,
         search: Search,
-        code: CodeHighlighter,
+        code: crate::highlight::CodeHighlighter,
     }
 
     impl Fixture {
         fn new() -> Self {
-            Self { palette: Palette::dark(), search: Search::new(), code: CodeHighlighter::new(true, "base16-ocean.dark") }
+            Self { palette: Palette::dark(), search: Search::new(), code: crate::highlight::CodeHighlighter::new(true, "base16-ocean.dark") }
         }
 
         fn view(&self) -> View<'_> {

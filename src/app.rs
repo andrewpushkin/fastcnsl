@@ -1077,12 +1077,23 @@ impl State {
             if tab.search.open {
                 tab.search.refresh(tab.scroller.shown(&live));
             }
+            // Code in a window onto older lines: colour what is in view.
+            if let Some(w) = tab.scroller.window.as_mut() {
+                let grid = w.term.grid();
+                let top = grid.history_size() - grid.display_offset();
+                let screen = grid.screen_lines();
+                w.colour(top.saturating_sub(screen)..top + 2 * screen, &tab.code);
+            }
             let tab = &self.tabs[self.active];
             let term = tab.scroller.shown(&live);
+            let code: &dyn highlight::CodeRows = match &tab.scroller.window {
+                Some(w) => w,
+                None => &tab.code,
+            };
             let v = View {
                 palette: &self.palette,
                 search: &tab.search,
-                code: &tab.code,
+                code,
                 focused: self.focused && matches!(self.overlay, Overlay::None),
                 bold_is_bright: cfg.bold_is_bright,
                 scale,
