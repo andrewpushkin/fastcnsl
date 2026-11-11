@@ -370,7 +370,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         if reversed.len() > keep {
             let ends = reversed[keep..].iter().filter(|r| super::ends_line(r)).count();
             if let Some(sink) = self.sink.0.as_mut() {
-                sink.dropped(&mut reversed[keep..].iter().rev());
+                for row in reversed[keep..].iter_mut().rev() {
+                    sink.dropped(row);
+                }
             }
             self.note_dropped(reversed.len() - keep, ends);
         }

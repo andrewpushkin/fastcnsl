@@ -18,6 +18,11 @@ to keep counting from the start of the tab after old lines are gone.
 the top of the grid (scrollback full, history shortened, reflow) before it
 is reused, and is told when the history is cleared. fastcnsl keeps those
 rows as the tab's history (`src/history/`), so the grid itself stays small.
+The sink may swap the row for one of its own, so the terminal's thread only
+swaps a pointer and the history thread does the rest; with a sink, the
+prefetch below asks for the sink's rows (`prefetch_row()`) instead of the
+grid's. `Row::occupied()` tells how many cells of a row were written.
+`Term::flush_row_sink()` makes the sink pass on rows it holds back.
 `Grid::set_content()` fills a grid with given rows: fastcnsl shows archived
 history through a read-only terminal built that way. The tests are in
 `src/history/vendor_tests.rs`, since a patched dependency's own tests don't

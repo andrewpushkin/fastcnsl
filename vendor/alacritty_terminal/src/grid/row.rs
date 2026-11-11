@@ -122,6 +122,13 @@ impl<T> Row<T> {
         self.inner.len()
     }
 
+    /// fastcnsl patch: the cells from this many on haven't been written
+    /// since the row was last reset (they are default cells).
+    #[inline]
+    pub fn occupied(&self) -> usize {
+        self.occ.min(self.inner.len())
+    }
+
     #[inline]
     pub fn last(&self) -> Option<&T> {
         self.inner.last()

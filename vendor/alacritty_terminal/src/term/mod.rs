@@ -651,6 +651,12 @@ impl<T> Term<T> {
         &mut self.grid
     }
 
+    /// fastcnsl patch: flushes the row sinks of both screens' grids.
+    pub fn flush_row_sink(&mut self) {
+        self.grid.flush_row_sink();
+        self.inactive_grid.flush_row_sink();
+    }
+
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
         let old_cols = self.columns();

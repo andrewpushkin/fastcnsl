@@ -153,14 +153,40 @@ pub struct Grid<T> {
 /// fastcnsl patch: receives rows as they leave the top of the grid, so the
 /// caller can keep them.
 pub trait RowSink<T>: Send {
-    /// `rows` are leaving the top of the grid, oldest first (scrollback
-    /// full, history shortened, reflow). Called before they are reused.
-    fn dropped(&mut self, rows: &mut dyn Iterator<Item = &Row<T>>);
+    /// `row` is leaving the top of the grid (scrollback full, history
+    /// shortened, reflow); called for each such row, oldest first. The sink
+    /// may swap it for another row of the same width: the grid resets the
+    /// row it gets back before it uses it again.
+    fn dropped(&mut self, row: &mut Row<T>);
 
     /// The history was cleared (ESC[3J, reset): its rows are gone, not
     /// passed on. `lines_dropped` is the grid's `lines_dropped()` after the
     /// clear.
     fn cleared(&mut self, lines_dropped: u64);
+
+    /// Pass on anything held back, now.
+    fn flush(&mut self) {}
+}
+
+/// fastcnsl patch: asks the CPU to bring `row` into its cache, for a row
+/// that is about to be written (x86-64 only; elsewhere it does nothing).
+#[inline]
+pub fn prefetch_row<T>(row: &Row<T>) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+        if row.len() == 0 {
+            return;
+        }
+        let start = (&row[Column(0)] as *const T).cast::<i8>();
+        let bytes = row.len() * std::mem::size_of::<T>();
+        for offset in (0..bytes).step_by(64) {
+            // SAFETY: a prefetch is only a hint; the address is inside the row.
+            unsafe { _mm_prefetch::<_MM_HINT_T0>(start.add(offset)) };
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = row;
 }
 
 /// fastcnsl patch: the grid's sink. A cloned grid has none.
@@ -379,16 +405,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     /// be reused while this one is written.
     #[inline]
     fn prefetch_recycled_rows(&self) {
+        // With a row sink the rows leaving the top are swapped for the
+        // sink's, which it prefetches itself.
         #[cfg(target_arch = "x86_64")]
-        if self.history_size() == self.max_scroll_limit && self.max_scroll_limit > PREFETCH_ROWS {
-            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-            let row = &self.raw[self.topmost_line() + PREFETCH_ROWS];
-            let start = (&row[Column(0)] as *const T).cast::<i8>();
-            let bytes = row.len() * std::mem::size_of::<T>();
-            for offset in (0..bytes).step_by(64) {
-                // SAFETY: a prefetch is only a hint; the address is inside the row.
-                unsafe { _mm_prefetch::<_MM_HINT_T0>(start.add(offset)) };
-            }
+        if self.sink.0.is_none() && self.history_size() == self.max_scroll_limit && self.max_scroll_limit > PREFETCH_ROWS {
+            prefetch_row(&self.raw[self.topmost_line() + PREFETCH_ROWS]);
         }
     }
 
@@ -540,6 +561,13 @@ impl<T> Grid<T> {
         self.sink = SinkSlot(Some(sink));
     }
 
+    /// fastcnsl patch: asks the row sink to pass on what it holds back.
+    pub fn flush_row_sink(&mut self) {
+        if let Some(sink) = self.sink.0.as_mut() {
+            sink.flush();
+        }
+    }
+
     /// fastcnsl patch: replaces all rows with `rows`, top to bottom (at
     /// least `screen_lines` of them, each `columns` wide): the last
     /// `screen_lines` are the screen, the rest the history, which can't
@@ -591,8 +619,9 @@ impl<T: GridCell> Grid<T> {
             .filter(|&i| ends_line(&self.raw[top + i]))
             .count();
         if pass_on && let Some(sink) = self.sink.0.as_mut() {
-            let raw = &self.raw;
-            sink.dropped(&mut (0..count).map(|i| &raw[top + i]));
+            for i in 0..count {
+                sink.dropped(&mut self.raw[top + i]);
+            }
         }
         self.note_dropped(count, ends);
     }

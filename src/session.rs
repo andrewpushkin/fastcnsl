@@ -81,8 +81,8 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
         let columns = size.num_cols as usize;
         let dims = TermSize::new(columns, size.num_lines as usize);
         let mut term = Term::new(term_config(&budget, columns), &dims, proxy.clone());
-        let history = Arc::new(std::sync::Mutex::new(History::new(budget.history_ram(), history::history_dir())));
-        term.grid_mut().set_row_sink(Box::new(history::Sink(history.clone())));
+        let (history, sink) = history::start(History::new(budget.history_ram(), history::history_dir()));
+        term.grid_mut().set_row_sink(Box::new(sink));
         let term = Arc::new(FairMutex::new(term));
 
         let shell = (!cfg.shell.is_empty())
@@ -142,7 +142,7 @@ impl<L: EventListener + Clone + Send + 'static> Session<L> {
         let mut term = self.term.lock();
         let columns = term.grid().columns();
         term.set_options(term_config(&self.budget, columns));
-        self.history.lock().unwrap_or_else(|e| e.into_inner()).set_ram_limit(self.budget.history_ram());
+        history::lock(&self.history).set_ram_limit(self.budget.history_ram());
     }
 }
 
@@ -280,9 +280,11 @@ mod tests {
         let mut s = Session::spawn(&cfg, size(60, 10), Events(tx)).expect("spawn shell");
         wait_for(&s, &rx, "30000");
         {
-            let term = s.term.lock();
+            let mut term = s.term.lock();
             // 64 MB: a quarter for the live grid, which holds at most 10 000 rows.
             assert_eq!(term.grid().history_size(), 10_000);
+            term.flush_row_sink();
+            history::sync(&s.history);
             let h = s.history.lock().unwrap();
             assert_eq!(h.end_line(), term.grid().lines_dropped());
             assert!(h.end_line() > 0);
@@ -291,8 +293,10 @@ mod tests {
         // Wide rows cost more: fewer stay in the live grid, the rest go to history.
         s.resize(size(1000, 10));
         {
-            let term = s.term.lock();
+            let mut term = s.term.lock();
             assert_eq!(term.grid().history_size(), (16 << 20) / (1000 * crate::history::CELL_BYTES));
+            term.flush_row_sink();
+            history::sync(&s.history);
             assert_eq!(s.history.lock().unwrap().end_line(), term.grid().lines_dropped());
         }
         s.apply_config(&Config { memory_per_tab_mb: 128, ..cfg });

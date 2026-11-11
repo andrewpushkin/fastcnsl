@@ -17,12 +17,12 @@ struct Seen {
 struct TestSink(Arc<Mutex<Seen>>);
 
 impl RowSink<Cell> for TestSink {
-    fn dropped(&mut self, rows: &mut dyn Iterator<Item = &Row<Cell>>) {
+    fn dropped(&mut self, row: &mut Row<Cell>) {
         let mut seen = self.0.lock().unwrap();
-        for row in rows {
-            seen.firsts.push(row[Column(0)].c);
-            seen.widths.push(row.len());
-        }
+        seen.firsts.push(row[Column(0)].c);
+        seen.widths.push(row.len());
+        // Swap in a fresh row, as the history's sink does.
+        *row = Row::new(row.len());
     }
 
     fn cleared(&mut self, lines_dropped: u64) {
@@ -122,4 +122,16 @@ fn set_content_installs_rows() {
     // Scrolling the display reaches the first row.
     grid.scroll_display(Scroll::Top);
     assert_eq!(grid.display_offset(), 3);
+}
+
+#[test]
+fn swapped_rows_come_back_clean() {
+    let (mut grid, _seen) = grid_with_sink(3, 5, 2);
+    for c in 'a'..='h' {
+        push(&mut grid, c);
+    }
+    // The row the sink swapped in last is the new, blank bottom row.
+    assert_eq!(grid[Line(2)][Column(0)], Cell::default());
+    assert_eq!(grid[Line(-2)][Column(0)].c, 'g');
+    assert_eq!(grid[Line(-1)][Column(0)].c, 'h');
 }

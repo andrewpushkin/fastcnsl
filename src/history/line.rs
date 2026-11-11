@@ -81,6 +81,15 @@ pub fn join_rows<'a>(rows: impl IntoIterator<Item = &'a Row<Cell>>, out: &mut Ve
     }
 }
 
+/// The cell is `Cell::default()`.
+fn is_blank(cell: &Cell) -> bool {
+    cell.c == ' '
+        && cell.flags.is_empty()
+        && cell.extra.is_none()
+        && cell.fg == Color::Named(NamedColor::Foreground)
+        && cell.bg == Color::Named(NamedColor::Background)
+}
+
 /// The cell a wide character's spacer would be, drawn in `wide`'s style.
 fn spacer_of(wide: &Cell) -> Cell {
     Cell {
@@ -115,8 +124,28 @@ impl Default for Encoder {
 impl Encoder {
     /// Appends the encoded form of `cells` to `out`.
     pub fn encode(&mut self, cells: &[Cell], out: &mut Vec<u8>) {
+        out.reserve(cells.len());
         let mut i = 0;
         while i < cells.len() {
+            // Most cells are in the style of the cell before.
+            let cell = &cells[i];
+            if cell.extra.is_none() && cell.fg == self.fg && cell.bg == self.bg {
+                if cell.flags == self.flags {
+                    push_char(out, cell.c);
+                    i += 1;
+                    continue;
+                }
+                if cell.flags == self.flags | Flags::WIDE_CHAR
+                    && cells.get(i + 1).is_some_and(|s| {
+                        s.c == ' ' && s.flags == self.flags | Flags::WIDE_CHAR_SPACER && s.extra.is_none() && s.fg == self.fg && s.bg == self.bg
+                    })
+                {
+                    out.push(WIDE);
+                    push_char(out, cell.c);
+                    i += 2;
+                    continue;
+                }
+            }
             let wide = cells[i].flags.contains(Flags::WIDE_CHAR) && cells.get(i + 1) == Some(&spacer_of(&cells[i]));
             self.cell(&cells[i], wide, out);
             i += if wide { 2 } else { 1 };
@@ -126,7 +155,15 @@ impl Encoder {
     /// Appends one grid row of a line, as `join_rows` would join it.
     /// Returns true if the row ends the line.
     pub fn encode_row(&mut self, row: &Row<Cell>, out: &mut Vec<u8>) -> bool {
+        // Cells past the occupied ones are default: the row doesn't wrap
+        // and they would be trimmed anyway.
         let cells = &row[..];
+        let occupied = row.occupied();
+        if occupied < cells.len() {
+            let end = cells[..occupied].iter().rposition(|c| !is_blank(c)).map_or(0, |i| i + 1);
+            self.encode(&cells[..end], out);
+            return true;
+        }
         let Some(last) = cells.last() else { return true };
         if last.flags.contains(Flags::WRAPLINE) {
             let mut last = last.clone();
@@ -145,8 +182,7 @@ impl Encoder {
             }
             false
         } else {
-            let blank = Cell::default();
-            let end = cells.iter().rposition(|c| *c != blank).map_or(0, |i| i + 1);
+            let end = cells.iter().rposition(|c| !is_blank(c)).map_or(0, |i| i + 1);
             self.encode(&cells[..end], out);
             true
         }
@@ -167,12 +203,17 @@ impl Encoder {
         if wide {
             out.push(WIDE);
         }
-        if cell.c.is_ascii() {
-            out.push(cell.c as u8);
-        } else {
-            let mut utf8 = [0u8; 4];
-            out.extend_from_slice(cell.c.encode_utf8(&mut utf8).as_bytes());
-        }
+        push_char(out, cell.c);
+    }
+}
+
+#[inline]
+fn push_char(out: &mut Vec<u8>, c: char) {
+    if c.is_ascii() {
+        out.push(c as u8);
+    } else {
+        let mut utf8 = [0u8; 4];
+        out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
     }
 }
 
@@ -588,3 +629,4 @@ mod tests {
         assert_eq!(bytes.len(), 11);
     }
 }
+

@@ -16,7 +16,7 @@ const CACHED: usize = 4;
 pub struct DiskFile {
     file: File,
     len: AtomicU64,
-    cache: Mutex<VecDeque<(u64, Arc<[u8]>)>>,
+    cache: Mutex<VecDeque<(u64, super::Chunk)>>,
 }
 
 impl DiskFile {
@@ -40,14 +40,14 @@ impl DiskFile {
     }
 
     /// The `len` bytes at `offset`, from the cache when it has them.
-    pub fn read(&self, offset: u64, len: u32) -> io::Result<Arc<[u8]>> {
+    pub fn read(&self, offset: u64, len: u32) -> io::Result<super::Chunk> {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, bytes)) = cache.iter().find(|(o, b)| *o == offset && b.len() == len as usize) {
             return Ok(bytes.clone());
         }
         let mut buf = vec![0u8; len as usize];
         read_at(&self.file, &mut buf, offset)?;
-        let bytes: Arc<[u8]> = buf.into();
+        let bytes = Arc::new(buf);
         if cache.len() == CACHED {
             cache.pop_front();
         }
