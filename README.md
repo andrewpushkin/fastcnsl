@@ -212,6 +212,27 @@ About. Right-click the text for copy, paste, select all and bookmarks.
 
 fastcnsl draws on the GPU (DirectX 12, Metal, Vulkan or OpenGL) and only
 redraws when something changes, so it stays responsive with large output.
+
+`cat` of a 32 MiB file, in seconds (lower is better):
+
+| Linux (Ubuntu 26.04) | plain text | colours | Unicode |
+|---|---:|---:|---:|
+| **fastcnsl** | **0.37** | **0.33** | **0.37** |
+| GNOME Terminal | 0.54 | 0.62 | 0.87 |
+| Ptyxis | 0.73 | 0.73 | 1.02 |
+| Konsole | 1.06 | 0.80 | 0.98 |
+| xterm | 1.03 | 1.32 | 1.25 |
+
+| Windows, WSL tab | plain text | colours | Unicode |
+|---|---:|---:|---:|
+| **fastcnsl** | **0.32** | **0.26** | **0.27** |
+| Windows Terminal | 0.37 | 0.90 | 0.71 |
+| Classic console (conhost) | 0.59 | 2.21 | 1.17 |
+
+These are medians of 5 runs on a Ryzen 9 7940HX. The
+[full results](docs/BENCHMARK.md) include startup time, memory, CPU
+use, cmd and PowerShell output, and how to run the benchmark yourself.
+
 The title bar is a single row: tabs, ⋮ and the
 window buttons share it, leaving more room for text. Drag the empty part of
 the bar to move the window, double-click it to maximize.
