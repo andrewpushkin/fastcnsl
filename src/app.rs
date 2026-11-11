@@ -44,6 +44,8 @@ const CONFIG_POLL: Duration = Duration::from_secs(1);
 const MULTI_CLICK: Duration = Duration::from_millis(400);
 /// How long a notice ("Saved to ...") stays up.
 const TOAST_FOR: Duration = Duration::from_secs(5);
+/// How long the grid size ("100x30") stays up after launch or a resize.
+const SIZE_FOR: Duration = Duration::from_secs(5);
 /// How long after a resize output is taken for shells repainting their
 /// prompts for the new size, so it doesn't mark background tabs as active.
 const RESIZE_REPAINT: Duration = Duration::from_secs(1);
@@ -284,6 +286,8 @@ struct State {
     frame_cost: Duration,
     /// A notice at the bottom of the window, and when it goes.
     toast: Option<(String, Instant)>,
+    /// The grid size shown in the middle of the window until then.
+    size_until: Option<Instant>,
 }
 
 /// Fastest frame rate while output streams in (120/s).
@@ -491,7 +495,9 @@ impl App {
             last_frame: Instant::now(),
             frame_cost: Duration::ZERO,
             toast: None,
+            size_until: None,
         };
+        st.show_size();
         let (name, command) = self.first_tab.clone();
         st.new_tab_with(cfg, name, command)?;
         Ok(st)
@@ -838,6 +844,15 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Shows the grid size ("100x30", columns by lines) for a few seconds.
+    fn show_size(&mut self) {
+        let until = Instant::now() + SIZE_FOR;
+        self.size_until = Some(until);
+        let wake = until + Duration::from_millis(20);
+        self.wake_at = Some(self.wake_at.map_or(wake, |t| t.min(wake)));
+        self.window.request_redraw();
+    }
+
     /// Opens a file or URL with the desktop's default app; says so if it can't.
     fn open(&mut self, target: impl AsRef<std::ffi::OsStr>) {
         let target = target.as_ref();
@@ -1073,8 +1088,12 @@ impl State {
                 log.invalidate();
             }
         }
+        let counts_changed = (size.num_cols, size.num_lines) != (g.num_cols, g.num_lines);
         self.grid = size;
         self.resized_at = Some(Instant::now());
+        if counts_changed {
+            self.show_size();
+        }
     }
 
     /// Background tab `i` printed something: puts a bell on it.
@@ -1150,6 +1169,10 @@ impl State {
         if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
             self.toast = None;
         }
+        if self.size_until.is_some_and(|until| Instant::now() >= until) {
+            self.size_until = None;
+        }
+        let size_text = self.size_until.map(|_| format!("{}x{}", self.grid.num_cols, self.grid.num_lines));
         let panel = self.panel(cfg);
         let top = self.top();
         let scale = self.scale();
@@ -1242,6 +1265,7 @@ impl State {
                 logging: self.tabs.iter().map(|t| t.log.is_some()).collect(),
                 activity: self.tabs.iter().map(|t| t.activity).collect(),
                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
+                size: size_text.as_deref(),
             };
             self.renderer.build(|p| view::draw(p, term, &v, &c));
         }

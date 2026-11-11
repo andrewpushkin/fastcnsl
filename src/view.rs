@@ -85,6 +85,8 @@ pub struct ChromeView<'a> {
     pub activity: Vec<bool>,
     /// A short notice at the bottom of the window ("Saved to ...").
     pub toast: Option<&'a str>,
+    /// The grid size, centred in the window for a while after a resize.
+    pub size: Option<&'a str>,
 }
 
 fn rgb(c: alacritty_terminal::vte::ansi::Rgb) -> Rgb {
@@ -150,22 +152,30 @@ pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>,
     if let Some(menu) = c.menu {
         draw_menu(p, v.palette, &m, menu);
     }
+    if let Some(text) = c.size {
+        let h = notice_height(&m);
+        draw_notice(p, v.palette, &m, text, ((m.height - h) / 2.0).round());
+    }
     if let Some(text) = c.toast {
-        draw_toast(p, v.palette, &m, text);
+        let h = notice_height(&m);
+        draw_notice(p, v.palette, &m, text, (m.height - h - (16.0 * m.scale).round()).round());
     }
 }
 
-/// A notice centred at the bottom of the window, on top of everything.
-fn draw_toast(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, text: &str) {
+fn notice_height(m: &Metrics) -> f32 {
+    m.ch + (16.0 * m.scale).round()
+}
+
+/// A notice centred across the window at `y`, on top of everything.
+fn draw_notice(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, text: &str, y: f32) {
     let margin = (16.0 * m.scale).round();
     let pad = (12.0 * m.scale).round();
     let room = ((m.width - 2.0 * margin - 2.0 * pad) / m.cw).floor().max(0.0) as usize;
     let count = text.chars().count();
     let shown: String = if count > room { text.chars().take(room.saturating_sub(1)).chain(std::iter::once('…')).collect() } else { text.to_owned() };
     let w = shown.chars().count() as f32 * m.cw + 2.0 * pad;
-    let h = m.ch + (16.0 * m.scale).round();
+    let h = notice_height(m);
     let x = ((m.width - w) / 2.0).round();
-    let y = (m.height - h - margin).round();
     let r = m.scale * 6.0;
     let b = m.scale.round().max(1.0);
     p.rounded(Layer::OverlayShapes, x + m.scale * 3.0, y + m.scale * 3.0, w, h, r, [0.0, 0.0, 0.0, 0.25]);
@@ -842,6 +852,7 @@ mod tests {
             logging: Vec::new(),
             activity: Vec::new(),
             toast: None,
+            size: None,
         }
     }
 
@@ -992,6 +1003,18 @@ mod tests {
         let toast = ChromeView { toast: Some(&long), ..chrome(vec![]) };
         c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &toast));
         assert!(c.layer(Layer::OverlayShapes).iter().all(|i| i.pos[0] >= 0.0 && i.pos[0] < 600.0));
+    }
+
+    #[test]
+    fn grid_size_is_shown_in_the_middle() {
+        let Some(mut c) = Canvas::new() else { return };
+        let t = term("");
+        let f = Fixture::new();
+        let shown = ChromeView { size: Some("100x30"), ..chrome(vec![]) };
+        c.paint(600.0, 300.0, |p| draw(p, &t, &f.view(), &shown));
+        let glyphs: Vec<_> = c.layer(Layer::OverlayText).iter().filter(|i| i.kind != 0).collect();
+        assert_eq!(glyphs.len(), "100x30".len());
+        assert!(glyphs.iter().all(|i| i.pos[1] > 100.0 && i.pos[1] < 200.0), "vertically centred");
     }
 
     #[test]
