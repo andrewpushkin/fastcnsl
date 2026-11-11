@@ -286,7 +286,7 @@ struct State {
     frame_cost: Duration,
     /// A notice at the bottom of the window, and when it goes.
     toast: Option<(String, Instant)>,
-    /// The grid size shown in the middle of the window until then.
+    /// The grid size shown in the bottom right corner until then.
     size_until: Option<Instant>,
 }
 
