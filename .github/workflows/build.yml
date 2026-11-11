@@ -98,11 +98,11 @@ jobs:
       - name: Compile
         run: scripts/package/macos-arm64.sh build
       - name: Package
-        run: scripts/package/macos-arm64.sh zip
+        run: scripts/package/macos-arm64.sh dmg
       - uses: actions/upload-artifact@v4
         with:
           name: fastcnsl-macos-arm64
-          path: dist/*.zip
+          path: dist/*.dmg
           if-no-files-found: error
 
   release:
@@ -132,7 +132,7 @@ jobs:
           cp dist/Fastcnsl-*-x86_64.AppImage    upload/fastcnsl-linux-x86_64.AppImage
           cp dist/fastcnsl-*-windows-x86_64.zip upload/fastcnsl-windows-x86_64.zip
           cp dist/fastcnsl-*-windows-arm64.zip  upload/fastcnsl-windows-arm64.zip
-          cp dist/fastcnsl-*-macos-arm64.zip    upload/fastcnsl-macos-arm64.zip
+          cp dist/fastcnsl-*-macos-arm64.dmg    upload/fastcnsl-macos-arm64.dmg
           ls -l upload
       # The AppImage's update information points at this file in the latest
       # release (scripts/package/linux-x86_64.sh), so updaters download only

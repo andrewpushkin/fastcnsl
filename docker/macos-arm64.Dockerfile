@@ -21,7 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang lld llvm cmake make patch python3 xz-utils bzip2 cpio \
         libxml2-dev libssl-dev zlib1g-dev uuid-dev \
-        zip imagemagick \
+        xorriso imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 ARG OSXCROSS_COMMIT=27d21e4977c9751d01199c7a226a6faf494c3dd9

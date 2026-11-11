@@ -21,7 +21,7 @@
 #   make windows-arm64            compile -> target/windows-arm64/.../fastcnsl.exe
 #   make windows-arm64-zip        -> dist/fastcnsl-<ver>-windows-arm64.zip
 #   make macos-arm64              compile -> target/macos-arm64/.../fastcnsl
-#   make macos-arm64-zip          -> dist/fastcnsl-<ver>-macos-arm64.zip (Fastcnsl.app)
+#   make macos-arm64-dmg          -> dist/fastcnsl-<ver>-macos-arm64.dmg (Fastcnsl.app)
 #
 # The macOS image downloads the macOS SDK while it is built. Read the
 # licensing note at the top of docker/macos-arm64.Dockerfile first.
@@ -58,7 +58,7 @@ CARGO_CACHE  := $(CURDIR)/.cache/cargo
 # 0.1.<commits>; see scripts/get_version.sh. Override with make VERSION=...
 VERSION      ?= $(shell scripts/get_version.sh)
 PLATFORMS    := linux-x86_64 windows-x86_64 windows-arm64 macos-arm64
-PACKAGES     := linux-x86_64-deb linux-x86_64-rpm linux-x86_64-appimage windows-x86_64-zip windows-arm64-zip macos-arm64-zip
+PACKAGES     := linux-x86_64-deb linux-x86_64-rpm linux-x86_64-appimage windows-x86_64-zip windows-arm64-zip macos-arm64-dmg
 # Optional overrides for the macOS SDK download (see docker/macos-arm64.Dockerfile).
 MACOS_SDK_ARGS := $(foreach v,MACOS_SDK_VERSION MACOS_SDK_URL MACOS_SDK_SHA256,$(if $($(v)),--build-arg $(v)=$($(v))))
 
@@ -130,8 +130,8 @@ windows-x86_64-zip: windows-x86_64
 	$(WIN_X64) zip
 windows-arm64-zip: windows-arm64
 	$(WIN_ARM) zip
-macos-arm64-zip: macos-arm64
-	$(MACOS) zip
+macos-arm64-dmg: macos-arm64
+	$(MACOS) dmg
 
 # ------------------------------------------------------------- development
 

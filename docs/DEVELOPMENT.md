@@ -23,7 +23,7 @@ make windows-x86_64-zip      # zip
 make windows-arm64           # compile only
 make windows-arm64-zip       # zip
 make macos-arm64             # compile only (the image downloads the macOS SDK, see below)
-make macos-arm64-zip         # Fastcnsl.app in a zip
+make macos-arm64-dmg         # Fastcnsl.app in a disk image
 
 make build            # quick build for this machine -> dist/fastcnsl
 make run              # build and start it

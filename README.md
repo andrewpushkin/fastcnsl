@@ -15,7 +15,7 @@ files.
 |---|---|
 | Windows (x64) | [fastcnsl-windows-x86_64.zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-x86_64.zip) |
 | Windows (ARM) | [fastcnsl-windows-arm64.zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-arm64.zip) |
-| macOS (Apple Silicon) | [fastcnsl-macos-arm64.zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-macos-arm64.zip) |
+| macOS (Apple Silicon) | [fastcnsl-macos-arm64.dmg](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-macos-arm64.dmg) |
 | Linux: Debian, Ubuntu | [fastcnsl-linux-x86_64.deb](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.deb), or the [apt repository](#debian-ubuntu) for automatic updates |
 | Linux: Fedora, RHEL, openSUSE | [fastcnsl-linux-x86_64.rpm](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.rpm), or the [rpm repository](#fedora-rhel) for automatic updates |
 | Linux: any distribution | [fastcnsl-linux-x86_64.AppImage](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.AppImage) |
@@ -41,8 +41,8 @@ Keep the other files from the zip next to `fastcnsl.exe`:
 
 ### macOS
 
-Unzip and move `Fastcnsl.app` to Applications. The app isn't notarized by
-Apple, so the first time, right-click it and choose **Open**.
+Open the `.dmg` and drag `Fastcnsl.app` onto Applications. The app isn't
+notarized by Apple, so the first time, right-click it and choose **Open**.
 
 ### Linux
 

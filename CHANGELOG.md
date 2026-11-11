@@ -17,6 +17,8 @@ releases have a section.
   scrollback.
 - The app is now called fastcnsl: its settings are in the `fastcnsl` config
   folder and its environment variables start with `FASTCNSL_`.
+- The macOS download is a `.dmg`: open it and drag Fastcnsl onto
+  Applications.
 - Bug fixes.
 
 ## 0.1.84 (2026-11-09)
