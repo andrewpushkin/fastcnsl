@@ -69,6 +69,11 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    /// What the bind group needs again when the glyph atlas grows.
+    bind_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// The atlas generation the bind group was made for.
+    bind_generation: u64,
     globals: wgpu::Buffer,
     instances: wgpu::Buffer,
     instance_capacity: usize,
@@ -136,23 +141,39 @@ pub fn system_subpixel() -> bool {
     false
 }
 
-/// The wgpu backends for a chosen API, and whether to ask for a CPU
-/// adapter; None for the automatic choice.
-fn gpu_backends(gpu: crate::config::GpuBackend) -> Option<(wgpu::Backends, bool)> {
+/// The wgpu backends for a chosen API, tried one at a time, and whether
+/// to ask for a CPU adapter; None for the automatic choice.
+fn gpu_backends(gpu: crate::config::GpuBackend) -> Option<(&'static [wgpu::Backends], bool)> {
     use crate::config::GpuBackend;
     Some(match gpu {
         GpuBackend::Auto => return None,
-        GpuBackend::DirectX => (wgpu::Backends::DX12, false),
-        GpuBackend::Vulkan => (wgpu::Backends::VULKAN, false),
-        GpuBackend::OpenGl => (wgpu::Backends::GL, false),
-        GpuBackend::Metal => (wgpu::Backends::METAL, false),
-        GpuBackend::Software => (wgpu::Backends::all(), true),
+        GpuBackend::DirectX => (&[wgpu::Backends::DX12], false),
+        GpuBackend::Vulkan => (&[wgpu::Backends::VULKAN], false),
+        GpuBackend::OpenGl => (&[wgpu::Backends::GL], false),
+        GpuBackend::Metal => (&[wgpu::Backends::METAL], false),
+        // One at a time: all at once loaded the GPU drivers too (on
+        // Linux 225 MB against 134 MB for lavapipe alone).
+        GpuBackend::Software => (auto_backends(), true),
     })
 }
 
-/// GPU backends tried first.
-fn preferred_backends() -> wgpu::Backends {
-    if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::all() }
+/// GPU backends for the automatic choice, tried one at a time in order.
+fn auto_backends() -> &'static [wgpu::Backends] {
+    if cfg!(windows) {
+        &[wgpu::Backends::DX12]
+    } else if cfg!(target_os = "macos") {
+        &[wgpu::Backends::METAL]
+    } else {
+        &[wgpu::Backends::VULKAN, wgpu::Backends::GL]
+    }
+}
+
+/// A CPU rasteriser. OpenGL's llvmpipe reports itself as `Other`, so the
+/// name is checked too.
+fn is_software(info: &wgpu::AdapterInfo) -> bool {
+    let name = info.name.to_lowercase();
+    info.device_type == wgpu::DeviceType::Cpu
+        || ["llvmpipe", "softpipe", "lavapipe", "swiftshader"].iter().any(|s| name.contains(s))
 }
 
 /// Draws into the frame's layers. Borrowed from the renderer for the
@@ -284,16 +305,21 @@ impl Renderer {
         let size = window.inner_size();
         // A chosen API that isn't available falls back to the automatic
         // choice, so a setting can't keep the app from starting.
-        let chosen = match gpu_backends(gpu) {
-            Some((backends, software)) => match Self::adapter(&window, &display, backends, software).await {
-                Ok(found) => Some(found),
-                Err(e) => {
-                    log::warn!("gpu = {:?}: {e}; using the automatic choice", gpu.label());
-                    None
+        let mut chosen = None;
+        if let Some((order, software)) = gpu_backends(gpu) {
+            for &backends in order {
+                match Self::adapter(&window, &display, backends, software).await {
+                    Ok(found) => {
+                        chosen = Some(found);
+                        break;
+                    }
+                    Err(e) => log::warn!("gpu = {:?}: {backends:?}: {e}", gpu.label()),
                 }
-            },
-            None => None,
-        };
+            }
+            if chosen.is_none() {
+                log::warn!("gpu = {:?} is not available; using the automatic choice", gpu.label());
+            }
+        }
         let (surface, adapter) = match chosen {
             Some(found) => found,
             None => Self::auto_adapter(&window, &display).await?,
@@ -362,8 +388,6 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let atlas_view = glyphs.texture().create_view(&wgpu::TextureViewDescriptor::default());
-
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bgl"),
             entries: &[
@@ -395,15 +419,7 @@ impl Renderer {
                 },
             ],
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bg"),
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
-            ],
-        });
+        let bind_group = Self::make_bind_group(&device, &bgl, &globals, &glyphs, &sampler);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("layout"),
             bind_group_layouts: &[Some(&bgl)],
@@ -455,6 +471,9 @@ impl Renderer {
             config,
             pipeline,
             bind_group,
+            bind_layout: bgl,
+            sampler,
+            bind_generation: glyphs.generation,
             globals,
             instances,
             instance_capacity,
@@ -472,21 +491,32 @@ impl Renderer {
         self.glyphs.set_subpixel(subpixel && self.dual);
     }
 
-    /// On Windows only DX12 is started: also bringing up Vulkan and OpenGL
-    /// just to pick one costs startup time. They are tried if DX12 has no
-    /// adapter. WGPU_BACKEND still overrides this.
+    /// One backend at a time, the first real GPU wins; failing that, the
+    /// first software one. An instance with several backends loads all
+    /// their drivers and keeps them: on Linux, OpenGL's beside Vulkan's
+    /// cost 16-23 MB, and on Windows Vulkan and OpenGL slowed startup.
+    /// Every backend at once is the last resort. WGPU_BACKEND still
+    /// overrides this.
     async fn auto_adapter(
         window: &Arc<Window>,
         display: &winit::event_loop::OwnedDisplayHandle,
     ) -> Result<(wgpu::Surface<'static>, wgpu::Adapter), String> {
-        match Self::adapter(window, display, preferred_backends(), false).await {
-            Ok(found) => Ok(found),
-            Err(e) if preferred_backends() != wgpu::Backends::all() => {
-                log::warn!("{e}; trying every GPU backend");
-                Self::adapter(window, display, wgpu::Backends::all(), false).await
+        let mut software = None;
+        for &backends in auto_backends() {
+            match Self::adapter(window, display, backends, false).await {
+                Ok(found) if !is_software(&found.1.get_info()) => return Ok(found),
+                Ok(found) => {
+                    log::info!("{backends:?}: only a software adapter, {}", found.1.get_info().name);
+                    software.get_or_insert(found);
+                }
+                Err(e) => log::info!("{backends:?}: {e}"),
             }
-            Err(e) => Err(e),
         }
+        if let Some(found) = software {
+            return Ok(found);
+        }
+        log::warn!("no adapter from {:?}; trying every GPU backend", auto_backends());
+        Self::adapter(window, display, wgpu::Backends::all(), false).await
     }
 
     /// Creates an instance with `backends`, a surface for the window and
@@ -511,6 +541,25 @@ impl Renderer {
             .await
             .map_err(|e| format!("no {} adapter: {e}", if software { "software" } else { "GPU" }))?;
         Ok((surface, adapter))
+    }
+
+    fn make_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        globals: &wgpu::Buffer,
+        glyphs: &GlyphCache,
+        sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        let atlas_view = glyphs.texture().create_view(&wgpu::TextureViewDescriptor::default());
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bg"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        })
     }
 
     fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
@@ -574,8 +623,13 @@ impl Renderer {
         }
         let globals = Globals {
             screen: [self.config.width as f32, self.config.height as f32],
-            atlas: [glyphs::ATLAS_SIZE as f32; 2],
+            atlas: [self.glyphs.size() as f32; 2],
         };
+        if self.bind_generation != self.glyphs.generation {
+            self.bind_group =
+                Self::make_bind_group(&self.device, &self.bind_layout, &self.globals, &self.glyphs, &self.sampler);
+            self.bind_generation = self.glyphs.generation;
+        }
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 
         let frame = match self.surface.get_current_texture() {

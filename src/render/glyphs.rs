@@ -15,7 +15,11 @@ use cosmic_text::{
 };
 use etagere::{BucketedAtlasAllocator, size2};
 
-pub const ATLAS_SIZE: u32 = 2048;
+/// Side of the glyph atlas at first: 4 MB of RGBA, room for thousands
+/// of glyphs at usual sizes. It doubles when full, up to `ATLAS_MAX`.
+const ATLAS_START: u32 = 1024;
+/// Largest atlas side: the most the WebGL2-level limits allow (16 MB).
+const ATLAS_MAX: u32 = 2048;
 
 /// The font database being loaded in the background (see `preload_fonts`).
 static PRELOAD: Mutex<Option<JoinHandle<FontSystem>>> = Mutex::new(None);
@@ -35,6 +39,19 @@ fn take_font_system() -> (FontSystem, Duration) {
     let handle = PRELOAD.lock().unwrap_or_else(|e| e.into_inner()).take();
     let fs = handle.and_then(|h| h.join().ok()).unwrap_or_else(FontSystem::new);
     (fs, start.elapsed())
+}
+
+fn atlas_texture(device: &wgpu::Device, size: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("glyph atlas"),
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -117,7 +134,12 @@ pub struct GlyphCache {
     alloc: BucketedAtlasAllocator,
     /// RGBA staging for one glyph, reused to avoid per-glyph allocations.
     upload: Vec<u8>,
+    device: wgpu::Device,
     texture: wgpu::Texture,
+    /// Side of `texture` in texels.
+    size: u32,
+    /// Changes when `texture` is replaced by a bigger one.
+    pub generation: u64,
     /// Set when the atlas filled up and was cleared mid-frame.
     pub overflowed: bool,
     /// How long startup waited for the font database.
@@ -135,16 +157,7 @@ impl GlyphCache {
         let family = resolve_family(&mut font_system, family);
         let metrics_ct = Metrics::new(font_px, (font_px * line_height).round());
         let scratch = Buffer::new(&mut font_system, metrics_ct);
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("glyph atlas"),
-            size: wgpu::Extent3d { width: ATLAS_SIZE, height: ATLAS_SIZE, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let texture = atlas_texture(device, ATLAS_START);
         let mut cache = Self {
             font_system,
             swash: SwashCache::new(),
@@ -154,9 +167,12 @@ impl GlyphCache {
             metrics: CellMetrics { width: 1.0, height: 1.0, baseline: 1.0, underline_thickness: 1.0 },
             ascii: vec![Slot::Unloaded; 128 * 4],
             other: HashMap::new(),
-            alloc: BucketedAtlasAllocator::new(size2(ATLAS_SIZE as i32, ATLAS_SIZE as i32)),
+            alloc: BucketedAtlasAllocator::new(size2(ATLAS_START as i32, ATLAS_START as i32)),
             upload: Vec::new(),
+            device: device.clone(),
             texture,
+            size: ATLAS_START,
+            generation: 0,
             overflowed: false,
             font_wait,
             subpixel,
@@ -169,6 +185,11 @@ impl GlyphCache {
 
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    /// Side of the atlas texture in texels.
+    pub fn size(&self) -> u32 {
+        self.size
     }
 
     /// Changes font family or size. Clears the atlas.
@@ -285,7 +306,17 @@ impl GlyphCache {
         let alloc = match self.alloc.allocate(size2(w as i32 + 1, h as i32 + 1)) {
             Some(a) => a,
             None => {
-                log::info!("glyph atlas full, clearing");
+                if self.size < ATLAS_MAX {
+                    // A new texture twice the size; its glyphs are drawn
+                    // again as they are used.
+                    self.size *= 2;
+                    log::info!("glyph atlas full, growing to {0}x{0}", self.size);
+                    self.texture = atlas_texture(&self.device, self.size);
+                    self.alloc = BucketedAtlasAllocator::new(size2(self.size as i32, self.size as i32));
+                    self.generation += 1;
+                } else {
+                    log::info!("glyph atlas full, clearing");
+                }
                 self.clear();
                 self.overflowed = true;
                 match self.alloc.allocate(size2(w as i32 + 1, h as i32 + 1)) {
@@ -432,6 +463,35 @@ mod tests {
         assert!(g.metrics.height > small.height);
         assert!(g.other.is_empty());
         assert!(g.ascii.iter().all(|s| matches!(s, Slot::Unloaded)));
+    }
+
+    #[test]
+    fn a_full_atlas_grows_once_then_clears() {
+        let Some((mut g, q)) = cache() else { return };
+        assert_eq!(g.size(), ATLAS_START);
+        // Big glyphs fill the atlas quickly: ASCII, Cyrillic and Greek in
+        // four styles, over and over.
+        g.set_font("DejaVu Sans Mono", 200.0, 1.2);
+        let styles = [(false, false), (true, false), (false, true), (true, true)];
+        let mut glyphs = std::iter::repeat_with(|| ('!'..='~').chain('А'..='я').chain('Α'..='ω'))
+            .flatten()
+            .flat_map(|c| styles.map(|(bold, italic)| (c, GlyphStyle { bold, italic })));
+        let mut fill = |g: &mut GlyphCache| {
+            for _ in 0..100_000 {
+                let (c, style) = glyphs.next().unwrap();
+                g.get(&q, c, style);
+                if g.overflowed {
+                    return;
+                }
+            }
+            panic!("the atlas never filled");
+        };
+        fill(&mut g);
+        assert_eq!((g.size(), g.generation), (ATLAS_MAX, 1), "it grows first");
+        assert!(g.other.len() <= 1, "and starts empty");
+        g.overflowed = false;
+        fill(&mut g);
+        assert_eq!((g.size(), g.generation), (ATLAS_MAX, 1), "at the largest size it clears instead");
     }
 
     #[test]
