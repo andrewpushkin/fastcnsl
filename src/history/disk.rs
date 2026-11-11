@@ -39,15 +39,16 @@ impl DiskFile {
         Ok(offset)
     }
 
-    /// The `len` bytes at `offset`, from the cache when it has them.
-    pub fn read(&self, offset: u64, len: u32) -> io::Result<super::Chunk> {
+    /// The `len` bytes at `offset` as `unpack` makes them, from the cache
+    /// (which holds them unpacked) when it has them.
+    pub fn read(&self, offset: u64, len: u32, unpack: impl FnOnce(&[u8]) -> io::Result<Vec<u8>>) -> io::Result<super::Chunk> {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((_, bytes)) = cache.iter().find(|(o, b)| *o == offset && b.len() == len as usize) {
+        if let Some((_, bytes)) = cache.iter().find(|(o, _)| *o == offset) {
             return Ok(bytes.clone());
         }
         let mut buf = vec![0u8; len as usize];
         read_at(&self.file, &mut buf, offset)?;
-        let bytes = Arc::new(buf);
+        let bytes = Arc::new(unpack(&buf)?);
         if cache.len() == CACHED {
             cache.pop_front();
         }
@@ -149,8 +150,8 @@ mod tests {
         let at = file.append(b"hello").unwrap();
         let at2 = file.append(b"world!").unwrap();
         assert_eq!((at, at2), (0, 5));
-        assert_eq!(&*file.read(at2, 6).unwrap(), b"world!");
-        assert_eq!(&*file.read(at, 5).unwrap(), b"hello");
+        assert_eq!(&*file.read(at2, 6, |b| Ok(b.to_vec())).unwrap(), b"world!");
+        assert_eq!(&*file.read(at, 5, |b| Ok(b.to_vec())).unwrap(), b"hello");
         if cfg!(unix) {
             assert_eq!(entries(&dir), 0, "unlinked right away");
         }

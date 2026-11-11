@@ -89,10 +89,25 @@ impl Budget {
 /// A sealed chunk's bytes: lines, a u32 start per line, the line count.
 pub type Chunk = Arc<Vec<u8>>;
 
+/// A chunk compressed, as kept in RAM and on disk: text in a terminal
+/// repeats a lot, logs shrink 2.5-4 times.
+fn pack(chunk: &[u8]) -> Vec<u8> {
+    let mut packed = lz4_flex::compress_prepend_size(chunk);
+    packed.shrink_to_fit();
+    packed
+}
+
+fn unpack(packed: &[u8]) -> io::Result<Vec<u8>> {
+    lz4_flex::decompress_size_prepended(packed).map_err(io::Error::other)
+}
+
 /// Where a chunk of lines is.
 #[derive(Clone)]
 enum Place {
+    /// Compressed (see [`pack`]).
     Ram(Chunk),
+    /// Not compressed: the lines a snapshot copies from the open chunk.
+    Plain(Chunk),
     Disk { offset: u64, len: u32 },
     /// Lost to a disk error: one marker stands for all its lines.
     Lost,
@@ -285,7 +300,7 @@ impl History {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn ram_limit(&self) -> usize {
         self.ram_limit
     }
@@ -390,7 +405,7 @@ impl History {
             return;
         }
         let count = self.open.starts.len() as u64;
-        let chunk = std::mem::take(&mut self.open).into_chunk();
+        let chunk = Arc::new(pack(&std::mem::take(&mut self.open).into_chunk()));
         self.ram += chunk.capacity();
         self.entries.push(Entry { first: self.end - count, count, place: Place::Ram(chunk) });
         self.spill();
@@ -454,7 +469,7 @@ impl History {
         let mut entries = self.entries.clone();
         if !self.open.starts.is_empty() {
             let count = self.open.starts.len() as u64;
-            entries.push(Entry { first: self.end - count, count, place: Place::Ram(self.open.copy()) });
+            entries.push(Entry { first: self.end - count, count, place: Place::Plain(self.open.copy()) });
         }
         Snapshot {
             entries: entries.into(),
@@ -601,9 +616,10 @@ impl Snapshot {
                 Place::Lost => {
                     return Ok(if range.contains(&e.first) { f(e.first, Item::Lost(e.count)) } else { ControlFlow::Continue(()) });
                 }
-                Place::Ram(chunk) => chunk.clone(),
+                Place::Ram(packed) => Arc::new(unpack(packed)?),
+                Place::Plain(chunk) => chunk.clone(),
                 Place::Disk { offset, len } => match &self.disk {
-                    Some(d) => d.read(*offset, *len)?,
+                    Some(d) => d.read(*offset, *len, unpack)?,
                     None => return Err(io::Error::other("history file gone")),
                 },
             };
@@ -819,6 +835,21 @@ mod tests {
         let got = std::thread::spawn(move || texts(&snap)).join().unwrap();
         assert_eq!(got.len() as u64, t.term.grid().lines_dropped());
         assert_eq!(got[2999.min(got.len() - 1)], numbered(got.len() - 1));
+    }
+
+    #[test]
+    fn sealed_chunks_are_compressed() {
+        // Typical log lines: much the same text again and again.
+        let (history, sink) = start(History::new(1 << 30, temp_dir("compress")).with_chunk_bytes(1 << 16));
+        let mut t = TestTerm::new(100, 5, 5);
+        t.term.grid_mut().set_row_sink(Box::new(sink));
+        let text: String = (0..20_000).map(|i| format!("2026-11-11 12:00:{:02} INFO [api] request {i} handled in {} ms\n", i % 60, i % 97)).collect();
+        t.feed(&text);
+        let h = settled(&mut t, &history);
+        assert!(h.ram_bytes() < text.len() / 2, "{} bytes in RAM for {} of text", h.ram_bytes(), text.len());
+        let got = texts(&h.snapshot());
+        assert_eq!(got.len() as u64, h.end_line());
+        assert_eq!(got[1234], text.lines().nth(1234).unwrap());
     }
 
     #[test]
