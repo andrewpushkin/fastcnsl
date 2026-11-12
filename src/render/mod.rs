@@ -572,7 +572,8 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
+        // The same size again (a window shown or focused): the swapchain stays.
+        if width == 0 || height == 0 || (width, height) == (self.config.width, self.config.height) {
             return;
         }
         self.config.width = width;
@@ -607,8 +608,10 @@ impl Renderer {
         build(&mut painter);
     }
 
-    /// Uploads the built layers and presents the frame.
-    pub fn present(&mut self, clear: Rgb) {
+    /// Uploads the built layers and presents the frame. False when no
+    /// frame could be shown: the surface was lost or outdated and has been
+    /// set up again, so the caller should draw again.
+    pub fn present(&mut self, clear: Rgb) -> bool {
         let total: usize = self.layers.iter().map(Vec::len).sum();
         if total > self.instance_capacity {
             self.instance_capacity = total.next_power_of_two();
@@ -636,11 +639,11 @@ impl Renderer {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return false;
             }
             other => {
                 log::debug!("skipping frame: {other:?}");
-                return;
+                return false;
             }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -674,6 +677,7 @@ impl Renderer {
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
+        true
     }
 }
 

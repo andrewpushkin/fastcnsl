@@ -192,6 +192,10 @@ pub struct History {
     /// `partial` shared with snapshots, until it changes: it can be
     /// megabytes, and a snapshot is taken for every scroll.
     partial_shared: std::cell::OnceCell<Arc<[u8]>>,
+    /// The last snapshot taken, until the history changes: one is taken
+    /// every frame while older lines are shown, and copying the entries
+    /// and the open chunk each time adds up.
+    cached: std::cell::OnceCell<Snapshot>,
     partial_enc: Encoder,
     first: u64,
     end: u64,
@@ -292,6 +296,7 @@ impl History {
             open: Open::default(),
             partial: Vec::new(),
             partial_shared: std::cell::OnceCell::new(),
+            cached: std::cell::OnceCell::new(),
             partial_enc: Encoder::default(),
             first: 0,
             end: 0,
@@ -332,6 +337,7 @@ impl History {
 
     pub fn set_ram_limit(&mut self, bytes: usize) {
         self.ram_limit = bytes;
+        self.cached = std::cell::OnceCell::new();
         self.spill();
     }
 
@@ -387,6 +393,7 @@ impl History {
     /// Appends rows leaving the grid, oldest first.
     pub fn push_rows(&mut self, rows: &[Row<Cell>]) {
         self.partial_shared = std::cell::OnceCell::new();
+        self.cached = std::cell::OnceCell::new();
         for (i, row) in rows.iter().enumerate() {
             // Rows come from the terminal's thread, not from this one's cache.
             if let Some(later) = rows.get(i + 2) {
@@ -416,6 +423,7 @@ impl History {
         self.open = Open::default();
         self.partial.clear();
         self.partial_shared = std::cell::OnceCell::new();
+        self.cached = std::cell::OnceCell::new();
         self.partial_enc = Encoder::default();
         self.first = lines_dropped;
         self.end = lines_dropped;
@@ -500,8 +508,13 @@ impl History {
         Ok(d)
     }
 
-    /// A copy of the history to read from any thread.
+    /// A copy of the history to read from any thread. The same one until
+    /// the history changes: the copy is shared, not made again.
     pub fn snapshot(&self) -> Snapshot {
+        self.cached.get_or_init(|| self.take_snapshot()).clone()
+    }
+
+    fn take_snapshot(&self) -> Snapshot {
         let mut entries = self.entries.clone();
         if !self.open.starts.is_empty() {
             let count = self.open.starts.len() as u64;
@@ -915,6 +928,25 @@ mod tests {
         for i in [0, 1234, 20_000, got.len() - 1] {
             assert_eq!(got[i], text.lines().nth(i).unwrap());
         }
+    }
+
+    #[test]
+    fn snapshots_are_shared_until_the_history_changes() {
+        let (mut t, history, _dir) = setup("cache", RAM);
+        feed_numbered(&mut t, 0, 1000);
+        let (a, b) = {
+            let h = settled(&mut t, &history);
+            (h.snapshot(), h.snapshot())
+        };
+        assert!(Arc::ptr_eq(&a.entries, &b.entries), "the same copy");
+        feed_numbered(&mut t, 1000, 1100);
+        let c = settled(&mut t, &history).snapshot();
+        assert!(!Arc::ptr_eq(&a.entries, &c.entries), "a new one after more lines");
+        assert_eq!(c.end_line(), t.term.grid().lines_dropped());
+        assert_eq!(texts(&c).len() as u64, c.end_line());
+        t.feed("\x1b[3J");
+        let d = settled(&mut t, &history).snapshot();
+        assert!(texts(&d).is_empty(), "a new one after a clear");
     }
 
     #[test]

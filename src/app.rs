@@ -213,6 +213,15 @@ impl Tab {
         let budget = self.session.budget();
         self.scroller.sync(&mut live, &self.session.history, &budget);
     }
+
+    /// Forgets line positions cached for a terminal other than the one
+    /// shown now (a window built or dropped since): they don't hold in it.
+    fn sync_lines(&mut self) {
+        if self.scroller.changes() != self.shown_changes {
+            self.shown_changes = self.scroller.changes();
+            self.lines.invalidate();
+        }
+    }
 }
 
 enum Overlay {
@@ -557,6 +566,16 @@ impl App {
         self.apply_config(new);
     }
 
+    /// The settings and the window's state, while the app runs. After
+    /// `exit()` winit still delivers the events queued, and with the last
+    /// tab closed there is nothing to handle them for (`tab()` would panic).
+    fn live(&mut self, el: &ActiveEventLoop) -> Option<(&Config, &mut State)> {
+        if el.exiting() {
+            return None;
+        }
+        Some((&self.cfg, self.state.as_mut()?))
+    }
+
     fn perform(&mut self, el: &ActiveEventLoop, action: Action) {
         let Some(st) = self.state.as_mut() else { return };
         if !matches!(
@@ -706,6 +725,16 @@ fn cell_at(pos: (f32, f32), top: f32, pad: f32, gutter: f32, cell: (f32, f32), g
     let row = ((y / ch) as usize).min(grid.num_lines as usize - 1);
     let side = if x - col as f32 * cw > cw / 2.0 { Side::Right } else { Side::Left };
     (col, row, side)
+}
+
+/// The button as reported to programs; None for the extra buttons.
+fn mouse_button(b: WinitButton) -> Option<MouseButton> {
+    Some(match b {
+        WinitButton::Left => MouseButton::Left,
+        WinitButton::Middle => MouseButton::Middle,
+        WinitButton::Right => MouseButton::Right,
+        _ => return None,
+    })
 }
 
 fn grid_size(r: &Renderer, cfg: &Config, scale: f64) -> WindowSize {
@@ -1185,11 +1214,7 @@ impl State {
             let tab = &mut self.tabs[self.active];
             let budget = tab.session.budget();
             tab.scroller.sync(&mut live, &tab.session.history, &budget);
-            if tab.scroller.changes() != tab.shown_changes {
-                // Another terminal is shown: cached row positions don't hold.
-                tab.shown_changes = tab.scroller.changes();
-                tab.lines.invalidate();
-            }
+            tab.sync_lines();
             let scroll = tab.scroller.metrics(&live, &tab.session.history);
             if !live.mode().contains(TermMode::ALT_SCREEN) {
                 let first = crate::history::lock(&tab.session.history).first_line();
@@ -1270,11 +1295,17 @@ impl State {
             self.renderer.build(|p| view::draw(p, term, &v, &c));
         }
         let t1 = Instant::now();
-        self.renderer.present(self.palette.background);
+        let shown = self.renderer.present(self.palette.background);
         let end = Instant::now();
         self.frames.add(t1 - t0, end - t1);
         self.frame_cost = end - t0;
         self.last_frame = end;
+        if !shown {
+            // The surface was lost and set up again: draw again soon, not
+            // at once, in case it stays lost for a while.
+            let retry = end + Duration::from_millis(50);
+            self.wake_at = Some(self.wake_at.map_or(retry, |t| t.min(retry)));
+        }
 
         let tab = &self.tabs[self.active];
         if animating || self.renderer.needs_rebuild() || tab.search.recount_pending() || tab.search.boxes.iter().any(|b| b.counting) {
@@ -1297,6 +1328,7 @@ impl State {
         let (_, _, _, row) = self.mouse_cell(cfg, offset);
         let over_text = self.mouse.1 >= self.top();
         let tab = &mut self.tabs[self.active];
+        tab.sync_lines();
         let live = tab.session.term.lock();
         if live.mode().contains(TermMode::ALT_SCREEN) {
             return BookmarkMenu::default();
@@ -1313,6 +1345,7 @@ impl State {
         let offset = self.tab_mut().shown(|t| t.grid().display_offset());
         let (_, _, _, pointer_row) = self.mouse_cell(cfg, offset);
         let tab = &mut self.tabs[self.active];
+        tab.sync_lines();
         let live = tab.session.term.lock();
         let grid = tab.scroller.shown(&live).grid();
         // In a window onto older lines there is no cursor: the pointer's row.
@@ -1331,6 +1364,7 @@ impl State {
     /// Scrolls to the next bookmark down (or up) in the active tab.
     fn jump_to_bookmark(&mut self, down: bool) {
         let tab = &mut self.tabs[self.active];
+        tab.sync_lines();
         let mut live = tab.session.term.lock();
         if live.mode().contains(TermMode::ALT_SCREEN) {
             return;
@@ -1629,16 +1663,20 @@ impl State {
         let m = self.metrics();
 
         if let Some(((sx, sy), (ox, oy))) = self.panel_drag {
-            self.panel_offset = (ox + x - sx, oy + y - sy);
-            // Keep the offset to where the panel can actually go, so
-            // dragging back from past an edge moves it at once.
-            if let Some(panel) = self.panel(cfg) {
-                let (cx, cy) = ((m.width - panel.rect.w) / 2.0, (m.height - panel.rect.h) / 2.0);
-                self.panel_offset = (panel.rect.x - cx, panel.rect.y - cy);
+            match self.panel(cfg) {
+                Some(panel) => {
+                    // Keep the offset to where the panel can actually go,
+                    // so dragging back from past an edge moves it at once.
+                    self.panel_offset = (ox + x - sx, oy + y - sy);
+                    let (cx, cy) = ((m.width - panel.rect.w) / 2.0, (m.height - panel.rect.h) / 2.0);
+                    self.panel_offset = (panel.rect.x - cx, panel.rect.y - cy);
+                    self.set_cursor(CursorIcon::Grabbing);
+                    self.window.request_redraw();
+                    return;
+                }
+                // The panel closed under the drag (Esc): the drag is over.
+                None => self.panel_drag = None,
             }
-            self.set_cursor(CursorIcon::Grabbing);
-            self.window.request_redraw();
-            return;
         }
 
         if let Overlay::Menu(menu) = &mut self.overlay {
@@ -1737,6 +1775,33 @@ impl State {
         let (x, y) = self.mouse;
         let pressed = state == ElementState::Pressed;
 
+        // A release ends what the press started, wherever the pointer has
+        // got to since: the tab bar, a menu, a panel. Otherwise the drag
+        // or selection would go on without a button held.
+        if !pressed {
+            if button == WinitButton::Left {
+                self.selecting = false;
+                let dragged = self.panel_drag.take().is_some() | self.scrollbar.drag.take().is_some();
+                if dragged {
+                    self.window.request_redraw();
+                    return None;
+                }
+            }
+            if let Some(b) = self.reported_button.filter(|b| Some(*b) == mouse_button(button)) {
+                // A program reporting the mouse gets its release too.
+                self.reported_button = None;
+                let offset = self.tab_mut().shown(|t| t.grid().display_offset());
+                let (_, _, col, row) = self.mouse_cell(cfg, offset);
+                let mode = *self.tab().session.term.lock().mode();
+                if mode.intersects(TermMode::MOUSE_MODE)
+                    && let Some(bytes) = input::encode_mouse(b, false, false, col, row, self.mods, mode)
+                {
+                    self.write(bytes);
+                }
+                return None;
+            }
+        }
+
         // Open menu: a click picks an item or dismisses the menu.
         if let Overlay::Menu(menu) = &self.overlay {
             if !pressed {
@@ -1761,9 +1826,6 @@ impl State {
         }
         // Panels are modal.
         if let Some(panel) = self.panel(cfg) {
-            if !pressed && button == WinitButton::Left && self.panel_drag.take().is_some() {
-                return None;
-            }
             if pressed && button == WinitButton::Left {
                 if let Some(a) = panel.hit(x, y) {
                     return Some(a);
@@ -1879,11 +1941,6 @@ impl State {
                 return None;
             }
         }
-        if !pressed && button == WinitButton::Left && self.scrollbar.drag.take().is_some() {
-            self.window.request_redraw();
-            return None;
-        }
-
         let offset = self.tab_mut().shown(|t| t.grid().display_offset());
         let (point, side, col, row) = self.mouse_cell(cfg, offset);
         let tab = &mut self.tabs[self.active];
@@ -1892,12 +1949,7 @@ impl State {
         let term = tab.scroller.shown_mut(&mut live);
 
         if mode.intersects(TermMode::MOUSE_MODE) && !self.mods.shift_key() {
-            let b = match button {
-                WinitButton::Left => MouseButton::Left,
-                WinitButton::Middle => MouseButton::Middle,
-                WinitButton::Right => MouseButton::Right,
-                _ => return None,
-            };
+            let b = mouse_button(button)?;
             self.reported_button = pressed.then_some(b);
             self.last_reported_cell = Some((col, row));
             if let Some(bytes) = input::encode_mouse(b, pressed, false, col, row, self.mods, mode) {
@@ -2086,8 +2138,13 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, el: &ActiveEventLoop, event: UserEvent) {
-        let cfg = &self.cfg;
-        let Some(st) = self.state.as_mut() else { return };
+        let Some((cfg, st)) = self.live(el) else {
+            // The command line still gets its answer (see `remote::handle`).
+            if let UserEvent::Remote(_, reply) = event {
+                let _ = reply.send(Err("the window is closing".to_owned()));
+            }
+            return;
+        };
         match event {
             UserEvent::Term(id, event) => {
                 if st.on_term_event(id, event) {
@@ -2123,8 +2180,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let cfg = &self.cfg;
-        let Some(st) = self.state.as_mut() else { return };
+        let Some((cfg, st)) = self.live(el) else { return };
         let action = match event {
             WindowEvent::CloseRequested => {
                 el.exit();
@@ -2215,6 +2271,9 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if el.exiting() {
+            return;
+        }
         let now = Instant::now();
         if now >= self.next_poll {
             self.next_poll = now + CONFIG_POLL;
