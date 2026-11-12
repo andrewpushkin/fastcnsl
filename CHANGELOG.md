@@ -19,6 +19,9 @@ releases have a section.
   folder and its environment variables start with `FASTCNSL_`.
 - The macOS download is a `.dmg`: open it and drag Fastcnsl onto
   Applications.
+- The window's size in columns and lines ("100x30") shows in the bottom
+  right corner for 5 s at launch and whenever it changes: resizing the
+  window or zooming the font.
 - Bug fixes.
 
 ## 0.1.84 (2026-11-09)
