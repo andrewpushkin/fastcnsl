@@ -226,21 +226,22 @@ redraws when something changes, so it stays responsive with large output.
 
 | Linux (Ubuntu 26.04) | plain text | colours | Unicode |
 |---|---:|---:|---:|
-| **fastcnsl** | **0.37** | **0.33** | **0.37** |
-| GNOME Terminal | 0.54 | 0.62 | 0.87 |
-| Ptyxis | 0.73 | 0.73 | 1.02 |
-| Konsole | 1.06 | 0.80 | 0.98 |
-| xterm | 1.03 | 1.32 | 1.25 |
+| **fastcnsl** | **0.36** | **0.33** | **0.38** |
+| GNOME Terminal | 0.53 | 0.63 | 0.86 |
+| Ptyxis | 0.68 | 0.73 | 0.97 |
+| Konsole | 1.05 | 0.79 | 0.96 |
+| xterm | 1.01 | 1.29 | 1.22 |
 
 | Windows, WSL tab | plain text | colours | Unicode |
 |---|---:|---:|---:|
-| **fastcnsl** | **0.32** | **0.26** | **0.27** |
-| Windows Terminal | 0.37 | 0.90 | 0.71 |
-| Classic console (conhost) | 0.59 | 2.21 | 1.17 |
+| **fastcnsl** | **0.31** | **0.27** | **0.28** |
+| Windows Terminal | 0.35 | 0.88 | 0.71 |
+| Classic console (conhost) | 0.56 | 2.16 | 1.23 |
 
 These are medians of 5 runs on a Ryzen 9 7940HX. The
 [full results](docs/BENCHMARK.md) include startup time, memory, CPU
-use, cmd and PowerShell output, and how to run the benchmark yourself.
+use, opening and closing 100 windows, output in 16 tabs at once, cmd and
+PowerShell output, and how to run the benchmark yourself.
 
 The title bar is a single row: tabs, ⋮ and the
 window buttons share it, leaving more room for text. Drag the empty part of
