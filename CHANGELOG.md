@@ -4,7 +4,7 @@ Notable changes to fastcnsl, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
-## Unreleased
+## 0.1.129 (2026-11-12)
 
 - **A tab's scrollback has no limit any more.** It keeps everything printed
   while the tab is open. Up to 500 MB of a tab's text stays in memory
