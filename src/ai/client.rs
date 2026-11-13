@@ -51,10 +51,6 @@ impl Client {
         Client { provider, key: key.to_owned(), base: base.trim_end_matches('/').to_owned(), agent: ureq::Agent::new_with_config(config) }
     }
 
-    pub fn provider(&self) -> Provider {
-        self.provider
-    }
-
     /// Asks one question.
     pub fn send(&self, r: &Request) -> Result<Reply, AiError> {
         let messages = self.provider.uses_messages_api();

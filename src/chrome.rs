@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use crate::ai::Provider;
 use crate::config::{Antialiasing, GpuBackend, LineNumbers, Setting, ThemeMode};
 use crate::shortcuts::{Command, Keymap};
 use crate::shortcuts;
@@ -75,6 +76,13 @@ pub enum Action {
     AiFix(Option<u64>),
     /// The one-time question before sending terminal text: go on or not.
     AiConfirm(bool),
+    /// Options → AI: the provider, its key from the clipboard, removing
+    /// the key, model N of `OptionsState::ai_models`, and a test request.
+    AiProvider(Provider),
+    AiPasteKey,
+    AiRemoveKey,
+    AiModel(usize),
+    AiTest,
 }
 
 /// The pages of the Options panel.
@@ -85,6 +93,7 @@ pub enum OptionsPage {
     Font,
     Shortcuts,
     Logging,
+    Ai,
 }
 
 /// Sizes shared by every layout.
@@ -663,6 +672,18 @@ pub struct OptionsState {
     pub antialiasing: Antialiasing,
     /// The settings that differ from their defaults: each gets a ↺.
     pub changed: Vec<Setting>,
+    /// Options → AI: the provider; its key from `ai-keys.toml`, masked;
+    /// else the environment variable that has one; the model; the custom
+    /// provider's address; the models the key can use and the first one
+    /// the list shows; and a line on the last request (loading, an error).
+    pub ai_provider: Provider,
+    pub ai_key: Option<String>,
+    pub ai_key_env: Option<&'static str>,
+    pub ai_model: String,
+    pub ai_base_url: String,
+    pub ai_models: Arc<[String]>,
+    pub ai_scroll: usize,
+    pub ai_status: String,
 }
 
 impl OptionsState {
@@ -696,6 +717,14 @@ impl Default for OptionsState {
             bold_is_bright: false,
             antialiasing: Antialiasing::Auto,
             changed: Vec::new(),
+            ai_provider: Provider::Off,
+            ai_key: None,
+            ai_key_env: None,
+            ai_model: String::new(),
+            ai_base_url: String::new(),
+            ai_models: Vec::new().into(),
+            ai_scroll: 0,
+            ai_status: String::new(),
         }
     }
 }
@@ -722,7 +751,8 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
     let c = b.tab(0.0, "General", Action::OptionsPage(OptionsPage::General), s.page == OptionsPage::General);
     let c = b.tab(c, "Font", Action::OptionsPage(OptionsPage::Font), s.page == OptionsPage::Font);
     let c = b.tab(c, "Keyboard shortcuts", Action::OptionsPage(OptionsPage::Shortcuts), s.page == OptionsPage::Shortcuts);
-    b.tab(c, "Logging", Action::OptionsPage(OptionsPage::Logging), s.page == OptionsPage::Logging);
+    let c = b.tab(c, "Logging", Action::OptionsPage(OptionsPage::Logging), s.page == OptionsPage::Logging);
+    b.tab(c, "AI", Action::OptionsPage(OptionsPage::Ai), s.page == OptionsPage::Ai);
     if s.page == OptionsPage::Shortcuts {
         if s.capturing.is_some() {
             // The command's button says "Press keys…".
@@ -802,6 +832,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
             }
         }
         OptionsPage::Font => font_page(&mut b, s),
+        OptionsPage::Ai => ai_page(&mut b, s),
         OptionsPage::Shortcuts => {
             b.dense();
             for cmd in Command::ALL {
@@ -961,6 +992,74 @@ pub fn ai_confirm_panel(m: &Metrics, provider: &str, offset: (f32, f32)) -> Pane
     let c = b.button(0.0, "Send", Action::AiConfirm(true), true);
     b.button(c, "Cancel", Action::AiConfirm(false), false);
     b.finish()
+}
+
+/// Options → AI: provider, key, model and the list of models.
+fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
+    let label_w = 20.0;
+    if b.fits_rows(1) {
+        b.text(0.0, "Provider", TextStyle::Normal);
+        let mut c = label_w;
+        for p in std::iter::once(Provider::Off).chain(Provider::CHOICES) {
+            c = b.button(c, p.label(), Action::AiProvider(p), s.ai_provider == p);
+        }
+        b.next();
+    }
+    let compact = !b.fits_rows(8);
+    if !compact {
+        b.text(label_w, "Fix sends your last commands and their output to the provider.", TextStyle::Dim);
+        b.next();
+    }
+    if s.ai_provider == Provider::Off {
+        if b.fits_rows(1) {
+            b.text(label_w, "Pick one to fix commands with AI. You need an API key from it.", TextStyle::Dim);
+            b.next();
+        }
+        return;
+    }
+    if b.fits_rows(1) {
+        b.text(0.0, "API key", TextStyle::Normal);
+        let key = match (&s.ai_key, s.ai_key_env) {
+            (Some(k), _) => k.clone(),
+            (None, Some(var)) => format!("from {var}"),
+            (None, None) if s.ai_provider == Provider::Custom => "none (a local server needs none)".to_owned(),
+            (None, None) => "not set".to_owned(),
+        };
+        b.text(label_w, &key, TextStyle::Normal);
+        let c = b.button(label_w + key.chars().count() as f32 + 2.0, "Paste key", Action::AiPasteKey, false);
+        if s.ai_key.is_some() {
+            b.button(c, "Remove", Action::AiRemoveKey, false);
+        }
+        b.next();
+    }
+    if s.ai_provider == Provider::Custom && b.fits_rows(1) {
+        b.text(0.0, "Address", TextStyle::Normal);
+        if s.ai_base_url.is_empty() {
+            b.text(label_w, "set base_url in config.toml", TextStyle::Dim);
+        } else {
+            b.text(label_w, &s.ai_base_url, TextStyle::Normal);
+        }
+        b.next();
+    }
+    if b.fits_rows(1) {
+        b.text(0.0, "Model", TextStyle::Normal);
+        let model = if s.ai_model.is_empty() { "none chosen" } else { s.ai_model.as_str() };
+        b.text(label_w, model, TextStyle::Normal);
+        let c = b.button(label_w + model.chars().count() as f32 + 2.0, "Test", Action::AiTest, false);
+        b.text(c, &s.ai_status, TextStyle::Dim);
+        b.next();
+    }
+    if !b.fits_rows(2) || s.ai_models.is_empty() {
+        return;
+    }
+    if !compact {
+        b.gap();
+    }
+    b.text(0.0, "MODELS", TextStyle::Dim);
+    b.next();
+    b.dense();
+    let chosen = s.ai_models.iter().position(|m| *m == s.ai_model);
+    b.list(&s.ai_models, s.ai_scroll, chosen, Action::AiModel);
 }
 
 pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str, offset: (f32, f32)) -> Panel {
@@ -1406,6 +1505,64 @@ mod tests {
         assert!(off.active);
         let normal = options_panel(&m(), &OptionsState::default(), (0.0, 0.0));
         assert!(normal.buttons.iter().any(|b| b.action == Action::LineNumbers(LineNumbers::Command) && b.active));
+    }
+
+    fn ai_state() -> OptionsState {
+        OptionsState {
+            page: OptionsPage::Ai,
+            ai_provider: Provider::Anthropic,
+            ai_key: Some("sk-…wxyz".into()),
+            ai_model: "claude-opus-5-5".into(),
+            ai_models: vec!["claude-opus-5-5".to_owned(), "claude-sonnet-5-5".to_owned()].into(),
+            ..OptionsState::default()
+        }
+    }
+
+    #[test]
+    fn ai_page_shows_key_model_and_list() {
+        let p = options_panel(&m(), &ai_state(), (0.0, 0.0));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiProvider(Provider::Anthropic) && b.active));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiPasteKey));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiRemoveKey));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiTest));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiModel(0) && b.active));
+        assert!(p.lines.iter().any(|l| l.text.contains("sk-…wxyz")));
+        assert_eq!(p.list.map(|l| l.len), Some(2));
+    }
+
+    #[test]
+    fn ai_page_without_key_says_not_set_and_has_no_remove() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::OpenAi, ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("not set")));
+        assert!(!p.buttons.iter().any(|b| b.action == Action::AiRemoveKey));
+        let env = OptionsState { ai_key_env: Some("OPENAI_API_KEY"), ..s };
+        let p = options_panel(&m(), &env, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("from OPENAI_API_KEY")));
+    }
+
+    #[test]
+    fn ai_page_off_has_only_the_provider_row() {
+        let s = OptionsState { page: OptionsPage::Ai, ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiProvider(Provider::Off) && b.active));
+        assert!(!p.buttons.iter().any(|b| b.action == Action::AiPasteKey));
+    }
+
+    #[test]
+    fn ai_page_custom_shows_its_address() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::Custom, ai_base_url: "http://localhost:11434/v1".into(), ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("http://localhost:11434/v1")));
+    }
+
+    #[test]
+    fn ai_page_stays_inside_a_small_window() {
+        let small = Metrics { width: 500.0, height: 260.0, ..m() };
+        let p = options_panel(&small, &ai_state(), (0.0, 0.0));
+        for b in &p.buttons {
+            assert!(b.rect.y + b.rect.h <= p.rect.y + p.rect.h + 0.5, "{:?} below the panel", b.action);
+        }
     }
 
     #[test]

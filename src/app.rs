@@ -19,7 +19,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
-use crate::ai::{self, AiEvent, Provider};
+use crate::ai::{self, AiEvent};
 use crate::chrome::{self, Action, BookmarkMenu, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
 use crate::config::{Config, ConfigWatcher, GpuBackend, Setting, ThemeMode};
 use crate::detect;
@@ -346,6 +346,16 @@ struct State {
     next_ai_job: u64,
     /// API keys (`ai-keys.toml`).
     ai_keys: ai::Keys,
+    /// Options → AI: the models the key can use, the first one its list
+    /// shows, the line about the last request, and the model-list and
+    /// Test requests being waited for.
+    ai_models: std::sync::Arc<[String]>,
+    ai_scroll: usize,
+    ai_status: String,
+    ai_models_job: Option<u64>,
+    ai_test_job: Option<u64>,
+    /// The model chosen when the list was asked for, to scroll to it.
+    ai_model_shown: String,
 }
 
 /// Fastest frame rate while output streams in (120/s).
@@ -568,6 +578,12 @@ impl App {
             ai_job: None,
             next_ai_job: 0,
             ai_keys: ai::Keys::path().map(|p| ai::Keys::load(&p)).unwrap_or_default(),
+            ai_models: Vec::new().into(),
+            ai_scroll: 0,
+            ai_status: String::new(),
+            ai_models_job: None,
+            ai_test_job: None,
+            ai_model_shown: String::new(),
         };
         st.show_size();
         let (name, command) = self.first_tab.clone();
@@ -662,6 +678,11 @@ impl App {
                 | Action::ResetKeys
                 | Action::ResetSetting(_)
                 | Action::ApplyKeys
+                | Action::AiProvider(_)
+                | Action::AiPasteKey
+                | Action::AiRemoveKey
+                | Action::AiModel(_)
+                | Action::AiTest
         )
             || matches!(st.overlay, Overlay::Menu(_))
         {
@@ -797,7 +818,37 @@ impl App {
                 if page == OptionsPage::Font {
                     st.open_font_page(&self.cfg);
                 }
+                if page == OptionsPage::Ai {
+                    st.load_ai_models(&self.cfg);
+                }
             }
+            Action::AiProvider(p) => {
+                if p != self.cfg.ai.provider {
+                    // Model names differ between providers.
+                    self.change_config(|c| {
+                        c.ai.provider = p;
+                        c.ai.model.clear();
+                    });
+                }
+                if let Some(st) = self.state.as_mut() {
+                    st.load_ai_models(&self.cfg);
+                }
+            }
+            Action::AiPasteKey => {
+                st.paste_ai_key(&self.cfg);
+            }
+            Action::AiRemoveKey => {
+                st.set_ai_key(&self.cfg, None);
+                st.ai_models = Vec::new().into();
+                st.ai_status = "Key removed".to_owned();
+            }
+            Action::AiModel(i) => {
+                if let Some(model) = st.ai_models.get(i).cloned() {
+                    st.ai_status.clear();
+                    self.change_config(|c| c.ai.model = model);
+                }
+            }
+            Action::AiTest => st.test_ai(&self.cfg),
         }
     }
 }
@@ -1322,6 +1373,14 @@ impl State {
             bold_is_bright: cfg.bold_is_bright,
             antialiasing: cfg.antialiasing,
             changed: Setting::changed(cfg),
+            ai_provider: cfg.ai.provider,
+            ai_key: self.ai_keys.in_file(cfg.ai.provider).map(ai::keys::mask),
+            ai_key_env: self.ai_keys.in_env(cfg.ai.provider).and(cfg.ai.provider.env_var()),
+            ai_model: cfg.ai.model_or_default(),
+            ai_base_url: cfg.ai.base_url.clone(),
+            ai_models: self.ai_models.clone(),
+            ai_scroll: self.ai_scroll,
+            ai_status: self.ai_status.clone(),
         }
     }
 
@@ -1504,18 +1563,20 @@ impl State {
     /// command), with the commands before it as context.
     fn ai_fix(&mut self, cfg: &Config, at: Option<u64>) {
         let provider = cfg.ai.provider;
-        if provider == Provider::Off {
-            self.show(format!("AI: {}", ai::AiError::NoProvider));
-            return;
-        }
+        let model = cfg.ai.model_or_default();
         let client = match ai::client::Client::new(&cfg.ai, &self.ai_keys) {
+            Ok(_) if model.is_empty() => Err(ai::AiError::NoModel),
+            r => r,
+        };
+        let client = match client {
             Ok(c) => c,
+            // Not set up yet: the page where it is.
+            Err(e @ (ai::AiError::NoProvider | ai::AiError::NoKey | ai::AiError::NoModel | ai::AiError::NoAddress)) => {
+                self.open_ai_options(cfg);
+                return self.show(format!("AI: {e}"));
+            }
             Err(e) => return self.show(format!("AI: {e}")),
         };
-        let model = cfg.ai.model_or_default();
-        if model.is_empty() {
-            return self.show(format!("AI: {}", ai::AiError::NoModel));
-        }
         if !cfg.ai.confirmed.contains(&provider) {
             self.overlay = Overlay::AiConfirm(at);
             self.panel_offset = (0.0, 0.0);
@@ -1541,10 +1602,10 @@ impl State {
         }
         let env = ai::context::Env { shell, os: std::env::consts::OS, program: tab.app.clone() };
         let context = ai::context::build(&env, &commands);
-        let job = self.next_ai_job;
-        self.next_ai_job += 1;
-        self.ai_job = Some((job, tab.id));
-        ai::fix::start(job, tab.id, client, model, context, self.proxy.clone());
+        let tab_id = tab.id;
+        let job = self.ai_job_number();
+        self.ai_job = Some((job, tab_id));
+        ai::fix::start(job, tab_id, client, model, context, self.proxy.clone());
         self.show_for(format!("Asking {}… Esc cancels", provider.label()), Duration::from_secs(120));
     }
 
@@ -1566,7 +1627,109 @@ impl State {
                     Err(e) => self.show(format!("AI: {e}")),
                 }
             }
-            AiEvent::Models { .. } | AiEvent::Tested { .. } => {}
+            AiEvent::Models { job, result } => {
+                if self.ai_models_job != Some(job) {
+                    return;
+                }
+                self.ai_models_job = None;
+                match result {
+                    Ok(models) => {
+                        self.ai_status = if models.is_empty() { "The provider lists no models".to_owned() } else { String::new() };
+                        self.ai_models = models.into();
+                    }
+                    Err(e) => self.ai_status = e.to_string(),
+                }
+                self.ai_scroll = self.ai_models.iter().position(|m| m == &self.ai_model_shown).unwrap_or(0).saturating_sub(3);
+                self.window.request_redraw();
+            }
+            AiEvent::Tested { job, result } => {
+                if self.ai_test_job != Some(job) {
+                    return;
+                }
+                self.ai_test_job = None;
+                self.ai_status = match result {
+                    Ok(()) => "Works".to_owned(),
+                    Err(e) => e.to_string(),
+                };
+                self.window.request_redraw();
+            }
+        }
+    }
+
+    /// Opens Options on the AI page.
+    fn open_ai_options(&mut self, cfg: &Config) {
+        self.overlay = Overlay::Options;
+        self.options_page = OptionsPage::Ai;
+        self.panel_offset = (0.0, 0.0);
+        self.capturing = None;
+        self.load_ai_models(cfg);
+        self.window.request_redraw();
+    }
+
+    /// A new job number for an AI request.
+    fn ai_job_number(&mut self) -> u64 {
+        self.next_ai_job += 1;
+        self.next_ai_job
+    }
+
+    /// Asks the provider for its models, for Options → AI.
+    fn load_ai_models(&mut self, cfg: &Config) {
+        self.ai_models = Vec::new().into();
+        self.ai_model_shown = cfg.ai.model_or_default();
+        match ai::client::Client::new(&cfg.ai, &self.ai_keys) {
+            Ok(client) => {
+                let job = self.ai_job_number();
+                self.ai_models_job = Some(job);
+                self.ai_status = "Loading models…".to_owned();
+                ai::fix::list_models(job, client, self.proxy.clone());
+            }
+            Err(ai::AiError::NoProvider) => self.ai_status.clear(),
+            Err(e) => self.ai_status = e.to_string(),
+        }
+    }
+
+    /// Options → AI → Paste key: the clipboard's text, if it looks like a key.
+    fn paste_ai_key(&mut self, cfg: &Config) {
+        let text = self.clipboard_text().unwrap_or_default();
+        let key = text.trim();
+        if key.is_empty() || key.chars().any(char::is_whitespace) {
+            self.ai_status = "Copy the key first: the clipboard has no key".to_owned();
+            return;
+        }
+        let key = key.to_owned();
+        if self.set_ai_key(cfg, Some(key)) {
+            self.load_ai_models(cfg);
+        }
+    }
+
+    /// Saves (or removes) the provider's key; false if it couldn't be saved.
+    fn set_ai_key(&mut self, cfg: &Config, key: Option<String>) -> bool {
+        self.ai_keys.set(cfg.ai.provider, key);
+        let saved = match ai::Keys::path() {
+            Some(path) => self.ai_keys.save(&path).map_err(|e| format!("could not save the key: {e}")),
+            None => Err("no settings folder to keep the key in".to_owned()),
+        };
+        match saved {
+            Ok(()) => true,
+            Err(e) => {
+                self.ai_status = e;
+                false
+            }
+        }
+    }
+
+    /// Options → AI → Test: one short request with the key and model.
+    fn test_ai(&mut self, cfg: &Config) {
+        let model = cfg.ai.model_or_default();
+        match ai::client::Client::new(&cfg.ai, &self.ai_keys) {
+            Ok(_) if model.is_empty() => self.ai_status = ai::AiError::NoModel.to_string(),
+            Ok(client) => {
+                let job = self.ai_job_number();
+                self.ai_test_job = Some(job);
+                self.ai_status = "Testing…".to_owned();
+                ai::fix::test(job, client, model, self.proxy.clone());
+            }
+            Err(e) => self.ai_status = e.to_string(),
         }
     }
 
@@ -2364,7 +2527,11 @@ impl State {
         let Some(whole) = self.wheel_lines(delta) else { return };
         let first = list.scrolled(-i64::from(whole));
         if first != list.first {
-            self.font_scroll = first;
+            if self.options_page == OptionsPage::Ai {
+                self.ai_scroll = first;
+            } else {
+                self.font_scroll = first;
+            }
             // The rows moved under the pointer.
             self.hover = self.chrome_hover(cfg, self.mouse.0, self.mouse.1);
             self.window.request_redraw();
