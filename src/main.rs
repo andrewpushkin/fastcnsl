@@ -1,6 +1,6 @@
 //! fastcnsl: a fast, GPU-accelerated terminal.
-// Denied rather than forbidden so that render::dwrite (Windows) can make
-// its one DirectWrite call.
+// Denied rather than forbidden so that render::freetype can call FreeType
+// and Windows builds can read the system's ClearType settings.
 #![deny(unsafe_code)]
 // No console window behind the terminal on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]

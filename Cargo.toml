@@ -35,12 +35,15 @@ toml = "1.2.1"
 unicode-width = "0.2.3"
 wgpu = "30.0.1"
 winit = "0.30.13"
+# Glyphs rasterised by FreeType on every platform, as wezterm does; built
+# from its bundled C sources (no PNG: colour emoji are drawn by swash).
+freetype-sys-nopng = { version = "0.24.0", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 # Event types in alacritty_terminal's PTY traits, for the WSL pipe PTY.
 polling = "3.11.0"
-# Glyphs rasterised by DirectWrite, like other Windows apps.
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_DirectWrite", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+# Attaching to the parent console, and the system's ClearType settings.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 lto = "thin"

@@ -1136,7 +1136,8 @@ impl State {
 
     fn reload_font(&mut self, cfg: &Config) {
         let px = font_px(self.font_pt, self.window.scale_factor());
-        self.renderer.glyphs.set_font(&cfg.font_family, px, cfg.line_height);
+        let hinted = crate::render::glyphs::hinted(self.window.scale_factor());
+        self.renderer.glyphs.set_font(&cfg.font_family, px, cfg.line_height, hinted);
         self.resize_grid(cfg);
     }
 

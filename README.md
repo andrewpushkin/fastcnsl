@@ -344,9 +344,11 @@ Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`). Keys: a character,
 `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 `Up`/`Down`/`Left`/`Right`, `F1`–`F12`, and similar.
 
-**Text on Windows** is drawn by DirectWrite, like in other Windows apps.
-With `antialiasing = "auto"` it follows the system: ClearType when "Adjust
-ClearType text" is on, grayscale otherwise.
+**Text** is drawn by FreeType on every platform, the way wezterm draws it:
+hinted at normal DPI, unhinted on high-DPI screens, and blended without
+gamma correction. On Windows, `antialiasing = "auto"` follows the system:
+sub-pixel (LCD) text when "Adjust ClearType text" is on, grayscale
+otherwise.
 
 ## Command line
 

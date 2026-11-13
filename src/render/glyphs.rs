@@ -2,7 +2,8 @@
 //!
 //! Each (character, bold, italic) is shaped once with cosmic-text (which
 //! also handles font fallback for emoji, CJK, symbols...), rasterised with
-//! swash and packed into one RGBA texture. After that, drawing a glyph is a
+//! FreeType as wezterm does (swash for colour glyphs) and packed into one
+//! RGBA texture. After that, drawing a glyph is a
 //! table lookup; ASCII skips the hash map entirely.
 
 use std::collections::HashMap;
@@ -102,17 +103,6 @@ enum Slot {
     Ready(Glyph),
 }
 
-/// Off Windows there is no native rasteriser; this stands in for its mask.
-#[cfg(not(windows))]
-struct NativeMask {
-    left: i32,
-    top: i32,
-    width: u32,
-    height: u32,
-    subpixel: bool,
-    data: Vec<u8>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellMetrics {
     pub width: f32,
@@ -144,15 +134,21 @@ pub struct GlyphCache {
     pub overflowed: bool,
     /// How long startup waited for the font database.
     pub font_wait: Duration,
-    /// Rasterise with ClearType (per-channel coverage) where the platform
-    /// rasteriser offers it.
+    /// Rasterise with sub-pixel (LCD) coverage per colour channel.
     subpixel: bool,
-    #[cfg(windows)]
-    dwrite: super::dwrite::Rasterizer,
+    /// Apply the fonts' hinting; see `hinted`.
+    hinted: bool,
+    freetype: super::freetype::Rasterizer,
+}
+
+/// Whether glyphs are hinted at this window scale. wezterm hints below
+/// 100 DPI (scale 1 at 96 DPI) and leaves high-DPI text unhinted.
+pub fn hinted(scale: f64) -> bool {
+    96.0 * scale < 100.0
 }
 
 impl GlyphCache {
-    pub fn new(device: &wgpu::Device, family: &str, font_px: f32, line_height: f32, subpixel: bool) -> Self {
+    pub fn new(device: &wgpu::Device, family: &str, font_px: f32, line_height: f32, hinted: bool, subpixel: bool) -> Self {
         let (mut font_system, font_wait) = take_font_system();
         let family = resolve_family(&mut font_system, family);
         let metrics_ct = Metrics::new(font_px, (font_px * line_height).round());
@@ -176,8 +172,8 @@ impl GlyphCache {
             overflowed: false,
             font_wait,
             subpixel,
-            #[cfg(windows)]
-            dwrite: Default::default(),
+            hinted,
+            freetype: super::freetype::Rasterizer::new(super::system_bgr()),
         };
         cache.metrics = cache.measure(line_height);
         cache
@@ -192,10 +188,11 @@ impl GlyphCache {
         self.size
     }
 
-    /// Changes font family or size. Clears the atlas.
-    pub fn set_font(&mut self, family: &str, font_px: f32, line_height: f32) {
+    /// Changes font family, size or hinting. Clears the atlas.
+    pub fn set_font(&mut self, family: &str, font_px: f32, line_height: f32, hinted: bool) {
         self.family = resolve_family(&mut self.font_system, family);
         self.font_px = font_px;
+        self.hinted = hinted;
         self.scratch.set_metrics(Metrics::new(font_px, (font_px * line_height).round()));
         self.metrics = self.measure(line_height);
         self.clear();
@@ -285,7 +282,8 @@ impl GlyphCache {
         else {
             return Slot::Empty;
         };
-        let (left, top, w, h, content, data) = match self.native(key, c, style) {
+        let native = self.freetype.rasterize(&mut self.font_system, key, self.hinted, self.subpixel);
+        let (left, top, w, h, content, data) = match native {
             Some(m) => {
                 let content = if m.subpixel { SwashContent::SubpixelMask } else { SwashContent::Mask };
                 (m.left, m.top, m.width, m.height, content, m.data)
@@ -365,18 +363,6 @@ impl GlyphCache {
         })
     }
 
-    /// The platform's own rasteriser, where there is one: DirectWrite on
-    /// Windows. None means swash draws the glyph.
-    #[cfg(windows)]
-    fn native(&mut self, key: cosmic_text::CacheKey, c: char, style: GlyphStyle) -> Option<super::dwrite::Mask> {
-        self.dwrite.rasterize(&mut self.font_system, key, c, style.italic, self.subpixel)
-    }
-
-    #[cfg(not(windows))]
-    fn native(&mut self, _key: cosmic_text::CacheKey, _c: char, _style: GlyphStyle) -> Option<NativeMask> {
-        None
-    }
-
     /// Names of installed monospace font families, for the settings help.
     #[allow(dead_code)]
     pub fn monospace_families(&self) -> Vec<String> {
@@ -423,7 +409,7 @@ mod tests {
 
     fn cache() -> Option<(GlyphCache, wgpu::Queue)> {
         let (device, queue) = testing::device()?;
-        Some((GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2, false), queue))
+        Some((GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2, true, false), queue))
     }
 
     #[test]
@@ -458,7 +444,7 @@ mod tests {
         let Some((mut g, q)) = cache() else { return };
         let small = g.metrics;
         g.get(&q, 'x', GlyphStyle::REGULAR);
-        g.set_font("DejaVu Sans Mono", 32.0, 1.2);
+        g.set_font("DejaVu Sans Mono", 32.0, 1.2, true);
         assert!(g.metrics.width > small.width);
         assert!(g.metrics.height > small.height);
         assert!(g.other.is_empty());
@@ -471,7 +457,7 @@ mod tests {
         assert_eq!(g.size(), ATLAS_START);
         // Big glyphs fill the atlas quickly: ASCII, Cyrillic and Greek in
         // four styles, over and over.
-        g.set_font("DejaVu Sans Mono", 200.0, 1.2);
+        g.set_font("DejaVu Sans Mono", 200.0, 1.2, true);
         let styles = [(false, false), (true, false), (false, true), (true, true)];
         let mut glyphs = std::iter::repeat_with(|| ('!'..='~').chain('А'..='я').chain('Α'..='ω'))
             .flatten()
@@ -497,7 +483,7 @@ mod tests {
     #[test]
     fn unknown_family_falls_back_to_an_installed_monospace_font() {
         let Some((device, _)) = testing::device() else { return };
-        let g = GlyphCache::new(&device, "No Such Font 12345", 16.0, 1.2, false);
+        let g = GlyphCache::new(&device, "No Such Font 12345", 16.0, 1.2, true, false);
         assert_ne!(g.family, "No Such Font 12345");
         assert!(g.metrics.width > 0.0);
     }

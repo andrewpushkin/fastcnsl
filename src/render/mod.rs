@@ -7,8 +7,7 @@
 //! building a frame allocates nothing in steady state.
 
 mod boxdraw;
-#[cfg(windows)]
-mod dwrite;
+mod freetype;
 pub mod glyphs;
 
 use std::sync::Arc;
@@ -133,12 +132,43 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {{
 }
 
 /// Whether the operating system draws text with sub-pixel smoothing
-/// (ClearType). Only Windows is asked; its text is drawn by DirectWrite.
+/// (ClearType). Only Windows is asked.
 pub fn system_subpixel() -> bool {
     #[cfg(windows)]
-    return dwrite::system_cleartype().is_some();
+    return system_cleartype().is_some();
     #[cfg(not(windows))]
     false
+}
+
+/// Whether the screen's sub-pixels run blue-green-red, as Windows'
+/// ClearType settings say; elsewhere they are taken to be red-green-blue.
+fn system_bgr() -> bool {
+    #[cfg(windows)]
+    return system_cleartype() == Some(true);
+    #[cfg(not(windows))]
+    false
+}
+
+/// Whether Windows draws text with ClearType (the "Adjust ClearType text"
+/// setting), and whether the screen's sub-pixels run blue-green-red.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn system_cleartype() -> Option<bool> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETFONTSMOOTHING, SPI_GETFONTSMOOTHINGORIENTATION, SPI_GETFONTSMOOTHINGTYPE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        SystemParametersInfoW,
+    };
+    let get = |action| {
+        let mut v = 0u32;
+        // SAFETY: each of these queries writes one UINT into `v`.
+        unsafe { SystemParametersInfoW(action, 0, Some(&mut v as *mut u32 as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) }
+            .ok()
+            .map(|()| v)
+    };
+    const FE_FONTSMOOTHINGCLEARTYPE: u32 = 2;
+    const FE_FONTSMOOTHINGORIENTATIONBGR: u32 = 0;
+    let on = get(SPI_GETFONTSMOOTHING)? != 0 && get(SPI_GETFONTSMOOTHINGTYPE)? == FE_FONTSMOOTHINGCLEARTYPE;
+    on.then(|| get(SPI_GETFONTSMOOTHINGORIENTATION) == Some(FE_FONTSMOOTHINGORIENTATIONBGR))
 }
 
 /// The wgpu backends for a chosen API, tried one at a time, and whether
@@ -370,7 +400,8 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let gpu_time = start.elapsed();
-        let glyphs = GlyphCache::new(&device, font_family, font_px, line_height, subpixel && dual);
+        let hinted = glyphs::hinted(window.scale_factor());
+        let glyphs = GlyphCache::new(&device, font_family, font_px, line_height, hinted, subpixel && dual);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader"),
@@ -712,7 +743,7 @@ pub(crate) mod testing {
                 eprintln!("no GPU adapter: skipping GPU test");
                 return None;
             };
-            let glyphs = GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2, false);
+            let glyphs = GlyphCache::new(&device, "DejaVu Sans Mono", 16.0, 1.2, true, false);
             Some(Self { _device: device, queue, glyphs, layers: Default::default() })
         }
 

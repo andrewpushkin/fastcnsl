@@ -53,33 +53,9 @@ fn vs(@builtin(vertex_index) vi: u32, i: InstanceIn) -> VOut {
     return out;
 }
 
-// Glyph coverage is blended in gamma space; uncorrected, light text on a
-// dark background looks thin and dark text on light looks heavy. Correct it
-// with DirectWrite's formulas: enhanced contrast, then the alpha correction
-// for gamma 1.8 (the Windows default). The contrast, 0.4 for every text
-// colour, was fitted to Windows Terminal's pixels for light-on-dark and
-// dark-on-light Cascadia Mono; it leaves no measurable bias either way.
-fn text_coverage(a: f32, rgb: vec3<f32>) -> f32 {
-    let k = 0.4;
-    let c = a * (k + 1.0) / (a * k + 1.0);
-    let f = dot(rgb, vec3<f32>(0.25, 0.5, 0.25));
-    let g = vec4<f32>(0.1469, -0.8911, 1.4644, -0.3234) / 4.0;
-    return clamp(c + c * (1.0 - c) * ((g.x * f + g.y) * c + (g.z * f + g.w)), 0.0, 1.0);
-}
-
-// ClearType: DirectWrite's correction per sub-pixel, each channel weighted
-// by the text colour's own channel. Fitted to native Windows ClearType
-// (DirectWrite drawing into a GDI bitmap with the system settings) at
-// gamma 1.8: light text needs enhanced contrast 0.6, dark text none;
-// colours in between are interpolated by brightness. Both then match the
-// native pixels to within 0.01 on average.
-fn cleartype_coverage(t: vec3<f32>, rgb: vec3<f32>) -> vec3<f32> {
-    let luma = dot(rgb, vec3<f32>(0.30, 0.59, 0.11));
-    let k = 0.6 * clamp((luma - 0.15) / 0.7, 0.0, 1.0);
-    let c = t * (k + 1.0) / (t * k + 1.0);
-    let g = vec4<f32>(0.1469, -0.8911, 1.4644, -0.3234) / 4.0;
-    return clamp(c + c * (1.0 - c) * ((g.x * rgb + g.y) * c + (g.z * rgb + g.w)), vec3<f32>(0.0), vec3<f32>(1.0));
-}
+// Glyph coverage is blended as it comes from FreeType, in gamma space with
+// no contrast or gamma correction, as wezterm's (default) OpenGL renderer
+// does. Sub-pixel text blends each colour channel by its own coverage.
 
 // What a fragment contributes: its colour, and how much of it covers the
 // pixel, per channel. Grayscale shapes cover all channels alike; ClearType
@@ -110,11 +86,11 @@ fn shade(v: VOut) -> Shaded {
     switch v.kind {
         case KIND_MASK_GLYPH: {
             let a = textureSampleLevel(atlas_tex, atlas_smp, v.uv, 0.0).a;
-            return plain(v.color.rgb, v.color.a * text_coverage(a, v.color.rgb));
+            return plain(v.color.rgb, v.color.a * a);
         }
         case KIND_SUBPIXEL_GLYPH: {
             let t = textureSampleLevel(atlas_tex, atlas_smp, v.uv, 0.0);
-            let w = cleartype_coverage(t.rgb, v.color.rgb) * v.color.a;
+            let w = t.rgb * v.color.a;
             return Shaded(v.color.rgb, vec4<f32>(w, max(w.r, max(w.g, w.b))));
         }
         case KIND_COLOR_GLYPH: {
