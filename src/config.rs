@@ -364,11 +364,11 @@ impl Setting {
 }
 
 /// Points. 12 on Windows, like Windows Terminal; 11 elsewhere.
-fn default_font_size() -> f32 {
+pub fn default_font_size() -> f32 {
     if cfg!(target_os = "windows") { 12.0 } else { 11.0 }
 }
 
-fn default_font() -> &'static str {
+pub fn default_font() -> &'static str {
     if cfg!(target_os = "windows") {
         "Cascadia Mono"
     } else if cfg!(target_os = "macos") {

@@ -55,6 +55,12 @@ fn font_px(points: f32, scale: f64) -> f32 {
     points * scale as f32 * 96.0 / 72.0
 }
 
+/// The panels' font size in pixels: the default terminal font size, so it
+/// changes with the window scale only, not with the font settings.
+fn ui_font_px(scale: f64) -> f32 {
+    font_px(crate::config::default_font_size(), scale)
+}
+
 pub struct App {
     cfg: Config,
     watcher: ConfigWatcher,
@@ -429,7 +435,7 @@ impl App {
         let scale = window.scale_factor();
 
         let cfg = &self.cfg;
-        let renderer = pollster::block_on(Renderer::new(
+        let mut renderer = pollster::block_on(Renderer::new(
             window.clone(),
             el.owned_display_handle(),
             &cfg.font_family,
@@ -438,6 +444,7 @@ impl App {
             cfg.antialiasing.subpixel(crate::render::system_subpixel()),
             self.gpu_override.unwrap_or(cfg.gpu),
         ))?;
+        renderer.glyphs.set_ui_font(ui_font_px(scale));
 
         // Size the window to a comfortable grid now that the cell is known.
         let cell = renderer.cell();
@@ -1167,6 +1174,7 @@ impl State {
         let px = font_px(self.font_pt, self.window.scale_factor());
         let hinted = crate::render::glyphs::hinted(self.window.scale_factor());
         self.renderer.glyphs.set_font(&cfg.font_family, px, cfg.line_height, hinted);
+        self.renderer.glyphs.set_ui_font(ui_font_px(self.window.scale_factor()));
         self.resize_grid(cfg);
     }
 
@@ -1223,7 +1231,9 @@ impl State {
     }
 
     fn panel(&self, cfg: &Config) -> Option<Panel> {
-        let m = self.metrics();
+        // Laid out in the panels' own font, so a font change doesn't move them.
+        let ui = self.renderer.ui_cell();
+        let m = Metrics { cw: ui.width, ch: ui.height, ..self.metrics() };
         match self.overlay {
             Overlay::Options => Some(chrome::options_panel(&m, &self.options_state(cfg), self.panel_offset)),
             Overlay::About => {

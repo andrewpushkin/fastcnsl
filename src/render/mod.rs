@@ -16,7 +16,7 @@ use bytemuck::{Pod, Zeroable};
 use winit::window::Window;
 
 use crate::theme::Rgb;
-use glyphs::{CellMetrics, GlyphCache, GlyphStyle};
+use glyphs::{CellMetrics, Face, GlyphCache, GlyphStyle};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -212,6 +212,8 @@ pub struct Painter<'a> {
     layers: &'a mut [Vec<Instance>; LAYERS],
     glyphs: &'a mut GlyphCache,
     queue: &'a wgpu::Queue,
+    /// The font text is drawn in (see `set_face`), and its cell.
+    face: Face,
     pub cell: CellMetrics,
     pub width: f32,
     pub height: f32,
@@ -225,8 +227,14 @@ impl<'a> Painter<'a> {
         width: f32,
         height: f32,
     ) -> Self {
-        let cell = glyphs.metrics;
-        Self { layers, glyphs, queue, cell, width, height }
+        let cell = glyphs.metrics(Face::Terminal);
+        Self { layers, glyphs, queue, face: Face::Terminal, cell, width, height }
+    }
+
+    /// Draws text in `face` from here on; `cell` becomes its cell.
+    pub fn set_face(&mut self, face: Face) {
+        self.face = face;
+        self.cell = self.glyphs.metrics(face);
     }
 
     pub fn rect(&mut self, layer: Layer, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
@@ -286,7 +294,7 @@ impl<'a> Painter<'a> {
         if boxdraw::draw(self, layer, c, x, y, cell.width, cell.height, cell.underline_thickness, color) {
             return;
         }
-        let Some(g) = self.glyphs.get(self.queue, c, style) else { return };
+        let Some(g) = self.glyphs.get_in(self.queue, self.face, c, style) else { return };
         // Whole pixels: the atlas is sampled texel for pixel, and a glyph
         // half a pixel off would land each pixel between two texels.
         self.layers[layer as usize].push(Instance {
@@ -302,7 +310,7 @@ impl<'a> Painter<'a> {
     /// Draws `c` with its ink centred on (cx, cy), for icons. Text glyphs
     /// sit on a baseline, which puts symbols like × visibly low in a button.
     pub fn icon(&mut self, layer: Layer, c: char, cx: f32, cy: f32, color: [f32; 4]) {
-        let Some(g) = self.glyphs.get(self.queue, c, GlyphStyle::REGULAR) else { return };
+        let Some(g) = self.glyphs.get_in(self.queue, self.face, c, GlyphStyle::REGULAR) else { return };
         let (w, h) = (g.uv[2], g.uv[3]);
         self.layers[layer as usize].push(Instance {
             pos: [(cx - w / 2.0).round(), (cy - h / 2.0).round()],
@@ -617,7 +625,12 @@ impl Renderer {
     }
 
     pub fn cell(&self) -> CellMetrics {
-        self.glyphs.metrics
+        self.glyphs.metrics(Face::Terminal)
+    }
+
+    /// The cell of the panels' font.
+    pub fn ui_cell(&self) -> CellMetrics {
+        self.glyphs.metrics(Face::Ui)
     }
 
     /// True if the glyph atlas overflowed while building the last frame,

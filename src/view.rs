@@ -15,7 +15,7 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 use crate::chrome::{self, ButtonStyle, Caption, Menu, Metrics, Panel, TextStyle};
 use crate::config::LineNumbers;
 use crate::highlight::{CodeRows, Span};
-use crate::render::glyphs::GlyphStyle;
+use crate::render::glyphs::{Face, GlyphStyle};
 use crate::render::{Layer, Painter};
 use crate::search::Search;
 use crate::search::MAX_BOXES;
@@ -147,7 +147,11 @@ pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>,
     let m = Metrics { width: p.width, height: p.height, scale: v.scale, cw: p.cell.width, ch: p.cell.height };
     draw_tab_bar(p, v.palette, &m, c);
     if let Some(panel) = c.panel {
-        draw_panel(p, v.palette, &m, panel, c.hover);
+        // In the panels' font, as app.rs laid them out.
+        p.set_face(Face::Ui);
+        let pm = Metrics { cw: p.cell.width, ch: p.cell.height, ..m };
+        draw_panel(p, v.palette, &pm, panel, c.hover);
+        p.set_face(Face::Terminal);
     }
     if let Some(menu) = c.menu {
         draw_menu(p, v.palette, &m, menu);

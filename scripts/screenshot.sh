@@ -90,9 +90,13 @@ xdotool key Escape
 xdotool key ctrl+shift+comma
 shot options
 # The "Font" tab, right of "General", then "Keyboard shortcuts" after it.
-click 295 81
+click 223 81
 shot font
-click 420 81
+# The next font family: the panel keeps its size and place.
+xdotool key Down
+shot font_next
+xdotool key Up
+click 348 81
 shot shortcuts
 # Drag the panel by its title strip.
 xdotool mousemove --window "$WIN" 400 40 mousedown 1
@@ -139,7 +143,7 @@ xdotool key Down Down Return
 shot tab_saved
 # Options → Logging, the fourth page.
 xdotool key ctrl+shift+comma
-click 560 81
+click 488 81
 shot options_logging
 xdotool key Escape
 

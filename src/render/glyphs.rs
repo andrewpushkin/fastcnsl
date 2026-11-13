@@ -112,15 +112,102 @@ pub struct CellMetrics {
     pub underline_thickness: f32,
 }
 
+/// Which font a glyph is drawn in. Both share one atlas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Face {
+    /// The terminal's font, as the settings choose it.
+    Terminal,
+    /// The font of the Options and About panels: the platform's default
+    /// monospace font at a size set by the window scale only, so the
+    /// panels keep their size while the terminal font changes.
+    Ui,
+}
+
+/// One font of the cache: its size, cell, and the glyphs of it in the atlas.
+struct FaceState {
+    family: String,
+    font_px: f32,
+    line_height: f32,
+    metrics: CellMetrics,
+    /// Shapes one character at a time, at this face's size.
+    scratch: Buffer,
+    ascii: Vec<Slot>,
+    other: HashMap<(char, GlyphStyle), Slot>,
+}
+
+impl FaceState {
+    fn new(fs: &mut FontSystem, family: &str, font_px: f32, line_height: f32) -> Self {
+        let family = resolve_family(fs, family);
+        let scratch = Buffer::new(fs, Metrics::new(font_px, (font_px * line_height).round()));
+        let mut face = Self {
+            family,
+            font_px,
+            line_height,
+            metrics: CellMetrics { width: 1.0, height: 1.0, baseline: 1.0, underline_thickness: 1.0 },
+            scratch,
+            ascii: vec![Slot::Unloaded; 128 * 4],
+            other: HashMap::new(),
+        };
+        face.measure(fs);
+        face
+    }
+
+    fn set(&mut self, fs: &mut FontSystem, family: &str, font_px: f32, line_height: f32) {
+        self.family = resolve_family(fs, family);
+        self.font_px = font_px;
+        self.line_height = line_height;
+        self.scratch.set_metrics(Metrics::new(font_px, (font_px * line_height).round()));
+        self.measure(fs);
+    }
+
+    fn clear(&mut self) {
+        self.ascii.fill(Slot::Unloaded);
+        self.other.clear();
+    }
+
+    fn attrs(&self, style: GlyphStyle) -> Attrs<'_> {
+        Attrs::new()
+            .family(Family::Name(&self.family))
+            .weight(if style.bold { Weight::BOLD } else { Weight::NORMAL })
+            .style(if style.italic { Style::Italic } else { Style::Normal })
+    }
+
+    fn measure(&mut self, fs: &mut FontSystem) {
+        let attrs = Attrs::new().family(Family::Name(&self.family));
+        self.scratch.set_text("M", &attrs, Shaping::Advanced, None);
+        self.scratch.shape_until_scroll(fs, false);
+        let height = (self.font_px * self.line_height).round().max(1.0);
+        let (width, baseline) = self
+            .scratch
+            .layout_runs()
+            .next()
+            .and_then(|run| run.glyphs.first().map(|g| (g.w, run.line_y)))
+            .unwrap_or((self.font_px * 0.6, height * 0.8));
+        self.metrics = CellMetrics {
+            width: width.round().max(1.0),
+            height,
+            baseline: baseline.round(),
+            underline_thickness: (self.font_px / 14.0).round().max(1.0),
+        };
+    }
+
+    fn slot(&mut self, c: char, style: GlyphStyle) -> &mut Slot {
+        if (c as u32) < 128 {
+            &mut self.ascii[(c as usize) * 4 + style.index()]
+        } else {
+            self.other.entry((c, style)).or_insert(Slot::Unloaded)
+        }
+    }
+}
+
+/// Line height of the panels' font.
+const UI_LINE_HEIGHT: f32 = 1.2;
+
 pub struct GlyphCache {
     font_system: FontSystem,
     swash: SwashCache,
-    scratch: Buffer,
-    family: String,
-    font_px: f32,
-    pub metrics: CellMetrics,
-    ascii: Vec<Slot>,
-    other: HashMap<(char, GlyphStyle), Slot>,
+    /// The terminal's font and the panels' (see `Face`).
+    faces: [FaceState; 2],
     alloc: BucketedAtlasAllocator,
     /// RGBA staging for one glyph, reused to avoid per-glyph allocations.
     upload: Vec<u8>,
@@ -148,21 +235,17 @@ pub fn hinted(scale: f64) -> bool {
 }
 
 impl GlyphCache {
+    /// A cache drawing the terminal in `family` at `font_px`. The panels'
+    /// font starts at the same size; `set_ui_font` sets it.
     pub fn new(device: &wgpu::Device, family: &str, font_px: f32, line_height: f32, hinted: bool, subpixel: bool) -> Self {
         let (mut font_system, font_wait) = take_font_system();
-        let family = resolve_family(&mut font_system, family);
-        let metrics_ct = Metrics::new(font_px, (font_px * line_height).round());
-        let scratch = Buffer::new(&mut font_system, metrics_ct);
+        let terminal = FaceState::new(&mut font_system, family, font_px, line_height);
+        let ui = FaceState::new(&mut font_system, crate::config::default_font(), font_px, UI_LINE_HEIGHT);
         let texture = atlas_texture(device, ATLAS_START);
-        let mut cache = Self {
+        Self {
             font_system,
             swash: SwashCache::new(),
-            scratch,
-            family,
-            font_px,
-            metrics: CellMetrics { width: 1.0, height: 1.0, baseline: 1.0, underline_thickness: 1.0 },
-            ascii: vec![Slot::Unloaded; 128 * 4],
-            other: HashMap::new(),
+            faces: [terminal, ui],
             alloc: BucketedAtlasAllocator::new(size2(ATLAS_START as i32, ATLAS_START as i32)),
             upload: Vec::new(),
             device: device.clone(),
@@ -174,9 +257,16 @@ impl GlyphCache {
             subpixel,
             hinted,
             freetype: super::freetype::Rasterizer::new(super::system_bgr()),
-        };
-        cache.metrics = cache.measure(line_height);
-        cache
+        }
+    }
+
+    fn face(&self, face: Face) -> &FaceState {
+        &self.faces[face as usize]
+    }
+
+    /// The cell of a face's font.
+    pub fn metrics(&self, face: Face) -> CellMetrics {
+        self.face(face).metrics
     }
 
     pub fn texture(&self) -> &wgpu::Texture {
@@ -188,14 +278,22 @@ impl GlyphCache {
         self.size
     }
 
-    /// Changes font family, size or hinting. Clears the atlas.
+    /// Changes the terminal's font family, size or hinting. Clears the atlas.
     pub fn set_font(&mut self, family: &str, font_px: f32, line_height: f32, hinted: bool) {
-        self.family = resolve_family(&mut self.font_system, family);
-        self.font_px = font_px;
+        self.faces[Face::Terminal as usize].set(&mut self.font_system, family, font_px, line_height);
         self.hinted = hinted;
-        self.scratch.set_metrics(Metrics::new(font_px, (font_px * line_height).round()));
-        self.metrics = self.measure(line_height);
         self.clear();
+    }
+
+    /// Sets the size of the panels' font (it changes with the window
+    /// scale only). Clears the atlas if the size changes.
+    pub fn set_ui_font(&mut self, font_px: f32) {
+        let ui = &mut self.faces[Face::Ui as usize];
+        if ui.font_px != font_px {
+            let family = ui.family.clone();
+            ui.set(&mut self.font_system, &family, font_px, UI_LINE_HEIGHT);
+            self.clear();
+        }
     }
 
     /// Switches ClearType on or off; clears the atlas if that changes.
@@ -207,74 +305,52 @@ impl GlyphCache {
     }
 
     fn clear(&mut self) {
-        self.ascii.fill(Slot::Unloaded);
-        self.other.clear();
-        self.alloc.clear();
-    }
-
-    fn attrs(&self, style: GlyphStyle) -> Attrs<'_> {
-        Attrs::new()
-            .family(Family::Name(&self.family))
-            .weight(if style.bold { Weight::BOLD } else { Weight::NORMAL })
-            .style(if style.italic { Style::Italic } else { Style::Normal })
-    }
-
-    fn measure(&mut self, line_height: f32) -> CellMetrics {
-        let attrs = Attrs::new().family(Family::Name(&self.family));
-        self.scratch.set_text("M", &attrs, Shaping::Advanced, None);
-        self.scratch.shape_until_scroll(&mut self.font_system, false);
-        let height = (self.font_px * line_height).round().max(1.0);
-        let (width, baseline) = self
-            .scratch
-            .layout_runs()
-            .next()
-            .and_then(|run| run.glyphs.first().map(|g| (g.w, run.line_y)))
-            .unwrap_or((self.font_px * 0.6, height * 0.8));
-        CellMetrics {
-            width: width.round().max(1.0),
-            height,
-            baseline: baseline.round(),
-            underline_thickness: (self.font_px / 14.0).round().max(1.0),
+        for f in &mut self.faces {
+            f.clear();
         }
+        self.alloc.clear();
     }
 
     /// Returns the atlas entry for `c`, rasterising and uploading it on
     /// first use.
+    #[cfg(test)]
     pub fn get(&mut self, queue: &wgpu::Queue, c: char, style: GlyphStyle) -> Option<Glyph> {
-        let slot = if (c as u32) < 128 {
-            self.ascii[(c as usize) * 4 + style.index()]
+        self.get_in(queue, Face::Terminal, c, style)
+    }
+
+    /// `get` in the given face.
+    pub fn get_in(&mut self, queue: &wgpu::Queue, face: Face, c: char, style: GlyphStyle) -> Option<Glyph> {
+        let f = &mut self.faces[face as usize];
+        let known = if (c as u32) < 128 {
+            f.ascii[(c as usize) * 4 + style.index()]
         } else {
-            self.other.get(&(c, style)).copied().unwrap_or(Slot::Unloaded)
+            f.other.get(&(c, style)).copied().unwrap_or(Slot::Unloaded)
         };
-        match slot {
+        match known {
             Slot::Ready(g) => return Some(g),
             Slot::Empty => return None,
             Slot::Unloaded => {}
         }
-        let slot = self.rasterize(queue, c, style);
-        if (c as u32) < 128 {
-            self.ascii[(c as usize) * 4 + style.index()] = slot;
-        } else {
-            self.other.insert((c, style), slot);
-        }
+        let slot = self.rasterize(queue, face, c, style);
+        *self.faces[face as usize].slot(c, style) = slot;
         match slot {
             Slot::Ready(g) => Some(g),
             _ => None,
         }
     }
 
-    fn rasterize(&mut self, queue: &wgpu::Queue, c: char, style: GlyphStyle) -> Slot {
+    fn rasterize(&mut self, queue: &wgpu::Queue, face: Face, c: char, style: GlyphStyle) -> Slot {
         if c.is_whitespace() || c.is_control() {
             return Slot::Empty;
         }
         let mut utf8 = [0u8; 4];
         let text: &str = c.encode_utf8(&mut utf8);
-        let attrs = self.attrs(style);
-        // `attrs` borrows self.family; detach before mutably borrowing self.
-        let attrs = cosmic_text::AttrsOwned::new(&attrs);
-        self.scratch.set_text(text, &attrs.as_attrs(), Shaping::Advanced, None);
-        self.scratch.shape_until_scroll(&mut self.font_system, false);
-        let Some(key) = self
+        let f = &mut self.faces[face as usize];
+        // `attrs` borrows f.family; detach before mutably borrowing f.
+        let attrs = cosmic_text::AttrsOwned::new(&f.attrs(style));
+        f.scratch.set_text(text, &attrs.as_attrs(), Shaping::Advanced, None);
+        f.scratch.shape_until_scroll(&mut self.font_system, false);
+        let Some(key) = f
             .scratch
             .layout_runs()
             .next()
@@ -375,7 +451,7 @@ impl GlyphCache {
             .filter_map(|f| f.families.first().map(|(n, _)| n.clone()))
             .filter(|n| !n.starts_with('.'))
             .collect();
-        v.push(self.family.clone());
+        v.push(self.face(Face::Terminal).family.clone());
         v.sort_by_key(|n| n.to_lowercase());
         v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         v
@@ -383,7 +459,7 @@ impl GlyphCache {
 
     /// The family drawn: the one asked for, or the fallback for it.
     pub fn family(&self) -> &str {
-        &self.family
+        &self.face(Face::Terminal).family
     }
 }
 
@@ -423,7 +499,7 @@ mod tests {
     #[test]
     fn cell_metrics_are_sane() {
         let Some((g, _)) = cache() else { return };
-        let m = g.metrics;
+        let m = g.metrics(Face::Terminal);
         assert!(m.width >= 6.0 && m.width <= 14.0, "width {}", m.width);
         assert_eq!(m.height, (16.0f32 * 1.2).round());
         assert!(m.baseline > 0.0 && m.baseline < m.height);
@@ -450,13 +526,32 @@ mod tests {
     #[test]
     fn changing_font_size_changes_metrics_and_clears_the_atlas() {
         let Some((mut g, q)) = cache() else { return };
-        let small = g.metrics;
+        let small = g.metrics(Face::Terminal);
         g.get(&q, 'x', GlyphStyle::REGULAR);
         g.set_font("DejaVu Sans Mono", 32.0, 1.2, true);
-        assert!(g.metrics.width > small.width);
-        assert!(g.metrics.height > small.height);
-        assert!(g.other.is_empty());
-        assert!(g.ascii.iter().all(|s| matches!(s, Slot::Unloaded)));
+        assert!(g.metrics(Face::Terminal).width > small.width);
+        assert!(g.metrics(Face::Terminal).height > small.height);
+        for f in &g.faces {
+            assert!(f.other.is_empty());
+            assert!(f.ascii.iter().all(|s| matches!(s, Slot::Unloaded)));
+        }
+    }
+
+    #[test]
+    fn the_panel_font_keeps_its_size_when_the_terminal_font_changes() {
+        let Some((mut g, q)) = cache() else { return };
+        g.set_ui_font(16.0);
+        let ui = g.metrics(Face::Ui);
+        g.set_font("DejaVu Sans Mono", 32.0, 2.0, true);
+        assert_eq!(g.metrics(Face::Ui), ui, "terminal font and line height leave it alone");
+        assert_ne!(g.metrics(Face::Terminal), ui);
+        // Both faces draw from the one atlas, each with its own glyphs.
+        let big = g.get_in(&q, Face::Terminal, 'M', GlyphStyle::REGULAR).unwrap();
+        let small = g.get_in(&q, Face::Ui, 'M', GlyphStyle::REGULAR).unwrap();
+        assert!(big.uv[3] > small.uv[3]);
+        // The window scale does change it.
+        g.set_ui_font(32.0);
+        assert!(g.metrics(Face::Ui).height > ui.height);
     }
 
     #[test]
@@ -482,7 +577,7 @@ mod tests {
         };
         fill(&mut g);
         assert_eq!((g.size(), g.generation), (ATLAS_MAX, 1), "it grows first");
-        assert!(g.other.len() <= 1, "and starts empty");
+        assert!(g.faces[0].other.len() <= 1, "and starts empty");
         g.overflowed = false;
         fill(&mut g);
         assert_eq!((g.size(), g.generation), (ATLAS_MAX, 1), "at the largest size it clears instead");
@@ -492,7 +587,7 @@ mod tests {
     fn unknown_family_falls_back_to_an_installed_monospace_font() {
         let Some((device, _)) = testing::device() else { return };
         let g = GlyphCache::new(&device, "No Such Font 12345", 16.0, 1.2, true, false);
-        assert_ne!(g.family, "No Such Font 12345");
-        assert!(g.metrics.width > 0.0);
+        assert_ne!(g.family(), "No Such Font 12345");
+        assert!(g.metrics(Face::Terminal).width > 0.0);
     }
 }

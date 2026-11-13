@@ -691,7 +691,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
     let fixed_w = fixed.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) as f32;
     let what_w = fixed.iter().map(|(_, w)| w.chars().count()).max().unwrap_or(0) as f32;
     // Each shortcut row: label, keys, and a ↺ that resets just that one.
-    let cols = 72.0f32.max(label_w + keys_w + 5.0).max(fixed_w + 2.0 + what_w);
+    let cols = 88.0f32.max(label_w + keys_w + 5.0).max(fixed_w + 2.0 + what_w);
     // The shortcuts page uses compact rows (see PanelBuilder::dense); in
     // normal rows it needs about four fifths of its row count.
     let list_rows = Command::ALL.len() + 1 + fixed.len();
@@ -866,7 +866,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
 
 /// Options → Font: size, line height, bold, smoothing, and the list of
 /// installed monospace fonts. Every change applies at once, so the
-/// terminal behind the panel (and the panel itself) shows it.
+/// terminal behind the panel shows it; the panel keeps its own font.
 fn font_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
     let label_w = 20.0;
     // Smoothing: sub-pixel text is drawn on Windows only.
