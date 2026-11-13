@@ -13,23 +13,39 @@ files.
 
 | Platform | Download |
 |---|---|
-| Windows (x64) | [fastcnsl-windows-x86_64.zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-x86_64.zip) |
-| Windows (ARM) | [fastcnsl-windows-arm64.zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-arm64.zip) |
+| Windows (x64) | [installer](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-x86_64-setup.exe) or [portable zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-x86_64.zip) |
+| Windows (ARM) | [installer](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-arm64-setup.exe) or [portable zip](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-windows-arm64.zip) |
 | macOS (Apple Silicon) | [fastcnsl-macos-arm64.dmg](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-macos-arm64.dmg) |
 | Linux: Debian, Ubuntu | [fastcnsl-linux-x86_64.deb](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.deb), or the [apt repository](#debian-ubuntu) for automatic updates |
 | Linux: Fedora, RHEL, openSUSE | [fastcnsl-linux-x86_64.rpm](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.rpm), or the [rpm repository](#fedora-rhel) for automatic updates |
 | Linux: any distribution | [fastcnsl-linux-x86_64.AppImage](https://github.com/andrewpushkin/fastcnsl/releases/latest/download/fastcnsl-linux-x86_64.AppImage) |
 
 New builds come out often. See [what changed](CHANGELOG.md) or download an
-[older build](https://github.com/andrewpushkin/fastcnsl/releases).
+[older build](https://github.com/andrewpushkin/fastcnsl/releases). Each
+release lists the SHA-256 of every file in `SHA256SUMS`.
 
 ## Install
 
 ### Windows
 
-Unzip and run `fastcnsl.exe`. It needs Windows 10 version 1809 or newer.
+fastcnsl needs Windows 10 version 1809 or newer. Take the x64 or the ARM
+download to match your PC (Settings → System → About → System type).
 
-Keep the other files from the zip next to `fastcnsl.exe`:
+**Installer** (`-setup.exe`): installs for your user only, without asking
+for admin rights, into `%LOCALAPPDATA%\Programs\fastcnsl` (choose "all
+users" in the first dialog to install into Program Files instead). It
+can add fastcnsl to the Start menu, the desktop and PATH. To update, run
+a newer installer; it replaces the installed copy and keeps your choices
+and settings. Uninstall from Settings → Apps.
+
+**Portable zip**: unzip anywhere and run `fastcnsl.exe`. Settings are kept
+in that folder (see [Settings file](#settings-file)), so you can carry it on
+a USB stick.
+
+The files aren't code-signed, so the first time Windows may show "Windows
+protected your PC". Click **More info**, then **Run anyway**.
+
+Keep the other files next to `fastcnsl.exe`:
 
 - `fastcnsl-wsl` makes WSL tabs faster: `cat` of a 36 MB file takes
   0.33 s, against 0.40 s in Windows Terminal. Windows programs started from

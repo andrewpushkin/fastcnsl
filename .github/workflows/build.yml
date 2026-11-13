@@ -8,7 +8,8 @@
 # - Pull requests: lints + all packages, uploaded as workflow artifacts.
 #
 # Linux and Windows packages are built with the same Docker images and
-# Makefile targets as locally. macOS is built natively on GitHub's Apple
+# Makefile targets as locally. Windows gets a portable .zip and an
+# installer (-setup.exe, Inno Setup under Wine) per architecture. macOS is built natively on GitHub's Apple
 # Silicon runner, which has Apple's own SDK, so CI never downloads the
 # macOS SDK from a third-party mirror (make macos-arm64 does that locally).
 
@@ -52,9 +53,9 @@ jobs:
           - target: linux-x86_64
             packages: linux-x86_64-deb linux-x86_64-rpm linux-x86_64-appimage
           - target: windows-x86_64
-            packages: windows-x86_64-zip
+            packages: windows-x86_64-zip windows-x86_64-setup
           - target: windows-arm64
-            packages: windows-arm64-zip
+            packages: windows-arm64-zip windows-arm64-setup
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,6 +77,7 @@ jobs:
             dist/*.rpm
             dist/*.AppImage
             dist/*.zip
+            dist/*-setup.exe
           if-no-files-found: error
 
   macos-arm64:
@@ -132,6 +134,8 @@ jobs:
           cp dist/Fastcnsl-*-x86_64.AppImage    upload/fastcnsl-linux-x86_64.AppImage
           cp dist/fastcnsl-*-windows-x86_64.zip upload/fastcnsl-windows-x86_64.zip
           cp dist/fastcnsl-*-windows-arm64.zip  upload/fastcnsl-windows-arm64.zip
+          cp dist/fastcnsl-*-windows-x86_64-setup.exe upload/fastcnsl-windows-x86_64-setup.exe
+          cp dist/fastcnsl-*-windows-arm64-setup.exe  upload/fastcnsl-windows-arm64-setup.exe
           cp dist/fastcnsl-*-macos-arm64.dmg    upload/fastcnsl-macos-arm64.dmg
           ls -l upload
       # The AppImage's update information points at this file in the latest
@@ -143,6 +147,8 @@ jobs:
           cd upload
           zsyncmake -u fastcnsl-linux-x86_64.AppImage \
             -o fastcnsl-linux-x86_64.AppImage.zsync fastcnsl-linux-x86_64.AppImage
+      - name: Checksums
+        run: cd upload && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
