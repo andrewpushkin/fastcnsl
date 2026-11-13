@@ -34,7 +34,7 @@
 #   make tests            all unit tests (also: make test)
 #   make clippy           lints, warnings are errors
 #   make fmt              format the code
-#   make check-all        type-check every release target
+#   make check-all        type-check Linux and Windows (macOS: make macos-arm64)
 #   make screenshot       run on a virtual display -> dist/screenshots/
 #   make shell            interactive shell in the dev container
 #
@@ -168,7 +168,6 @@ check-all: $(DEV_STAMP)
 	$(DEV_RUN) cargo check
 	$(DEV_RUN) cargo check --target x86_64-pc-windows-gnu
 	$(DEV_RUN) cargo check --target aarch64-pc-windows-gnullvm
-	$(DEV_RUN) cargo check --target aarch64-apple-darwin
 
 screenshot: build
 	$(DEV_RUN) scripts/screenshot.sh dist/screenshots

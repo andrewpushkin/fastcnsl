@@ -1,8 +1,9 @@
 # Development image for fastcnsl.
 #
 # Contains the Rust toolchain, the system libraries winit/wgpu need on Linux,
-# and the std libraries for Windows and macOS targets so the cross-platform
-# code paths can be type-checked from Linux.
+# and the Windows targets (std libraries and C compilers) so the Windows
+# code paths can be type-checked from Linux. macOS is built only by
+# docker/macos-arm64.Dockerfile, the one image with the macOS SDK.
 #
 # Use it through the Makefile in the project root:
 #   make / make test / make clippy / make check-all / make shell / make clean
@@ -24,10 +25,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mingw-w64 \
         # headless smoke tests: virtual X display, input, screenshots
         xvfb xdotool imagemagick \
+        # unpacking llvm-mingw below
+        xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup component add clippy rustfmt \
-    && rustup target add x86_64-pc-windows-gnu aarch64-pc-windows-gnullvm aarch64-apple-darwin
+    && rustup target add x86_64-pc-windows-gnu aarch64-pc-windows-gnullvm
+
+# Windows ARM64 C compiler (aarch64-pc-windows-gnullvm), the same llvm-mingw
+# as docker/windows-arm64.Dockerfile: FreeType is C, so even `cargo check`
+# compiles it. Not on PATH, so it can't shadow the MinGW gcc used for
+# Windows x86-64.
+ARG LLVM_MINGW=20261020
+RUN curl -fsSL https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW}/llvm-mingw-${LLVM_MINGW}-ucrt-ubuntu-22.04-x86_64.tar.xz \
+        | tar -xJ -C /opt \
+    && mv /opt/llvm-mingw-${LLVM_MINGW}-ucrt-ubuntu-22.04-x86_64 /opt/llvm-mingw
+ENV CC_aarch64_pc_windows_gnullvm=/opt/llvm-mingw/bin/aarch64-w64-mingw32-clang \
+    AR_aarch64_pc_windows_gnullvm=/opt/llvm-mingw/bin/llvm-ar \
+    CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER=/opt/llvm-mingw/bin/aarch64-w64-mingw32-clang
 
 # CARGO_HOME lives in a named volume (see Makefile) so the registry and
 # git checkouts survive container restarts. It must be writable by the

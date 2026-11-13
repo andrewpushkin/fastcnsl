@@ -29,7 +29,7 @@ make build            # quick build for this machine -> dist/fastcnsl
 make run              # build and start it
 make tests            # unit tests (not run by GitHub Actions)
 make clippy           # lints
-make check-all        # type-check every target platform
+make check-all        # type-check Linux and Windows (macOS: make macos-arm64)
 make screenshot       # headless UI run -> dist/screenshots/*.png
 make clean
 ```
