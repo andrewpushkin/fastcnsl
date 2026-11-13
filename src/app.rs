@@ -83,6 +83,39 @@ fn repainting_after_resize(resized_at: Option<Instant>, now: Instant) -> bool {
     resized_at.is_some_and(|t| now.duration_since(t) < RESIZE_REPAINT)
 }
 
+/// A tab's text and bookmarks as the AI's tools see them (see
+/// `ai::context`): a settled snapshot of its history, its live grid, and
+/// its line index. `end` is the prompt's line.
+struct TabText<'a> {
+    snap: &'a crate::history::Snapshot,
+    grid: &'a alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>,
+    lines: &'a mut LineIndex,
+    end: u64,
+}
+
+impl ai::context::TerminalText for TabText<'_> {
+    fn lines(&mut self, r: std::ops::Range<u64>) -> Vec<String> {
+        logging::lines_text(self.snap, self.grid, r)
+    }
+    fn end(&self) -> u64 {
+        self.end
+    }
+    fn commands(&self) -> Vec<(u64, u64)> {
+        self.lines.commands().collect()
+    }
+    fn bookmarks(&self) -> Vec<u64> {
+        self.lines.bookmarks().to_vec()
+    }
+    fn add_bookmark(&mut self, line: u64) {
+        if self.lines.bookmarks().binary_search(&line).is_err() {
+            self.lines.toggle_bookmark(line);
+        }
+    }
+    fn first_line(&self) -> u64 {
+        self.snap.first_line().min(self.grid.lines_dropped())
+    }
+}
+
 /// One shell with its own scrollback, search and code highlighting.
 struct Tab {
     id: u64,
@@ -1592,15 +1625,13 @@ impl State {
         let snap = crate::history::scroll::settled(&mut live, &tab.session.history);
         let grid = live.grid();
         let end = tab.lines.cursor_line(grid);
-        let at = at.unwrap_or(end.saturating_sub(1));
-        let ranges = tab.lines.command_ranges(at, cfg.ai.context_commands, end);
-        let commands: Vec<_> = ranges.into_iter().map(|r| ai::context::read_command(r, |lines| logging::lines_text(&snap, grid, lines))).collect();
-        drop(live);
-        if commands.is_empty() {
-            return self.show("No command to fix here".to_owned());
-        }
         let env = ai::context::Env { shell, os: std::env::consts::OS, program: tab.app.clone() };
-        let context = ai::context::build(&env, &commands);
+        let mut text = TabText { snap: &snap, grid, lines: &mut tab.lines, end };
+        let first = ai::context::first_message(&mut text, &env, cfg.ai.listed_commands, at);
+        drop(live);
+        let Some(context) = first else {
+            return self.show("No command to fix here".to_owned());
+        };
         let tab_id = tab.id;
         let job = self.ai_job_number();
         self.ai_job = Some((job, tab_id));

@@ -258,20 +258,15 @@ impl LineIndex {
         }
     }
 
-    /// The lines of the command that global line `at` belongs to (the last
-    /// command entered on or before it) and of up to `n - 1` commands
-    /// before that, oldest first. A command's lines run to the next
-    /// command's, the last one's to `end` (exclusive): its command line and
-    /// its output. Empty when no command was entered on or before `at`.
-    pub fn command_ranges(&self, at: u64, n: usize, end: u64) -> Vec<std::ops::Range<u64>> {
-        let upto = self.marks.partition_point(|&(m, ..)| m <= at);
-        (upto.saturating_sub(n)..upto)
-            .map(|k| {
-                let start = self.marks[k].0;
-                let stop = self.marks.get(k + 1).map_or(end, |&(m, ..)| m);
-                start..stop.max(start + 1)
-            })
-            .collect()
+    /// The commands entered: `(global line, local time of day in
+    /// seconds)`, ascending.
+    pub fn commands(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.marks.iter().map(|&(line, _, clock)| (line, clock))
+    }
+
+    /// The bookmarked lines (global), ascending.
+    pub fn bookmarks(&self) -> &[u64] {
+        &self.bookmarks
     }
 
     /// Global index of the cursor's line. Counts from the position kept
@@ -688,16 +683,13 @@ mod tests {
     }
 
     #[test]
-    fn command_ranges_end_at_the_next_command() {
+    fn commands_and_bookmarks_are_listed() {
         let mut t = T::new(40, 10, 100);
-        t.command("ls"); // line 0, output line 1
-        t.feed("a\n");
-        t.command("tar x"); // line 2, output 3-4
-        t.feed("err\nmore\n");
-        let end = 5; // the prompt line now
-        assert_eq!(t.index.command_ranges(4, 5, end), vec![0..2, 2..5]);
-        assert_eq!(t.index.command_ranges(1, 1, end), vec![0..2]);
-        assert_eq!(t.index.command_ranges(4, 1, end), vec![2..5]);
+        t.command("ls");
+        t.command("pwd");
+        t.index.toggle_bookmark(1);
+        assert_eq!(t.index.commands().map(|c| c.0).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(t.index.bookmarks(), [1]);
     }
 
     #[test]
@@ -710,15 +702,6 @@ mod tests {
         // Many more lines than the screen: counted from the kept position.
         t.feed(&"x\n".repeat(500));
         assert_eq!(t.index.cursor_line(t.term.grid()), 503);
-    }
-
-    #[test]
-    fn no_command_before_first_mark() {
-        let mut t = T::new(40, 10, 100);
-        t.feed("motd\n");
-        t.command("ls");
-        assert!(t.index.command_ranges(0, 5, 3).is_empty());
-        assert!(LineIndex::new().command_ranges(10, 5, 11).is_empty());
     }
 
     #[test]

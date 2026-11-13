@@ -2,6 +2,7 @@
 //! the requests that ask a model to fix a command.
 
 pub mod client;
+#[allow(dead_code)] // the tools are wired in by the Fix loop (next task)
 pub mod context;
 pub mod fix;
 pub mod keys;
@@ -146,8 +147,9 @@ pub struct AiConfig {
     /// For "custom": the address that has `/chat/completions`, such as
     /// `http://localhost:11434/v1`.
     pub base_url: String,
-    /// How many commands (with their output) a Fix sends.
-    pub context_commands: usize,
+    /// How many recent commands a Fix lists (their lines; output is sent
+    /// for the last one and on request).
+    pub listed_commands: usize,
     /// The chat panel's share of the window's width.
     pub panel_width: f32,
     /// Providers the user agreed to send terminal text to.
@@ -160,7 +162,7 @@ impl Default for AiConfig {
             provider: Provider::Off,
             model: String::new(),
             base_url: String::new(),
-            context_commands: 5,
+            listed_commands: 50,
             panel_width: 0.4,
             confirmed: Vec::new(),
         }
@@ -174,7 +176,7 @@ impl AiConfig {
     }
 
     pub fn sanitized(mut self) -> Self {
-        self.context_commands = self.context_commands.clamp(1, 20);
+        self.listed_commands = self.listed_commands.clamp(1, 200);
         self.panel_width = self.panel_width.clamp(0.2, 0.8);
         self
     }

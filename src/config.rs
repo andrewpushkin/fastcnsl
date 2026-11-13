@@ -597,7 +597,7 @@ mod tests {
         use crate::ai::Provider;
         let cfg: Config = toml::from_str("[ai]\nprovider = \"anthropic\"\nmodel = \"m\"\n").unwrap();
         assert_eq!(cfg.ai.provider, Provider::Anthropic);
-        assert_eq!(cfg.ai.context_commands, 5);
+        assert_eq!(cfg.ai.listed_commands, 50);
         let off: Config = toml::from_str("").unwrap();
         assert_eq!(off.ai.provider, Provider::Off);
         let text = toml::to_string_pretty(&Config::default()).unwrap();
