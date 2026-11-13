@@ -288,7 +288,6 @@ pub fn tail_text(snap: &Snapshot, live: &Grid<Cell>, max: usize) -> (String, usi
 /// The text of global lines `lines`: from the history, then the live grid
 /// (its first line joined to its part in history). Lines the tab no longer
 /// has are left out; a range lost to a disk error is one marker line.
-#[allow(dead_code)] // until the Fix uses it
 pub fn lines_text(snap: &Snapshot, live: &Grid<Cell>, lines: std::ops::Range<u64>) -> Vec<String> {
     let start = lines.start.max(snap.first_line().min(live.lines_dropped()));
     if start >= lines.end {

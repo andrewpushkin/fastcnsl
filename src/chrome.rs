@@ -70,6 +70,11 @@ pub enum Action {
     /// Options → Logging.
     LogNewTabs(bool),
     LogTimestamps(bool),
+    /// Ask the AI to fix the command on this global line (see `lines`),
+    /// or the last command.
+    AiFix(Option<u64>),
+    /// The one-time question before sending terminal text: go on or not.
+    AiConfirm(bool),
 }
 
 /// The pages of the Options panel.
@@ -277,10 +282,23 @@ impl Menu {
             MenuItem::new("Select all", Action::SelectAll),
             MenuItem::separator(),
             MenuItem::new("Find…", Action::Find),
+            MenuItem::new("Fix command with AI", Action::AiFix(Some(line))).enabled(bookmarks.target.is_some()),
             MenuItem::separator(),
             MenuItem::new(toggle, Action::ToggleBookmark(line)).enabled(bookmarks.target.is_some()),
             MenuItem::new("Previous bookmark", Action::PreviousBookmark).enabled(bookmarks.any),
             MenuItem::new("Next bookmark", Action::NextBookmark).enabled(bookmarks.any),
+        ];
+        Self { items, x, y, align_right: false, hover: None }.with_hints(keys)
+    }
+
+    /// The menu of a click in the gutter beside global line `line`;
+    /// `marked` if that line is bookmarked.
+    pub fn gutter(x: f32, y: f32, line: u64, marked: bool, keys: &Keymap) -> Self {
+        let toggle = if marked { "Remove bookmark" } else { "Add bookmark" };
+        let items = vec![
+            MenuItem::new("Fix this command", Action::AiFix(Some(line))),
+            MenuItem::separator(),
+            MenuItem::new(toggle, Action::ToggleBookmark(line)),
         ];
         Self { items, x, y, align_right: false, hover: None }.with_hints(keys)
     }
@@ -929,6 +947,22 @@ fn font_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
     b.list(&s.font_families, s.font_scroll, chosen, Action::FontFamily);
 }
 
+/// Asked once per provider before a Fix first sends terminal text to it.
+pub fn ai_confirm_panel(m: &Metrics, provider: &str, offset: (f32, f32)) -> Panel {
+    let mut b = PanelBuilder::new(m, 72.0, 8.0, offset);
+    b.header(&format!("Send to {provider}?"));
+    b.text(0.0, format!("Fix sends your last commands and everything they printed to {provider}."), TextStyle::Normal);
+    b.next();
+    b.text(0.0, "Passwords or tokens shown in that output are sent too.", TextStyle::Normal);
+    b.next();
+    b.text(0.0, "This is asked once per provider.", TextStyle::Dim);
+    b.next();
+    b.gap();
+    let c = b.button(0.0, "Send", Action::AiConfirm(true), true);
+    b.button(c, "Cancel", Action::AiConfirm(false), false);
+    b.finish()
+}
+
 pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str, offset: (f32, f32)) -> Panel {
     let mut b = PanelBuilder::new(m, 66.0, 12.0, offset);
     b.header("Fastcnsl");
@@ -1073,6 +1107,33 @@ mod tests {
             let copy = menu.items.iter().find(|i| i.action == Some(Action::Copy)).unwrap();
             assert_eq!(copy.enabled, sel);
         }
+    }
+
+    #[test]
+    fn gutter_menu_offers_fix_then_bookmark() {
+        let menu = Menu::gutter(10.0, 50.0, 42, false, &Keymap::default());
+        assert_eq!(menu.items[0].action, Some(Action::AiFix(Some(42))));
+        assert!(menu.items.iter().any(|i| i.action == Some(Action::ToggleBookmark(42)) && i.label == "Add bookmark"));
+        let marked = Menu::gutter(10.0, 50.0, 42, true, &Keymap::default());
+        assert!(marked.items.iter().any(|i| i.label == "Remove bookmark"));
+    }
+
+    #[test]
+    fn context_menu_fix_needs_a_line() {
+        let none = Menu::context(0.0, 0.0, false, BookmarkMenu::default(), &Keymap::default());
+        let fix = none.items.iter().find(|i| matches!(i.action, Some(Action::AiFix(_)))).unwrap();
+        assert!(!fix.enabled);
+        let some = Menu::context(0.0, 0.0, false, BookmarkMenu { target: Some((7, false)), any: false }, &Keymap::default());
+        let fix = some.items.iter().find(|i| matches!(i.action, Some(Action::AiFix(_)))).unwrap();
+        assert!(fix.enabled && fix.action == Some(Action::AiFix(Some(7))));
+    }
+
+    #[test]
+    fn ai_confirm_panel_has_send_and_cancel() {
+        let p = ai_confirm_panel(&m(), "Claude", (0.0, 0.0));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiConfirm(true)));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiConfirm(false)));
+        assert!(p.lines.iter().any(|l| l.text.contains("Claude")));
     }
 
     fn bookmark_items(b: BookmarkMenu) -> Vec<(String, Option<Action>, bool)> {

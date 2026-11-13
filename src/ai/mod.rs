@@ -3,12 +3,25 @@
 
 pub mod client;
 pub mod context;
+pub mod fix;
 pub mod keys;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
 
 pub use keys::Keys;
+
+/// An answer from a request thread, for the UI thread. `job` ties it to
+/// the request: answers to requests since cancelled or replaced are dropped.
+#[derive(Debug, Clone)]
+pub enum AiEvent {
+    /// A Fix for the tab with id `tab`.
+    Fixed { job: u64, tab: u64, result: Result<fix::Fix, AiError> },
+    /// The model list for Options → AI.
+    Models { job: u64, result: Result<Vec<String>, AiError> },
+    /// Options → AI's Test.
+    Tested { job: u64, result: Result<(), AiError> },
+}
 
 /// Why a request gave no answer, as users are told.
 #[derive(Debug, Clone, PartialEq)]

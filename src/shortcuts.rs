@@ -33,11 +33,12 @@ pub enum Command {
     ToggleBookmark,
     PreviousBookmark,
     NextBookmark,
+    AiFix,
 }
 
 impl Command {
     /// Every command, in the order the Options panel lists them.
-    pub const ALL: [Command; 19] = [
+    pub const ALL: [Command; 20] = [
         Command::NewTab,
         Command::CloseTab,
         Command::NextTab,
@@ -57,6 +58,7 @@ impl Command {
         Command::ToggleBookmark,
         Command::PreviousBookmark,
         Command::NextBookmark,
+        Command::AiFix,
     ];
 
     /// The name in the settings file's `[keys]` table.
@@ -81,6 +83,7 @@ impl Command {
             Command::ToggleBookmark => "toggle_bookmark",
             Command::PreviousBookmark => "previous_bookmark",
             Command::NextBookmark => "next_bookmark",
+            Command::AiFix => "ai_fix",
         }
     }
 
@@ -106,6 +109,7 @@ impl Command {
             Command::ToggleBookmark => "Add / remove bookmark",
             Command::PreviousBookmark => "Previous bookmark",
             Command::NextBookmark => "Next bookmark",
+            Command::AiFix => "Fix last command with AI",
         }
     }
 
@@ -153,6 +157,8 @@ impl Command {
             Command::PreviousBookmark => &["Ctrl+Shift+Up"],
             Command::NextBookmark if mac => &["Cmd+Down"],
             Command::NextBookmark => &["Ctrl+Shift+Down"],
+            Command::AiFix if mac => &["Cmd+Shift+X"],
+            Command::AiFix => &["Ctrl+Shift+X"],
         }
     }
 
@@ -177,7 +183,7 @@ impl Command {
     /// item carries its line, so it can't be compared with `action`.
     fn runs(self, action: Action) -> bool {
         match (self, action) {
-            (Command::ToggleBookmark, Action::ToggleBookmark(_)) => true,
+            (Command::ToggleBookmark, Action::ToggleBookmark(_)) | (Command::AiFix, Action::AiFix(_)) => true,
             _ => self.action() == Some(action),
         }
     }
@@ -608,6 +614,16 @@ mod tests {
         let k = Keymap::new(&table);
         assert_eq!(k.command(&new_tab), Some(Command::NewTab));
         assert!(k.combos(Command::Find).is_empty());
+    }
+
+    #[test]
+    fn fix_with_ai_has_a_key_and_a_menu_hint() {
+        let k = Keymap::default();
+        assert_eq!(Command::AiFix.name(), "ai_fix");
+        let key = if cfg!(target_os = "macos") { "Cmd+Shift+X" } else { "Ctrl+Shift+X" };
+        assert_eq!(k.keys_text(Command::AiFix), key);
+        assert_eq!(k.hint(Action::AiFix(Some(3))), key);
+        assert_eq!(k.hint(Action::AiFix(None)), key);
     }
 
     #[test]

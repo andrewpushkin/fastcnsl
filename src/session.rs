@@ -41,6 +41,8 @@ pub enum UserEvent {
     /// A command from `fastcnsl new-tab/close-tab/quit`, and where to
     /// send the answer.
     Remote(crate::remote::Command, std::sync::mpsc::Sender<crate::remote::Reply>),
+    /// An answer from the AI provider (see `crate::ai`).
+    Ai(crate::ai::AiEvent),
     /// The operating system switched between dark (true) and light mode.
     /// Only sent on Linux; elsewhere winit reports theme changes itself.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

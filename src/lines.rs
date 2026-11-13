@@ -263,7 +263,6 @@ impl LineIndex {
     /// before that, oldest first. A command's lines run to the next
     /// command's, the last one's to `end` (exclusive): its command line and
     /// its output. Empty when no command was entered on or before `at`.
-    #[allow(dead_code)] // until the Fix uses it
     pub fn command_ranges(&self, at: u64, n: usize, end: u64) -> Vec<std::ops::Range<u64>> {
         let upto = self.marks.partition_point(|&(m, ..)| m <= at);
         (upto.saturating_sub(n)..upto)
@@ -273,6 +272,13 @@ impl LineIndex {
                 start..stop.max(start + 1)
             })
             .collect()
+    }
+
+    /// Global index of the cursor's line. Counts from the position kept
+    /// near the cursor, so it is cheap in a long scrollback. Pass the
+    /// normal screen's live grid.
+    pub fn cursor_line(&mut self, grid: &Grid<Cell>) -> u64 {
+        ends_before(grid, &mut self.cursor, line_start(grid, cursor_row(grid)))
     }
 
     /// Forgets what is known about lines before `first_line`, the oldest
@@ -692,6 +698,18 @@ mod tests {
         assert_eq!(t.index.command_ranges(4, 5, end), vec![0..2, 2..5]);
         assert_eq!(t.index.command_ranges(1, 1, end), vec![0..2]);
         assert_eq!(t.index.command_ranges(4, 1, end), vec![2..5]);
+    }
+
+    #[test]
+    fn the_cursor_line_is_the_prompt_after_the_output() {
+        let mut t = T::new(40, 10, 100);
+        assert_eq!(t.index.cursor_line(t.term.grid()), 0);
+        t.command("ls");
+        t.feed("a\nb\n");
+        assert_eq!(t.index.cursor_line(t.term.grid()), 3);
+        // Many more lines than the screen: counted from the kept position.
+        t.feed(&"x\n".repeat(500));
+        assert_eq!(t.index.cursor_line(t.term.grid()), 503);
     }
 
     #[test]

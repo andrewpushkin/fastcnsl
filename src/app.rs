@@ -19,6 +19,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
+use crate::ai::{self, AiEvent, Provider};
 use crate::chrome::{self, Action, BookmarkMenu, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
 use crate::config::{Config, ConfigWatcher, GpuBackend, Setting, ThemeMode};
 use crate::detect;
@@ -264,6 +265,9 @@ enum Overlay {
     Menu(Menu),
     Options,
     About,
+    /// Asks before a Fix first sends terminal text to the provider; holds
+    /// the line the Fix is for.
+    AiConfirm(Option<u64>),
 }
 
 struct State {
@@ -336,6 +340,12 @@ struct State {
     toast: Option<(String, Instant)>,
     /// The grid size shown in the bottom right corner until then.
     size_until: Option<Instant>,
+    /// The Fix being waited for: its job number and tab id.
+    ai_job: Option<(u64, u64)>,
+    /// Job numbers for AI requests; answers to older ones are dropped.
+    next_ai_job: u64,
+    /// API keys (`ai-keys.toml`).
+    ai_keys: ai::Keys,
 }
 
 /// Fastest frame rate while output streams in (120/s).
@@ -555,6 +565,9 @@ impl App {
             frame_cost: Duration::ZERO,
             toast: None,
             size_until: None,
+            ai_job: None,
+            next_ai_job: 0,
+            ai_keys: ai::Keys::path().map(|p| ai::Keys::load(&p)).unwrap_or_default(),
         };
         st.show_size();
         let (name, command) = self.first_tab.clone();
@@ -628,6 +641,7 @@ impl App {
 
     fn perform(&mut self, el: &ActiveEventLoop, action: Action) {
         let Some(st) = self.state.as_mut() else { return };
+        let confirming = if let Overlay::AiConfirm(at) = st.overlay { Some(at) } else { None };
         if !matches!(
             action,
             Action::FontBigger
@@ -765,6 +779,18 @@ impl App {
             Action::OpenReleases => st.open(format!("{}/releases", crate::REPOSITORY)),
             Action::ClosePanel => {}
             Action::Quit => el.exit(),
+            Action::AiFix(at) => st.ai_fix(&self.cfg, at),
+            Action::AiConfirm(go) => {
+                let provider = self.cfg.ai.provider;
+                if go && let Some(at) = confirming {
+                    if !self.cfg.ai.confirmed.contains(&provider) {
+                        self.change_config(|c| c.ai.confirmed.push(provider));
+                    }
+                    if let Some(st) = self.state.as_mut() {
+                        st.ai_fix(&self.cfg, at);
+                    }
+                }
+            }
             Action::OptionsPage(page) => {
                 st.options_page = page;
                 st.capturing = None;
@@ -977,8 +1003,13 @@ impl State {
 
     /// Shows a notice at the bottom of the window for a few seconds.
     fn show(&mut self, text: String) {
+        self.show_for(text, TOAST_FOR);
+    }
+
+    /// Shows a notice for `time`, or until the next one.
+    fn show_for(&mut self, text: String, time: Duration) {
         log::info!("{text}");
-        let until = Instant::now() + TOAST_FOR;
+        let until = Instant::now() + time;
         self.toast = Some((text, until));
         let wake = until + Duration::from_millis(20);
         self.wake_at = Some(self.wake_at.map_or(wake, |t| t.min(wake)));
@@ -1316,6 +1347,7 @@ impl State {
                 let path = Config::path().map(|p| p.display().to_string()).unwrap_or_default();
                 Some(chrome::about_panel(&m, &self.renderer.gpu, &self.startup, &path, self.panel_offset))
             }
+            Overlay::AiConfirm(_) => Some(chrome::ai_confirm_panel(&m, cfg.ai.provider.label(), self.panel_offset)),
             _ => None,
         }
     }
@@ -1461,6 +1493,104 @@ impl State {
     }
 
     /// Viewport cell under the pointer: (grid point, side, col, row).
+    /// x (in pixels) is over the gutter's times or numbers.
+    fn in_gutter(&self, cfg: &Config, x: f32) -> bool {
+        let pad = padding_px(cfg, self.scale());
+        let gutter = gutter_px(cfg, self.renderer.cell().width, pad);
+        gutter > 0.0 && x < pad + gutter
+    }
+
+    /// Asks the AI to fix the command on global line `at` (None: the last
+    /// command), with the commands before it as context.
+    fn ai_fix(&mut self, cfg: &Config, at: Option<u64>) {
+        let provider = cfg.ai.provider;
+        if provider == Provider::Off {
+            self.show(format!("AI: {}", ai::AiError::NoProvider));
+            return;
+        }
+        let client = match ai::client::Client::new(&cfg.ai, &self.ai_keys) {
+            Ok(c) => c,
+            Err(e) => return self.show(format!("AI: {e}")),
+        };
+        let model = cfg.ai.model_or_default();
+        if model.is_empty() {
+            return self.show(format!("AI: {}", ai::AiError::NoModel));
+        }
+        if !cfg.ai.confirmed.contains(&provider) {
+            self.overlay = Overlay::AiConfirm(at);
+            self.panel_offset = (0.0, 0.0);
+            self.window.request_redraw();
+            return;
+        }
+        let shell = shell_name(cfg);
+        let tab = &mut self.tabs[self.active];
+        let mut live = tab.session.term.lock();
+        if live.mode().contains(TermMode::ALT_SCREEN) {
+            drop(live);
+            return self.show("Fix works on the normal screen, not in full-screen programs".to_owned());
+        }
+        let snap = crate::history::scroll::settled(&mut live, &tab.session.history);
+        let grid = live.grid();
+        let end = tab.lines.cursor_line(grid);
+        let at = at.unwrap_or(end.saturating_sub(1));
+        let ranges = tab.lines.command_ranges(at, cfg.ai.context_commands, end);
+        let commands: Vec<_> = ranges.into_iter().map(|r| ai::context::read_command(r, |lines| logging::lines_text(&snap, grid, lines))).collect();
+        drop(live);
+        if commands.is_empty() {
+            return self.show("No command to fix here".to_owned());
+        }
+        let env = ai::context::Env { shell, os: std::env::consts::OS, program: tab.app.clone() };
+        let context = ai::context::build(&env, &commands);
+        let job = self.next_ai_job;
+        self.next_ai_job += 1;
+        self.ai_job = Some((job, tab.id));
+        ai::fix::start(job, tab.id, client, model, context, self.proxy.clone());
+        self.show_for(format!("Asking {}… Esc cancels", provider.label()), Duration::from_secs(120));
+    }
+
+    /// An answer from an AI request thread.
+    fn on_ai(&mut self, event: AiEvent) {
+        match event {
+            AiEvent::Fixed { job, tab, result } => {
+                if self.ai_job.map(|(j, _)| j) != Some(job) {
+                    return;
+                }
+                self.ai_job = None;
+                match result {
+                    Ok(fix) => {
+                        if let Some(command) = fix.command {
+                            self.insert_command(tab, &command);
+                        }
+                        self.show(fix.explanation);
+                    }
+                    Err(e) => self.show(format!("AI: {e}")),
+                }
+            }
+            AiEvent::Models { .. } | AiEvent::Tested { .. } => {}
+        }
+    }
+
+    /// Types `command` at the prompt of the tab with id `tab`, without
+    /// running it.
+    fn insert_command(&mut self, tab: u64, command: &str) {
+        let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
+        let text = ai::fix::insert_text(command);
+        if text.is_empty() {
+            return;
+        }
+        let tab = &mut self.tabs[i];
+        let mut live = tab.session.term.lock();
+        let mode = *live.mode();
+        if mode.contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        tab.scroller.go_bottom(&mut live);
+        live.selection = None;
+        drop(live);
+        tab.session.write(input::paste_bytes(&text, mode));
+        self.window.request_redraw();
+    }
+
     fn mouse_cell(&self, cfg: &Config, display_offset: usize) -> (Point, Side, usize, usize) {
         let cell = self.renderer.cell();
         let pad = padding_px(cfg, self.scale());
@@ -1644,6 +1774,13 @@ impl State {
                 };
                 return (len > 0).then_some(Action::FontFamily(next));
             }
+            Overlay::AiConfirm(_) => {
+                return match event.logical_key {
+                    Key::Named(NamedKey::Enter) => Some(Action::AiConfirm(true)),
+                    Key::Named(NamedKey::Escape) => Some(Action::AiConfirm(false)),
+                    _ => None,
+                };
+            }
             Overlay::Options | Overlay::About => {
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter)) {
                     self.overlay = Overlay::None;
@@ -1652,6 +1789,13 @@ impl State {
                 return None;
             }
             Overlay::None => {}
+        }
+
+        // Esc while a Fix is on its way cancels it; the shell doesn't get it.
+        if self.ai_job.is_some() && m.is_empty() && matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+            self.ai_job = None;
+            self.show("Cancelled".to_owned());
+            return None;
         }
 
         // Shortcuts (Options → Keyboard shortcuts; [keys] in settings).
@@ -1700,6 +1844,7 @@ impl State {
                 Command::PreviousBookmark if !alt_screen => return Some(Action::PreviousBookmark),
                 Command::NextBookmark if !alt_screen => return Some(Action::NextBookmark),
                 Command::CycleTheme => return Some(Action::Theme(self.theme_mode.next())),
+                Command::AiFix => return Some(Action::AiFix(None)),
                 Command::NextTab | Command::PreviousTab => {
                     self.cycle_tab(cmd == Command::NextTab);
                     return None;
@@ -2131,6 +2276,16 @@ impl State {
                 return None;
             }
         }
+        // The gutter: a menu for the command beside the click.
+        if pressed
+            && button == WinitButton::Left
+            && self.in_gutter(cfg, x)
+            && let Some((line, marked)) = self.bookmark_menu(cfg).target
+        {
+            self.overlay = Overlay::Menu(Menu::gutter(x, y, line, marked, &self.keymap));
+            self.window.request_redraw();
+            return None;
+        }
         let offset = self.tab_mut().shown(|t| t.grid().display_offset());
         let (point, side, col, row) = self.mouse_cell(cfg, offset);
         let tab = &mut self.tabs[self.active];
@@ -2365,6 +2520,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Notice(message) => st.show(message),
+            UserEvent::Ai(event) => st.on_ai(event),
             UserEvent::History(id) => {
                 if let Some(i) = st.tabs.iter().position(|t| t.id == id) {
                     st.tabs[i].search_results();
