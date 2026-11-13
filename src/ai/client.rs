@@ -1,8 +1,11 @@
 //! HTTPS to the providers. Blocking: every call runs on a thread of its
 //! own, never on the UI thread.
 
+use std::io::BufReader;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use super::login::{self, Login};
 use super::wire::{self, Format, Reply, Request};
 use super::{AiConfig, AiError, Keys, Provider};
 
@@ -13,18 +16,34 @@ const ANTHROPIC_VERSION: &str = "2026-10-21";
 /// Largest reply read; model lists and answers are far smaller.
 const MAX_REPLY: u64 = 4 * 1024 * 1024;
 
-/// A connection to one provider with one key.
+/// How requests prove who is asking.
+enum Auth {
+    /// An API key ("" for a local server that needs none).
+    Key(String),
+    /// A ChatGPT sign-in: the saved login (refreshed when it is about to
+    /// expire) and the sign-in server.
+    ChatGpt { path: PathBuf, auth: String },
+}
+
+/// A connection to one provider.
 pub struct Client {
     provider: Provider,
-    key: String,
+    auth: Auth,
     base: String,
     agent: ureq::Agent,
 }
 
 impl Client {
-    /// The client the settings and keys describe.
+    /// The client the settings and keys describe. With ChatGPT, a sign-in
+    /// comes before the API key: requests then spend the user's plan.
     pub fn new(cfg: &AiConfig, keys: &Keys) -> Result<Client, AiError> {
         let p = cfg.provider;
+        if p == Provider::OpenAi
+            && let Some(path) = Login::path()
+            && Login::load(&path).signed_in()
+        {
+            return Ok(Client::chatgpt_with(path, &login::auth_base(), &login::api_base()));
+        }
         let base = match p {
             Provider::Off => return Err(AiError::NoProvider),
             Provider::OpenAi => OPENAI_BASE,
@@ -43,53 +62,78 @@ impl Client {
     }
 
     pub fn with_base(provider: Provider, key: &str, base: &str) -> Client {
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_global(Some(Duration::from_secs(120)))
-            .build();
-        Client { provider, key: key.to_owned(), base: base.trim_end_matches('/').to_owned(), agent: ureq::Agent::new_with_config(config) }
+        Client { provider, auth: Auth::Key(key.to_owned()), base: base.trim_end_matches('/').to_owned(), agent: agent(Duration::from_secs(120)) }
+    }
+
+    /// A client spending the ChatGPT plan of the login saved at `path`.
+    pub fn chatgpt_with(path: PathBuf, auth: &str, api: &str) -> Client {
+        Client {
+            provider: Provider::OpenAi,
+            auth: Auth::ChatGpt { path, auth: auth.trim_end_matches('/').to_owned() },
+            base: api.trim_end_matches('/').to_owned(),
+            agent: agent(Duration::from_secs(120)),
+        }
+    }
+
+    /// Requests spend a ChatGPT plan.
+    #[allow(dead_code)] // used by the Fix notice (next commit)
+    pub fn on_plan(&self) -> bool {
+        matches!(self.auth, Auth::ChatGpt { .. })
     }
 
     /// The API format requests use.
     pub fn format(&self) -> Format {
-        if self.provider.uses_messages_api() { Format::Messages } else { Format::Chat }
+        match &self.auth {
+            Auth::ChatGpt { .. } => Format::Responses,
+            Auth::Key(_) if self.provider.uses_messages_api() => Format::Messages,
+            Auth::Key(_) => Format::Chat,
+        }
     }
 
     /// Asks one question.
     pub fn send(&self, r: &Request) -> Result<Reply, AiError> {
-        let messages = self.provider.uses_messages_api();
-        let (path, body) = if messages { ("/messages", wire::messages_body(r)) } else { ("/chat/completions", wire::chat_body(r)) };
-        let body = body.to_string();
-        let text = self.request(path, Some(&body))?;
-        if messages { wire::parse_messages(&text) } else { wire::parse_chat(&text) }
+        let format = self.format();
+        let (path, body) = match format {
+            Format::Messages => ("/messages", wire::messages_body(r)),
+            Format::Chat => ("/chat/completions", wire::chat_body(r)),
+            Format::Responses => ("/responses", wire::responses_body(r)),
+        };
+        let response = self.request(path, Some(&body.to_string()))?;
+        if format == Format::Responses {
+            // Always streamed; read to its last event.
+            return wire::parse_responses_stream(BufReader::new(response.into_body().into_reader()));
+        }
+        let text = read_text(response)?;
+        if format == Format::Messages { wire::parse_messages(&text) } else { wire::parse_chat(&text) }
     }
 
-    /// The models the key can use.
+    /// The models the key (or plan) can use.
     pub fn models(&self) -> Result<Vec<String>, AiError> {
-        let path = if self.provider.uses_messages_api() { "/models?limit=1000" } else { "/models" };
-        wire::parse_models(&self.request(path, None)?)
+        let path = if self.format() == Format::Messages { "/models?limit=1000" } else { "/models" };
+        wire::parse_models(&read_text(self.request(path, None)?)?)
     }
 
-    /// GET (no body) or POST `body` to `path`; the reply's text when the
-    /// status is 2xx. A connection dropped before any answer (a pooled
-    /// connection the server closed) is tried once more.
-    fn request(&self, path: &str, body: Option<&str>) -> Result<String, AiError> {
+    /// GET (no body) or POST `body` to `path`; the response when the status
+    /// is 2xx. A connection dropped before any answer (a pooled connection
+    /// the server closed) is tried once more.
+    fn request(&self, path: &str, body: Option<&str>) -> Result<ureq::http::Response<ureq::Body>, AiError> {
+        let header = self.auth_header()?;
         let started = Instant::now();
         let mut tries = 0;
         let result = loop {
             tries += 1;
-            match self.request_once(path, body) {
+            match self.request_once(path, body, &header) {
                 Err(ureq::Error::Io(e)) if tries == 1 && dropped(&e) => continue,
                 r => break r,
             }
         };
         let url_path = path.split('?').next().unwrap_or(path);
         match result {
-            Ok((status, text)) => {
+            Ok(response) => {
+                let status = response.status().as_u16();
                 // Never the key or the bodies: they hold secrets and terminal text.
                 log::info!("AI: {} {url_path}: {status} in {} ms", self.provider.name(), started.elapsed().as_millis());
-                if (200..300).contains(&status) { Ok(text) } else { Err(wire::error_for(status, &text)) }
+                if (200..300).contains(&status) { Ok(response) } else { Err(wire::error_for(status, &read_text(response).unwrap_or_default())) }
             }
             Err(e) => {
                 log::info!("AI: {} {url_path}: {e}", self.provider.name());
@@ -98,39 +142,75 @@ impl Client {
         }
     }
 
-    fn request_once(&self, path: &str, body: Option<&str>) -> Result<(u16, String), ureq::Error> {
+    fn request_once(&self, path: &str, body: Option<&str>, header: &Option<(&'static str, String)>) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         let url = format!("{}{path}", self.base);
-        let mut response = match body {
-            Some(b) => self.authorize_post(self.agent.post(&url)).header("content-type", "application/json").send(b)?,
-            None => self.authorize_get(self.agent.get(&url)).call()?,
-        };
-        let status = response.status().as_u16();
-        let text = response.body_mut().with_config().limit(MAX_REPLY).read_to_string()?;
-        Ok((status, text))
-    }
-
-    fn authorize_post(&self, r: ureq::RequestBuilder<ureq::typestate::WithBody>) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
-        let (name, value) = self.auth();
-        let r = if name.is_empty() { r } else { r.header(name, &value) };
-        if self.provider.uses_messages_api() { r.header("anthropic-version", ANTHROPIC_VERSION) } else { r }
-    }
-
-    fn authorize_get(&self, r: ureq::RequestBuilder<ureq::typestate::WithoutBody>) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        let (name, value) = self.auth();
-        let r = if name.is_empty() { r } else { r.header(name, &value) };
-        if self.provider.uses_messages_api() { r.header("anthropic-version", ANTHROPIC_VERSION) } else { r }
-    }
-
-    /// The header that carries the key; ("", "") without a key.
-    fn auth(&self) -> (&'static str, String) {
-        if self.key.is_empty() {
-            ("", String::new())
-        } else if self.provider.uses_messages_api() {
-            ("x-api-key", self.key.clone())
-        } else {
-            ("authorization", format!("Bearer {}", self.key))
+        let anthropic = self.format() == Format::Messages;
+        match body {
+            Some(b) => {
+                let mut r = self.agent.post(&url).header("content-type", "application/json");
+                if let Some((name, value)) = header {
+                    r = r.header(*name, value);
+                }
+                if anthropic {
+                    r = r.header("anthropic-version", ANTHROPIC_VERSION);
+                }
+                r.send(b)
+            }
+            None => {
+                let mut r = self.agent.get(&url);
+                if let Some((name, value)) = header {
+                    r = r.header(*name, value);
+                }
+                if anthropic {
+                    r = r.header("anthropic-version", ANTHROPIC_VERSION);
+                }
+                r.call()
+            }
         }
     }
+
+    /// The header that carries the key or the plan's access token (None:
+    /// no key). A plan's token about to expire is refreshed first, one
+    /// refresh at a time across threads.
+    fn auth_header(&self) -> Result<Option<(&'static str, String)>, AiError> {
+        match &self.auth {
+            Auth::Key(k) if k.is_empty() => Ok(None),
+            Auth::Key(k) if self.provider.uses_messages_api() => Ok(Some(("x-api-key", k.clone()))),
+            Auth::Key(k) => Ok(Some(("authorization", format!("Bearer {k}")))),
+            Auth::ChatGpt { path, auth } => {
+                let _one = login::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let mut l = Login::load(path);
+                if !l.signed_in() {
+                    return Err(AiError::SignInAgain);
+                }
+                let now = login::now();
+                if l.needs_refresh(now) {
+                    let refreshed = login::refresh(&login::agent(), auth, &mut l, now);
+                    // Saved either way: a failed refresh may have signed out.
+                    if let Err(e) = l.save(path) {
+                        log::warn!("could not save the ChatGPT sign-in: {e}");
+                    }
+                    refreshed?;
+                }
+                Ok(Some(("authorization", format!("Bearer {}", l.access_token))))
+            }
+        }
+    }
+}
+
+/// An agent that leaves non-2xx statuses to us, with these timeouts.
+pub fn agent(total: Duration) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_global(Some(total))
+        .build();
+    ureq::Agent::new_with_config(config)
+}
+
+/// A response's body as text, at most `MAX_REPLY` bytes.
+fn read_text(mut response: ureq::http::Response<ureq::Body>) -> Result<String, AiError> {
+    response.body_mut().with_config().limit(MAX_REPLY).read_to_string().map_err(|e| AiError::Network(e.to_string()))
 }
 
 /// Debug output leaves the key out.
@@ -200,15 +280,23 @@ pub mod testserver {
     /// Answers requests with `bodies` (status 200) in turn, one per
     /// connection; returns the base URL and the raw requests.
     pub fn serve(bodies: Vec<&'static str>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let mut bodies = bodies.into_iter();
+        let n = bodies.len();
+        serve_with(n, move |_| (200, bodies.next().unwrap_or("").to_owned()))
+    }
+
+    /// Answers `count` requests, each with what `answer` makes of the raw
+    /// request (status, body); returns the base URL and the raw requests.
+    pub fn serve_with(count: usize, mut answer_with: impl FnMut(&str) -> (u16, String) + Send + 'static) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
-            bodies
-                .into_iter()
-                .map(|body| {
+            (0..count)
+                .map(|_| {
                     let (mut s, _) = listener.accept().unwrap();
                     let raw = read_request(&mut s);
-                    answer(&mut s, 200, body);
+                    let (status, body) = answer_with(&raw);
+                    answer(&mut s, status, &body);
                     raw
                 })
                 .collect()

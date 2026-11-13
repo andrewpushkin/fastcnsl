@@ -7,7 +7,6 @@ pub mod fix;
 pub mod keys;
 #[allow(dead_code)] // wired in by the next task (network and app)
 pub mod login;
-#[allow(dead_code)] // the Responses format is wired in with the ChatGPT sign-in
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +27,9 @@ pub enum AiEvent {
     Models { job: u64, result: Result<Vec<String>, AiError> },
     /// Options → AI's Test.
     Tested { job: u64, result: Result<(), AiError> },
+    /// The ChatGPT sign-in ended: the email signed in, or why not.
+    #[allow(dead_code)] // read by Options → AI (next commit)
+    SignedIn { job: u64, result: Result<String, AiError> },
 }
 
 /// Why a request gave no answer, as users are told.
@@ -60,6 +62,8 @@ pub enum AiError {
     PlanBusy,
     /// The ChatGPT sign-in is no longer valid.
     SignInAgain,
+    /// Signing in went wrong; says how.
+    Login(String),
     /// The model kept calling tools past `fix::MAX_REQUESTS` requests.
     TooManySteps,
     /// The user cancelled (never shown).
@@ -84,6 +88,7 @@ impl std::fmt::Display for AiError {
             AiError::PlanLimit => write!(f, "you have reached your ChatGPT plan's limit; see Manage usage (Options → AI)"),
             AiError::PlanBusy => write!(f, "ChatGPT is busy; try again"),
             AiError::SignInAgain => write!(f, "sign in to ChatGPT again (Options → AI)"),
+            AiError::Login(e) => write!(f, "{e}"),
             AiError::TooManySteps => write!(f, "the AI took too many steps"),
             AiError::Cancelled => write!(f, "cancelled"),
         }

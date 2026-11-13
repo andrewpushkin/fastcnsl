@@ -265,13 +265,22 @@ pub struct Tokens {
 /// Reads a token response; `now` in seconds since 1970. Without the plan
 /// scope the plan can't be used.
 pub fn parse_tokens(body: &str, now: u64) -> Result<Tokens, AiError> {
+    parse_tokens_with(body, now, &[])
+}
+
+/// As [`parse_tokens`]; a response without `scope` keeps `scopes` (a
+/// refresh that leaves the grant as it was).
+fn parse_tokens_with(body: &str, now: u64, scopes: &[String]) -> Result<Tokens, AiError> {
     let v: Value = serde_json::from_str(body).map_err(|e| AiError::BadReply(format!("tokens: {e}")))?;
     let s = |k: &str| v[k].as_str().unwrap_or("").to_owned();
     let access_token = s("access_token");
     if access_token.is_empty() {
         return Err(AiError::BadReply("no access token".into()));
     }
-    let scopes: Vec<String> = v["scope"].as_str().unwrap_or("").split_whitespace().map(str::to_owned).collect();
+    let scopes: Vec<String> = match v["scope"].as_str() {
+        Some(s) => s.split_whitespace().map(str::to_owned).collect(),
+        None => scopes.to_vec(),
+    };
     if !scopes.iter().any(|s| s == PLAN_SCOPE) {
         return Err(AiError::PlanNotEligible);
     }
@@ -292,6 +301,203 @@ pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// Held while the saved login is read, refreshed and written, so two
+/// requests never refresh the same rotating token at once.
+pub static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// An agent for the sign-in server.
+pub fn agent() -> ureq::Agent {
+    super::client::agent(std::time::Duration::from_secs(30))
+}
+
+/// POSTs a form; the status and the body's text.
+fn post_form(agent: &ureq::Agent, url: &str, body: &str) -> Result<(u16, String), AiError> {
+    let mut r = agent
+        .post(url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .send(body)
+        .map_err(|e| AiError::Network(e.to_string()))?;
+    let status = r.status().as_u16();
+    let text = r.body_mut().with_config().limit(1024 * 1024).read_to_string().map_err(|e| AiError::Network(e.to_string()))?;
+    Ok((status, text))
+}
+
+/// The OAuth error in a failed token response, e.g. "invalid_grant".
+fn oauth_code(body: &str) -> String {
+    serde_json::from_str::<Value>(body).ok().and_then(|v| v["error"].as_str().map(str::to_owned)).unwrap_or_default()
+}
+
+fn oauth_error(status: u16, body: &str) -> AiError {
+    match oauth_code(body) {
+        code if code.is_empty() => super::wire::error_for(status, body),
+        code => AiError::Login(format!("sign-in failed: {code}")),
+    }
+}
+
+/// Trades the code from the browser for tokens.
+pub fn exchange(agent: &ureq::Agent, auth: &str, client_id: &str, code: &str, p: &Pending) -> Result<Tokens, AiError> {
+    let body = form(&[
+        ("grant_type", "authorization_code"),
+        ("client_id", client_id),
+        ("code", code),
+        ("code_verifier", &p.verifier),
+        ("redirect_uri", &p.redirect),
+        ("resource", API),
+    ]);
+    let (status, text) = post_form(agent, &format!("{auth}/api/accounts/oauth/token"), &body)?;
+    if (200..300).contains(&status) { parse_tokens(&text, now()) } else { Err(oauth_error(status, &text)) }
+}
+
+/// Gets a new access token (and a new refresh token, which replaces the
+/// old). A refresh token OpenAI no longer accepts signs out.
+pub fn refresh(agent: &ureq::Agent, auth: &str, login: &mut Login, now: u64) -> Result<(), AiError> {
+    let body = form(&[
+        ("grant_type", "refresh_token"),
+        ("client_id", &login.client_id),
+        ("refresh_token", &login.refresh_token),
+        ("resource", API),
+    ]);
+    let (status, text) = post_form(agent, &format!("{auth}/api/accounts/oauth/token"), &body)?;
+    if (200..300).contains(&status) {
+        let tokens = parse_tokens_with(&text, now, &login.scopes)?;
+        login.take_tokens(tokens);
+        return Ok(());
+    }
+    let code = oauth_code(&text);
+    let dead = ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"];
+    if dead.contains(&code.as_str()) {
+        log::info!("ChatGPT sign-in ended: {code}");
+        login.sign_out();
+        return Err(AiError::SignInAgain);
+    }
+    Err(oauth_error(status, &text))
+}
+
+/// Tells OpenAI to forget the login's refresh token (sign-out). Failures
+/// are only logged: the tokens are cleared locally either way.
+pub fn revoke(agent: &ureq::Agent, auth: &str, login: &Login) {
+    if login.refresh_token.is_empty() {
+        return;
+    }
+    let endpoint = agent
+        .get(&format!("{auth}/.well-known/openid-configuration"))
+        .call()
+        .ok()
+        .and_then(|mut r| r.body_mut().read_to_string().ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["revocation_endpoint"].as_str().map(str::to_owned));
+    let Some(endpoint) = endpoint else {
+        log::warn!("ChatGPT sign-out: no revocation endpoint");
+        return;
+    };
+    let body = form(&[("token", &login.refresh_token), ("token_type_hint", "refresh_token"), ("client_id", &login.client_id)]);
+    match post_form(agent, &endpoint, &body) {
+        Ok((200, _)) => log::info!("ChatGPT sign-in revoked"),
+        Ok((status, _)) => log::warn!("ChatGPT sign-out: revocation answered {status}"),
+        Err(e) => log::warn!("ChatGPT sign-out: {e}"),
+    }
+}
+
+/// How long the browser has to come back.
+const SIGN_IN_TIME: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Signs in: opens the sign-in page with `open`, waits on `listener` for
+/// the browser to come back (until `cancel` or five minutes), trades the
+/// code for tokens and saves the login at `path`. The signed-in email.
+pub fn sign_in_with(
+    listener: std::net::TcpListener,
+    auth: &str,
+    path: &Path,
+    open: impl FnOnce(&str),
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<String, AiError> {
+    use std::io::{Read, Write};
+    use std::sync::atomic::Ordering;
+
+    let mut login = {
+        let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Login::load(path)
+    };
+    if login.host_id.is_empty() {
+        login.host_id = new_host_id();
+    }
+    let port = listener.local_addr().map_err(|e| AiError::Login(e.to_string()))?.port();
+    let pending = Pending::new(format!("http://127.0.0.1:{port}{CALLBACK_PATH}"));
+    listener.set_nonblocking(true).map_err(|e| AiError::Login(e.to_string()))?;
+    open(&authorize_url(auth, &login, &pending));
+
+    let deadline = std::time::Instant::now() + SIGN_IN_TIME;
+    let (code, client_id) = loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(AiError::Cancelled);
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(AiError::Login("the browser didn't come back in time".into()));
+        }
+        let mut stream = match listener.accept() {
+            Ok((s, _)) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => return Err(AiError::Login(e.to_string())),
+        };
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        let mut buf = vec![0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let head = String::from_utf8_lossy(&buf[..n]);
+        let target = head.lines().next().and_then(|l| l.split(' ').nth(1)).unwrap_or("");
+        let result = parse_callback(target, &pending, &login.client_id);
+        let page = match &result {
+            Ok(_) => "Signed in to ChatGPT. You can close this tab and go back to fastcnsl.".to_owned(),
+            Err(e) => format!("fastcnsl: {e}"),
+        };
+        let status = if target.starts_with(CALLBACK_PATH) { "200 OK" } else { "404 Not Found" };
+        let html = format!("<!doctype html><meta charset=utf-8><title>fastcnsl</title><p style=\"font:16px sans-serif\">{page}</p>");
+        let _ = write!(stream, "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}", html.len());
+        // A browser's other requests (the icon) don't end the sign-in.
+        if !target.starts_with(CALLBACK_PATH) {
+            continue;
+        }
+        break result.map_err(AiError::Login)?;
+    };
+
+    let tokens = exchange(&agent(), auth, &client_id, &code, &pending)?;
+    let (email, nonce) = id_token_claims(&tokens.id_token).unwrap_or_default();
+    if !tokens.id_token.is_empty() && nonce != pending.nonce {
+        return Err(AiError::Login("the sign-in's ID token is not for this sign-in".into()));
+    }
+    let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    login.client_id = client_id;
+    login.email = email.clone();
+    login.take_tokens(tokens);
+    login.save(path).map_err(|e| AiError::Login(format!("could not save the sign-in: {e}")))?;
+    Ok(email)
+}
+
+/// Signs in on a thread of its own, the browser coming back to port 1455
+/// (another free port if it is taken); `AiEvent::SignedIn` when done.
+pub fn sign_in(job: u64, proxy: winit::event_loop::EventLoopProxy<crate::session::UserEvent>, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let _ = std::thread::Builder::new().name("ai-login".into()).spawn(move || {
+        let result = (|| {
+            let path = Login::path().ok_or_else(|| AiError::Login("no settings folder to keep the sign-in in".into()))?;
+            let listener = std::net::TcpListener::bind("127.0.0.1:1455")
+                .or_else(|_| std::net::TcpListener::bind("127.0.0.1:0"))
+                .map_err(|e| AiError::Login(format!("could not listen for the browser: {e}")))?;
+            let open = |url: &str| {
+                if let Err(e) = crate::open::open(url) {
+                    log::warn!("could not open the browser: {e}");
+                }
+            };
+            sign_in_with(listener, &auth_base(), &path, open, &cancel)
+        })();
+        if result != Err(AiError::Cancelled) {
+            let _ = proxy.send_event(crate::session::UserEvent::Ai(super::AiEvent::SignedIn { job, result }));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine;
@@ -300,6 +506,139 @@ mod tests {
 
     fn pending() -> Pending {
         Pending { state: "st".into(), nonce: "no".into(), verifier: "v".repeat(43), redirect: "http://127.0.0.1:1455/auth/callback".into() }
+    }
+
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    use crate::ai::client::Client;
+    use crate::ai::client::testserver::serve_with;
+    use crate::ai::wire::{Request, user_message};
+
+    /// The value of `name` in `url`'s query.
+    fn query(url: &str, name: &str) -> String {
+        url.split_once('?').unwrap().1.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| decode(v)).unwrap()
+    }
+
+    fn id_token(email: &str, nonce: &str) -> String {
+        let p = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"email":"{email}","nonce":"{nonce}"}}"#));
+        format!("h.{p}.s")
+    }
+
+    fn tokens(access: &str, refresh: &str, id: &str) -> String {
+        format!(r#"{{"access_token":"{access}","refresh_token":"{refresh}","id_token":"{id}","expires_in":3600,"scope":"openid email offline_access resource.invoke chatgpt.tokens.use.direct"}}"#)
+    }
+
+    const COMPLETED: &str = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n";
+
+    #[test]
+    fn sign_in_with_a_fake_openai() {
+        let dir = crate::testterm::temp_dir("signin");
+        let path = dir.join("chatgpt-login.json");
+        let nonce = Arc::new(Mutex::new(String::new()));
+        let n = nonce.clone();
+        let (auth, got) = serve_with(1, move |_| (200, tokens("a1", "r1", &id_token("me@x.org", &n.lock().unwrap()))));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = |url: &str| {
+            assert!(url.contains("client_id=dynamic_agent_client"));
+            *nonce.lock().unwrap() = query(url, "nonce");
+            let back = format!("{}?code=c9&state={}&client_id=oaiapp_1", query(url, "redirect_uri"), query(url, "state"));
+            std::thread::spawn(move || ureq::get(&back).call().map(|_| ()));
+        };
+        let email = sign_in_with(listener, &auth, &path, open, &AtomicBool::new(false)).unwrap();
+        assert_eq!(email, "me@x.org");
+        let l = Login::load(&path);
+        assert_eq!((l.client_id.as_str(), l.access_token.as_str(), l.refresh_token.as_str()), ("oaiapp_1", "a1", "r1"));
+        assert!(l.host_id.starts_with("urn:uuid:") && l.signed_in());
+        let req = &got.join().unwrap()[0];
+        assert!(req.starts_with("POST /api/accounts/oauth/token "), "{req}");
+        for part in ["grant_type=authorization_code", "client_id=oaiapp_1", "code=c9", "code_verifier=", "resource=https%3A%2F%2Fapi.openai.com%2Fv1"] {
+            assert!(req.contains(part), "{part} in {req}");
+        }
+    }
+
+    #[test]
+    fn a_cancelled_sign_in_stops() {
+        let dir = crate::testterm::temp_dir("signin-cancel");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let started = std::time::Instant::now();
+        let r = sign_in_with(listener, "http://127.0.0.1:9", &dir.join("l.json"), |_| {}, &AtomicBool::new(true));
+        assert_eq!(r.unwrap_err(), AiError::Cancelled);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    fn signed_in(path: &Path, expires_at: u64) {
+        let l = Login { client_id: "oaiapp_1".into(), host_id: "h".into(), email: "e".into(), access_token: "old".into(), refresh_token: "r1".into(), expires_at, scopes: vec![PLAN_SCOPE.into()], ..Login::default() };
+        l.save(path).unwrap();
+    }
+
+    fn ask(c: &Client) -> Result<String, AiError> {
+        let m = [user_message("u")];
+        c.send(&Request { model: "m", system: "s", messages: &m, tools: &[], max_tokens: 10 }).map(|r| r.text)
+    }
+
+    #[test]
+    fn an_expired_token_is_refreshed_first() {
+        let dir = crate::testterm::temp_dir("refresh");
+        let path = dir.join("chatgpt-login.json");
+        signed_in(&path, 0);
+        let (auth, auth_got) = serve_with(1, |_| (200, tokens("new", "r2", "")));
+        let (api, api_got) = serve_with(1, |_| (200, COMPLETED.to_owned()));
+        let c = Client::chatgpt_with(path.clone(), &auth, &api);
+        assert_eq!(ask(&c).unwrap(), "ok");
+        let refresh = &auth_got.join().unwrap()[0];
+        assert!(refresh.contains("grant_type=refresh_token") && refresh.contains("refresh_token=r1") && refresh.contains("client_id=oaiapp_1"), "{refresh}");
+        let call = &api_got.join().unwrap()[0];
+        assert!(call.starts_with("POST /responses ") && call.to_lowercase().contains("authorization: bearer new"), "{call}");
+        assert!(call.contains(r#""store":false"#));
+        let l = Login::load(&path);
+        assert_eq!((l.access_token.as_str(), l.refresh_token.as_str()), ("new", "r2"));
+    }
+
+    #[test]
+    fn a_dead_refresh_token_signs_out() {
+        let dir = crate::testterm::temp_dir("refresh-dead");
+        let path = dir.join("chatgpt-login.json");
+        signed_in(&path, 0);
+        let (auth, _) = serve_with(1, |_| (400, r#"{"error":"invalid_grant"}"#.to_owned()));
+        let c = Client::chatgpt_with(path.clone(), &auth, "http://127.0.0.1:9");
+        assert_eq!(ask(&c).unwrap_err(), AiError::SignInAgain);
+        let l = Login::load(&path);
+        assert!(!l.signed_in());
+        assert_eq!(l.client_id, "oaiapp_1");
+    }
+
+    #[test]
+    fn a_fresh_token_is_used_as_is() {
+        let dir = crate::testterm::temp_dir("fresh");
+        let path = dir.join("chatgpt-login.json");
+        signed_in(&path, now() + 3600);
+        let (api, api_got) = serve_with(1, |_| (200, COMPLETED.to_owned()));
+        let c = Client::chatgpt_with(path, "http://127.0.0.1:9", &api);
+        assert_eq!(ask(&c).unwrap(), "ok");
+        assert!(api_got.join().unwrap()[0].to_lowercase().contains("authorization: bearer old"));
+    }
+
+    #[test]
+    fn sign_out_revokes_the_refresh_token() {
+        let base = Arc::new(Mutex::new(String::new()));
+        let b = base.clone();
+        let (auth, got) = serve_with(2, move |raw| {
+            if raw.starts_with("GET /.well-known/openid-configuration") {
+                (200, format!(r#"{{"revocation_endpoint":"{}/oauth/revoke"}}"#, b.lock().unwrap()))
+            } else {
+                (200, String::new())
+            }
+        });
+        *base.lock().unwrap() = auth.clone();
+        let l = Login { client_id: "oaiapp_1".into(), refresh_token: "r1".into(), ..Login::default() };
+        revoke(&agent(), &auth, &l);
+        let reqs = got.join().unwrap();
+        let post = &reqs[1];
+        assert!(post.starts_with("POST /oauth/revoke "), "{post}");
+        for part in ["token=r1", "token_type_hint=refresh_token", "client_id=oaiapp_1"] {
+            assert!(post.contains(part), "{part} in {post}");
+        }
     }
 
     #[test]

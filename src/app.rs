@@ -1715,6 +1715,8 @@ impl State {
                 self.ai_scroll = self.ai_models.iter().position(|m| m == &self.ai_model_shown).unwrap_or(0).saturating_sub(3);
                 self.window.request_redraw();
             }
+            // Options → AI handles it (next commit).
+            AiEvent::SignedIn { .. } => {}
             AiEvent::Tested { job, result } => {
                 if self.ai_test_job != Some(job) {
                     return;
