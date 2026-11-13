@@ -5,6 +5,8 @@ pub mod client;
 pub mod context;
 pub mod fix;
 pub mod keys;
+#[allow(dead_code)] // wired in by the next task (network and app)
+pub mod login;
 #[allow(dead_code)] // the Responses format is wired in with the ChatGPT sign-in
 pub mod wire;
 

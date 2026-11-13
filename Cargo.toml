@@ -38,6 +38,10 @@ unicode-width = "0.2.3"
 # HTTPS to the AI providers: blocking, on threads of their own; rustls with
 # bundled root certificates, so it works the same on every platform.
 ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+# ChatGPT sign-in: SHA-256 and secure random values (PKCE, state), and
+# URL-safe base64. Both are already built for ureq's TLS.
+ring = "0.17.14"
+base64 = "0.22.1"
 wgpu = "30.0.1"
 winit = "0.30.13"
 # Glyphs rasterised by FreeType on every platform, as wezterm does; built

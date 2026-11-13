@@ -646,6 +646,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "arboard",
+ "base64 0.22.1",
  "bytemuck",
  "cosmic-text",
  "dirs",
@@ -658,6 +659,7 @@ dependencies = [
  "polling",
  "pollster",
  "regex-automata",
+ "ring",
  "serde",
  "serde_json",
  "syntect",
