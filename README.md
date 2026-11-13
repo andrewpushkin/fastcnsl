@@ -166,8 +166,8 @@ the start of the tab, or turn it off.
 ### Bookmarks
 
 Right-click a line, or its time, and choose **Add bookmark**, or press
-**Ctrl+Shift+B**. The line is tinted and stays marked as more output
-arrives. **Ctrl+Shift+↑ / ↓** jump between a tab's bookmarks.
+**Ctrl+Shift+B**. A bookmark icon appears beside the line's time, and the
+line stays marked as more output arrives. **Ctrl+Shift+↑ / ↓** jump between a tab's bookmarks.
 
 ![Two bookmarked lines, tinted, in a C file](docs/bookmarks.png)
 

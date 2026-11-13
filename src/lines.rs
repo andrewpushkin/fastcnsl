@@ -22,10 +22,14 @@ use crate::config::LineNumbers;
 pub const DIGITS: usize = 5;
 /// Characters in a time shown in the gutter: `HH:MM:SS`.
 pub const TIME_CHARS: usize = 8;
+/// Set on a gutter time that is a time of day (a command's line) rather
+/// than seconds since (its output); see [`format_time`].
+pub const TIME_OF_DAY: u64 = 1 << 63;
 
-/// Width of the gutter in cells: what it shows and a gap before the text.
+/// Width of the gutter in cells: a cell for the bookmark icon, what it
+/// shows and a gap before the text.
 pub fn gutter_cells(mode: LineNumbers) -> usize {
-    1 + if mode == LineNumbers::Command { TIME_CHARS } else { DIGITS }
+    2 + if mode == LineNumbers::Command { TIME_CHARS } else { DIGITS }
 }
 
 /// The local time of day, in seconds.
@@ -313,8 +317,9 @@ impl LineIndex {
         !self.bookmarks.is_empty()
     }
 
-    /// The screen rows (top to bottom, from 0) of the bookmarked lines,
-    /// every row of a wrapped line. Pass the normal screen's grid.
+    /// The screen rows (top to bottom, from 0) of the bookmarked lines, one
+    /// per line: its first row, or the top row if that is scrolled off.
+    /// Pass the normal screen's grid.
     pub fn bookmarked_rows(&mut self, grid: &Grid<Cell>, out: &mut Vec<usize>) {
         out.clear();
         if self.bookmarks.is_empty() {
@@ -323,7 +328,8 @@ impl LineIndex {
         let top = grid.history_size() - grid.display_offset();
         let mut line = ends_before(grid, &mut self.view, top);
         for abs in top..(top + grid.screen_lines()).min(cursor_row(grid) + 1) {
-            if self.bookmarks.binary_search(&line).is_ok() {
+            let starts = abs == top || !wraps(grid, abs - 1);
+            if starts && self.bookmarks.binary_search(&line).is_ok() {
                 out.push(abs - top);
             }
             if !wraps(grid, abs) {
@@ -358,7 +364,7 @@ impl LineIndex {
         let i = self.marks.partition_point(|&(m, ..)| m <= line);
         let (start, at, clock) = i.checked_sub(1).map_or((0, 0, self.clock), |i| self.marks[i]);
         if line == start {
-            return Some(clock);
+            return Some(clock | TIME_OF_DAY);
         }
         if line >= self.timed {
             return None;
@@ -390,16 +396,16 @@ pub fn format_number(n: u64, buf: &mut String) {
     }
 }
 
-/// `secs` as `HH:MM:SS`, in [`TIME_CHARS`] characters: whole hours from
-/// 100 hours on, so it always fits the gutter.
+/// A gutter time in [`TIME_CHARS`] characters: a time of day (marked with
+/// [`TIME_OF_DAY`]) as `HH:MM:SS`, seconds since as a right-aligned count.
 pub fn format_time(secs: u64, buf: &mut String) {
     use std::fmt::Write;
     buf.clear();
-    let hours = secs / 3600;
-    let _ = if hours < 100 {
-        write!(buf, "{hours:02}:{:02}:{:02}", secs / 60 % 60, secs % 60)
+    let _ = if secs & TIME_OF_DAY != 0 {
+        let secs = (secs & !TIME_OF_DAY) % 86_400;
+        write!(buf, "{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
     } else {
-        write!(buf, "{:>w$}h", hours.min(9_999_999), w = TIME_CHARS - 1)
+        write!(buf, "{:>TIME_CHARS$}", secs.min(99_999_999))
     };
 }
 
@@ -652,7 +658,7 @@ mod tests {
         let mut t = T::new(10, 8, 100);
         t.feed("short\n0123456789abcdefghijXY\nend\n");
         t.toggle("abcdefghij");
-        assert_eq!(t.marked(), ["0123456789", "abcdefghij", "XY"]);
+        assert_eq!(t.marked(), ["0123456789"]);
         // Wider: the line unwraps and is still the one marked.
         t.term.resize(TermSize::new(30, 8));
         t.index.invalidate();
@@ -767,6 +773,11 @@ mod tests {
     /// A tab that started at 09:14:32, in seconds.
     const CLOCK: u64 = 9 * 3600 + 14 * 60 + 32;
 
+    /// A command's line, shown at time of day `secs`.
+    fn at(secs: u64) -> Option<u64> {
+        Some(secs | TIME_OF_DAY)
+    }
+
     impl T {
         fn timed(cols: usize, lines: usize, history: usize) -> Self {
             let mut t = Self::new(cols, lines, history);
@@ -798,7 +809,7 @@ mod tests {
         t.output(0, "welcome\n");
         t.output(3, "a\n");
         t.output(65, "b\nc\n");
-        assert_eq!(t.times(), [Some(CLOCK), Some(3), Some(65), Some(65), None]);
+        assert_eq!(t.times(), [at(CLOCK), Some(3), Some(65), Some(65), None]);
     }
 
     #[test]
@@ -810,7 +821,7 @@ mod tests {
         t.enter(200, "ls");
         t.output(200, "b\n");
         let (sleep, ls) = (CLOCK + 100, CLOCK + 200);
-        assert_eq!(t.times(), [Some(CLOCK), Some(sleep), Some(3), Some(ls), Some(0), None]);
+        assert_eq!(t.times(), [at(CLOCK), at(sleep), Some(3), at(ls), Some(0), None]);
     }
 
     #[test]
@@ -820,7 +831,7 @@ mod tests {
         t.index.on_enter_at(t.term.grid(), 10_900, CLOCK + 10);
         t.feed("\nfast\n");
         t.index.record_times_at(t.term.grid(), 11_050);
-        assert_eq!(t.times(), [Some(CLOCK + 10), Some(0), None]);
+        assert_eq!(t.times(), [at(CLOCK + 10), Some(0), None]);
     }
 
     #[test]
@@ -831,7 +842,7 @@ mod tests {
         t.output(1, "");
         t.output(6, "done");
         t.output(9, " more\n");
-        assert_eq!(t.times(), [Some(CLOCK), Some(6), None]);
+        assert_eq!(t.times(), [at(CLOCK), Some(6), None]);
     }
 
     #[test]
@@ -839,7 +850,7 @@ mod tests {
         let mut t = T::timed(10, 8, 100);
         t.output(0, "start\n");
         t.output(4, "0123456789abcdefghijXY\n");
-        assert_eq!(t.times(), [Some(CLOCK), Some(4), None, None, None]);
+        assert_eq!(t.times(), [at(CLOCK), Some(4), None, None, None]);
     }
 
     #[test]
@@ -849,7 +860,7 @@ mod tests {
         // What readline does at the edge: force the wrap, back to column 0.
         t.output(3, "$ 01234567 \r");
         t.output(8, "more\n");
-        assert_eq!(t.times(), [Some(CLOCK), Some(3), None, None]);
+        assert_eq!(t.times(), [at(CLOCK), Some(3), None, None]);
     }
 
     #[test]
@@ -874,7 +885,7 @@ mod tests {
         t.output(2, "aaaaaaaaaaaaaaa\n");
         t.term.resize(TermSize::new(20, 6));
         t.index.invalidate();
-        assert_eq!(t.times(), [Some(CLOCK), Some(2), None]);
+        assert_eq!(t.times(), [at(CLOCK), Some(2), None]);
         t.output(5, "\x1b[H\x1b[2J\x1b[3J");
         t.output(7, "x\n");
         assert_eq!(t.times(), [Some(7), None]);
@@ -888,7 +899,7 @@ mod tests {
         t.output(8, "\x1b[2A\r\x1b[K");
         t.output(9, "three\n");
         // The cursor is on "two" now, the last line that has an entry.
-        assert_eq!(t.times(), [Some(CLOCK), Some(9), Some(9)]);
+        assert_eq!(t.times(), [at(CLOCK), Some(9), Some(9)]);
     }
 
     #[test]
@@ -897,27 +908,27 @@ mod tests {
         t.output(0, "a\nb\nc\n");
         t.output(4, "\x1bc");
         t.output(9, "x\ny\n");
-        assert_eq!(t.times(), [Some(CLOCK), Some(9), None]);
+        assert_eq!(t.times(), [at(CLOCK), Some(9), None]);
     }
 
     #[test]
     fn times_fit_the_gutter() {
         let mut b = String::new();
         for (secs, want) in [
-            (0, "00:00:00"),
-            (65, "00:01:05"),
-            (9 * 3600 + 14 * 60 + 32, "09:14:32"),
-            (100 * 60, "01:40:00"),
-            (99 * 3600 + 59 * 60 + 59, "99:59:59"),
-            (100 * 3600, "    100h"),
-            (u64::MAX, "9999999h"),
+            (0, "       0"),
+            (65, "      65"),
+            (100 * 3600, "  360000"),
+            (u64::MAX >> 1, "99999999"),
+            (TIME_OF_DAY, "00:00:00"),
+            (TIME_OF_DAY | (9 * 3600 + 14 * 60 + 32), "09:14:32"),
+            (TIME_OF_DAY | (23 * 3600 + 59 * 60 + 59), "23:59:59"),
         ] {
             format_time(secs, &mut b);
             assert_eq!(b, want);
             assert_eq!(b.chars().count(), TIME_CHARS, "{want}");
         }
-        assert_eq!(gutter_cells(LineNumbers::Command), TIME_CHARS + 1);
-        assert_eq!(gutter_cells(LineNumbers::Tab), DIGITS + 1);
+        assert_eq!(gutter_cells(LineNumbers::Command), TIME_CHARS + 2);
+        assert_eq!(gutter_cells(LineNumbers::Tab), DIGITS + 2);
     }
 
     #[test]
