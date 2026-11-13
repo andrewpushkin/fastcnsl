@@ -239,7 +239,11 @@ pub fn parse_callback(target: &str, p: &Pending, saved_client: &str) -> Result<(
         return Err("the sign-in came back with the wrong state".into());
     }
     if let Some(e) = get("error") {
-        return Err(if e == "access_denied" { "sign-in was cancelled".into() } else { format!("sign-in failed: {e}") });
+        return Err(match (e.as_str(), get("error_description")) {
+            (_, Some(d)) if !d.is_empty() => format!("OpenAI didn't allow the sign-in: {d}"),
+            ("access_denied", _) => "sign-in was cancelled".into(),
+            (e, _) => format!("sign-in failed: {e}"),
+        });
     }
     let code = get("code").filter(|c| !c.is_empty()).ok_or("the sign-in brought no code")?;
     let client = match (get("client_id"), saved_client) {
@@ -356,7 +360,13 @@ pub fn exchange(agent: &ureq::Agent, auth: &str, client_id: &str, code: &str, p:
         ("resource", API),
     ]);
     let (status, text) = post_form(agent, &format!("{auth}/api/accounts/oauth/token"), &body)?;
-    if (200..300).contains(&status) { parse_tokens(&text, now()) } else { Err(oauth_error(status, &text)) }
+    if (200..300).contains(&status) {
+        parse_tokens(&text, now())
+    } else {
+        // An error body has no secrets: log it whole, for diagnosing.
+        log::warn!("ChatGPT token exchange: {status}: {}", text.chars().take(1000).collect::<String>());
+        Err(oauth_error(status, &text))
+    }
 }
 
 /// Gets a new access token (and a new refresh token, which replaces the
@@ -411,11 +421,7 @@ pub fn revoke(agent: &ureq::Agent, auth: &str, login: &Login) {
 
 /// The page the browser shows when it comes back. Error text can carry
 /// what was in the address, so it is escaped.
-fn callback_page(result: &Result<(String, String), String>) -> String {
-    let text = match result {
-        Ok(_) => "Signed in to ChatGPT. You can close this tab and go back to fastcnsl.".to_owned(),
-        Err(e) => format!("fastcnsl: {e}"),
-    };
+fn callback_page(text: &str) -> String {
     let text = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
     format!("<!doctype html><meta charset=utf-8><title>fastcnsl</title><p style=\"font:16px sans-serif\">{text}</p>")
 }
@@ -426,6 +432,12 @@ const SIGN_IN_TIME: std::time::Duration = std::time::Duration::from_secs(300);
 /// Signs in: opens the sign-in page with `open`, waits on `listener` for
 /// the browser to come back (until `cancel` or five minutes), trades the
 /// code for tokens and saves the login at `path`. The signed-in email.
+///
+/// The client id OpenAI issues on first use is saved as soon as the browser
+/// brings it, before the trade: OpenAI may refuse that first code (it does
+/// when the plan can't be used by other apps). Then the same browser tab is
+/// sent to sign in once more with the issued id, as OpenAI's own kit does:
+/// that either works, or shows OpenAI's page saying why not.
 pub fn sign_in_with(
     listener: std::net::TcpListener,
     auth: &str,
@@ -433,9 +445,6 @@ pub fn sign_in_with(
     open: impl FnOnce(&str),
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<String, AiError> {
-    use std::io::{Read, Write};
-    use std::sync::atomic::Ordering;
-
     let mut login = {
         let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         Login::load(path)
@@ -444,12 +453,98 @@ pub fn sign_in_with(
         login.host_id = new_host_id();
     }
     let port = listener.local_addr().map_err(|e| AiError::Login(e.to_string()))?.port();
-    let pending = Pending::new(format!("http://127.0.0.1:{port}{CALLBACK_PATH}"));
     listener.set_nonblocking(true).map_err(|e| AiError::Login(e.to_string()))?;
-    open(&authorize_url(auth, &login, &pending));
-
     let deadline = std::time::Instant::now() + SIGN_IN_TIME;
-    let (code, client_id) = loop {
+    let redirect = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
+
+    let mut pending = Pending::new(redirect.clone());
+    open(&authorize_url(auth, &login, &pending));
+    let mut retried = false;
+    loop {
+        let new_registration = login.client_id.is_empty();
+        let (mut browser, outcome) = wait_for_browser(&listener, &pending, &login.client_id, cancel, deadline)?;
+        let (code, client_id) = match outcome {
+            Ok(c) => c,
+            Err(e) => {
+                // Declined on the second try: OpenAI's page said why (for a
+                // plan that can't be used, "a required permission is unavailable").
+                let e = if retried { REFUSED.to_owned() } else { e };
+                answer_browser(&mut browser, "200 OK", &format!("fastcnsl: {e}"));
+                return Err(AiError::Login(e));
+            }
+        };
+        if new_registration {
+            login.client_id = client_id.clone();
+            save_locked(&login, path);
+        }
+        let tokens = match exchange(&agent(), auth, &client_id, &code, &pending) {
+            Ok(t) => t,
+            Err(e) if is_refused(&e) && !retried => {
+                // Once more with the issued id, in the same tab.
+                log::info!("ChatGPT sign-in: the first code was refused; signing in again with the issued client");
+                retried = true;
+                pending = Pending::new(redirect.clone());
+                redirect_browser(&mut browser, &authorize_url(auth, &login, &pending));
+                continue;
+            }
+            Err(e) => {
+                let e = if is_refused(&e) { AiError::Login(REFUSED.into()) } else { e };
+                answer_browser(&mut browser, "200 OK", &format!("fastcnsl: {e}"));
+                return Err(e);
+            }
+        };
+        let (email, nonce) = id_token_claims(&tokens.id_token).unwrap_or_default();
+        log::info!("ChatGPT sign-in: tokens received; ID token {}", if tokens.id_token.is_empty() { "missing" } else if nonce == pending.nonce { "matches" } else { "has another nonce" });
+        if !tokens.id_token.is_empty() && nonce != pending.nonce {
+            let e = AiError::Login("the sign-in's ID token is not for this sign-in".into());
+            answer_browser(&mut browser, "200 OK", &format!("fastcnsl: {e}"));
+            return Err(e);
+        }
+        login.email = email.clone();
+        login.take_tokens(tokens);
+        let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = login.save(path) {
+            let e = AiError::Login(format!("could not save the sign-in: {e}"));
+            answer_browser(&mut browser, "200 OK", &format!("fastcnsl: {e}"));
+            return Err(e);
+        }
+        answer_browser(&mut browser, "200 OK", "Signed in to ChatGPT. You can close this tab and go back to fastcnsl.");
+        return Ok(email);
+    }
+}
+
+/// Said when OpenAI refuses the code even after signing in again.
+const REFUSED: &str = "OpenAI didn't allow this sign-in. Using a ChatGPT plan in other apps needs Plus or Pro \
+(OpenAI's page may have said a required permission is unavailable for your plan).";
+
+fn is_refused(e: &AiError) -> bool {
+    matches!(e, AiError::Login(m) if m.starts_with("sign-in failed: invalid_grant"))
+}
+
+fn save_locked(login: &Login, path: &Path) {
+    let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = login.save(path) {
+        log::warn!("could not save the ChatGPT registration: {e}");
+    }
+}
+
+/// The callback's code and client id, or why it was refused.
+type Callback = Result<(String, String), String>;
+
+/// Waits for the browser's callback. Other requests (the icon) get a 404
+/// and the wait goes on. The connection is returned unanswered with the
+/// checked code and client id (or why not), so the page can say how the
+/// sign-in ended.
+fn wait_for_browser(
+    listener: &std::net::TcpListener,
+    pending: &Pending,
+    saved_client: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+    deadline: std::time::Instant,
+) -> Result<(std::net::TcpStream, Callback), AiError> {
+    use std::io::Read;
+    use std::sync::atomic::Ordering;
+    loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(AiError::Cancelled);
         }
@@ -466,34 +561,34 @@ pub fn sign_in_with(
         };
         let _ = stream.set_nonblocking(false);
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; 16384];
         let n = stream.read(&mut buf).unwrap_or(0);
         let head = String::from_utf8_lossy(&buf[..n]);
-        let target = head.lines().next().and_then(|l| l.split(' ').nth(1)).unwrap_or("");
-        let result = parse_callback(target, &pending, &login.client_id);
-        let status = if target.starts_with(CALLBACK_PATH) { "200 OK" } else { "404 Not Found" };
-        let html = callback_page(&result);
-        let _ = write!(stream, "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}", html.len());
-        // A browser's other requests (the icon) don't end the sign-in.
+        let target = head.lines().next().and_then(|l| l.split(' ').nth(1)).unwrap_or("").to_owned();
         if !target.starts_with(CALLBACK_PATH) {
+            answer_browser(&mut stream, "404 Not Found", "fastcnsl: not here");
             continue;
         }
-        log::info!("ChatGPT sign-in: the browser came back ({})", if result.is_ok() { "ok" } else { "refused" });
-        break result.map_err(AiError::Login)?;
-    };
-
-    let tokens = exchange(&agent(), auth, &client_id, &code, &pending).inspect_err(|e| log::warn!("ChatGPT sign-in: token exchange: {e}"))?;
-    let (email, nonce) = id_token_claims(&tokens.id_token).unwrap_or_default();
-    log::info!("ChatGPT sign-in: tokens received; ID token {}", if tokens.id_token.is_empty() { "missing" } else if nonce == pending.nonce { "matches" } else { "has another nonce" });
-    if !tokens.id_token.is_empty() && nonce != pending.nonce {
-        return Err(AiError::Login("the sign-in's ID token is not for this sign-in".into()));
+        let result = parse_callback(&target, pending, saved_client);
+        // Names and lengths only: the values are secrets.
+        let shape: Vec<String> = target.split_once('?').map_or("", |(_, q)| q).split('&').map(|kv| match kv.split_once('=') {
+            Some((k, v)) => format!("{k}({})", v.len()),
+            None => kv.to_owned(),
+        }).collect();
+        log::info!("ChatGPT sign-in: the browser came back ({}): {}", if result.is_ok() { "ok" } else { "refused" }, shape.join(" "));
+        return Ok((stream, result));
     }
-    let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    login.client_id = client_id;
-    login.email = email.clone();
-    login.take_tokens(tokens);
-    login.save(path).map_err(|e| AiError::Login(format!("could not save the sign-in: {e}")))?;
-    Ok(email)
+}
+
+fn answer_browser(stream: &mut std::net::TcpStream, status: &str, text: &str) {
+    use std::io::Write;
+    let html = callback_page(text);
+    let _ = write!(stream, "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}", html.len());
+}
+
+fn redirect_browser(stream: &mut std::net::TcpStream, url: &str) {
+    use std::io::Write;
+    let _ = write!(stream, "HTTP/1.1 302 Found\r\nlocation: {url}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
 }
 
 /// Signs in on a thread of its own, the browser coming back to port 1455
@@ -575,6 +670,125 @@ mod tests {
         for part in ["grant_type=authorization_code", "client_id=oaiapp_1", "code=c9", "code_verifier=", "resource=https%3A%2F%2Fapi.openai.com%2Fv1"] {
             assert!(req.contains(part), "{part} in {req}");
         }
+    }
+
+    #[test]
+    fn the_verifier_sent_matches_the_challenge_in_the_address() {
+        let dir = crate::testterm::temp_dir("signin-pkce");
+        let challenge_sent = Arc::new(Mutex::new(String::new()));
+        let nonce = Arc::new(Mutex::new(String::new()));
+        let (c, n) = (challenge_sent.clone(), nonce.clone());
+        let (auth, got) = serve_with(1, move |raw| {
+            let body = raw.split("\r\n\r\n").nth(1).unwrap_or("");
+            let verifier = body.split('&').find_map(|kv| kv.strip_prefix("code_verifier=")).map(decode).unwrap_or_default();
+            if challenge(&verifier) == *c.lock().unwrap() {
+                (200, tokens("a", "r", &id_token("e", &n.lock().unwrap())))
+            } else {
+                (400, r#"{"error":"invalid_grant"}"#.to_owned())
+            }
+        });
+        let open = |url: &str| {
+            *challenge_sent.lock().unwrap() = query(url, "code_challenge");
+            *nonce.lock().unwrap() = query(url, "nonce");
+            let back = format!("{}?code=c&state={}&client_id=oaiapp_1", query(url, "redirect_uri"), query(url, "state"));
+            std::thread::spawn(move || ureq::get(&back).call().map(|_| ()));
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        assert!(sign_in_with(listener, &auth, &dir.join("l.json"), open, &AtomicBool::new(false)).is_ok());
+        got.join().unwrap();
+    }
+
+    /// A fake OpenAI whose first code is refused (as for a new registration
+    /// whose plan can't be used) and whose sign-in page sends the browser
+    /// straight back with a new code. `second` answers the second exchange.
+    fn refusing_openai(second: &'static str) -> (String, Arc<Mutex<String>>, std::thread::JoinHandle<Vec<String>>) {
+        let base = Arc::new(Mutex::new(String::new()));
+        let nonce = Arc::new(Mutex::new(String::new()));
+        let (b, n) = (base.clone(), nonce.clone());
+        let mut exchanges = 0;
+        let (auth, got) = serve_with(3, move |raw| {
+            if raw.starts_with("GET /api/accounts/authorize") {
+                let target = raw.split(' ').nth(1).unwrap();
+                let url = format!("{}{target}", b.lock().unwrap());
+                *n.lock().unwrap() = query(&url, "nonce");
+                let back = format!("{}?code=c2&state={}", query(&url, "redirect_uri"), query(&url, "state"));
+                return (302, back);
+            }
+            exchanges += 1;
+            if exchanges == 1 || second.is_empty() {
+                (400, r#"{"error":"invalid_grant"}"#.to_owned())
+            } else {
+                (200, tokens("a2", "r2", &id_token("me@x.org", &n.lock().unwrap())))
+            }
+        });
+        *base.lock().unwrap() = auth.clone();
+        (auth, nonce, got)
+    }
+
+    fn browser(nonce: Arc<Mutex<String>>) -> impl FnOnce(&str) {
+        move |url: &str| {
+            *nonce.lock().unwrap() = query(url, "nonce");
+            let back = format!("{}?code=c1&state={}&client_id=oaiapp_1", query(url, "redirect_uri"), query(url, "state"));
+            // Follows the redirect to the second sign-in, as a browser does.
+            std::thread::spawn(move || ureq::get(&back).call().map(|_| ()));
+        }
+    }
+
+    #[test]
+    fn a_refused_first_code_signs_in_again_with_the_issued_client() {
+        let dir = crate::testterm::temp_dir("signin-retry");
+        let path = dir.join("l.json");
+        let (auth, nonce, got) = refusing_openai("ok");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        assert_eq!(sign_in_with(listener, &auth, &path, browser(nonce), &AtomicBool::new(false)).unwrap(), "me@x.org");
+        let reqs = got.join().unwrap();
+        assert!(reqs[1].starts_with("GET /api/accounts/authorize") && reqs[1].contains("client_id=oaiapp_1"), "{}", reqs[1]);
+        assert!(!reqs[1].contains("agent_name_hint"));
+        assert!(reqs[2].contains("code=c2") && reqs[2].contains("client_id=oaiapp_1"));
+        assert_eq!(Login::load(&path).access_token, "a2");
+    }
+
+    #[test]
+    fn a_refused_sign_in_keeps_the_registration_and_says_why() {
+        let dir = crate::testterm::temp_dir("signin-refused");
+        let path = dir.join("l.json");
+        let (auth, nonce, got) = refusing_openai("");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let e = sign_in_with(listener, &auth, &path, browser(nonce), &AtomicBool::new(false)).unwrap_err();
+        assert!(e.to_string().contains("Plus or Pro"), "{e}");
+        got.join().unwrap();
+        let l = Login::load(&path);
+        assert_eq!(l.client_id, "oaiapp_1", "kept for the next sign-in");
+        assert!(l.host_id.starts_with("urn:uuid:") && !l.signed_in());
+    }
+
+    #[test]
+    fn declining_the_second_sign_in_names_the_plan() {
+        let dir = crate::testterm::temp_dir("signin-declined");
+        let base = Arc::new(Mutex::new(String::new()));
+        let b = base.clone();
+        let (auth, got) = serve_with(2, move |raw| {
+            if raw.starts_with("GET /api/accounts/authorize") {
+                let url = format!("{}{}", b.lock().unwrap(), raw.split(' ').nth(1).unwrap());
+                // OpenAI's page: "A required permission is unavailable"; the user cancels.
+                let back = format!("{}?error=access_denied&error_description=The+resource+owner+denied+the+request.&state={}", query(&url, "redirect_uri"), query(&url, "state"));
+                return (302, back);
+            }
+            (400, r#"{"error":"invalid_grant"}"#.to_owned())
+        });
+        *base.lock().unwrap() = auth.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let nonce = Arc::new(Mutex::new(String::new()));
+        let e = sign_in_with(listener, &auth, &dir.join("l.json"), browser(nonce), &AtomicBool::new(false)).unwrap_err();
+        assert!(e.to_string().contains("Plus or Pro"), "{e}");
+        got.join().unwrap();
+    }
+
+    #[test]
+    fn openai_saying_no_is_explained() {
+        let p = pending();
+        let e = parse_callback("/auth/callback?error=access_denied&error_description=Plan+not+eligible&state=st", &p, "").unwrap_err();
+        assert!(e.contains("Plan not eligible"), "{e}");
     }
 
     #[test]
@@ -677,9 +891,8 @@ mod tests {
 
     #[test]
     fn the_browser_page_escapes_what_came_back() {
-        let page = callback_page(&Err("sign-in failed: <script>x</script>&".into()));
+        let page = callback_page("fastcnsl: sign-in failed: <script>x</script>&");
         assert!(page.contains("&lt;script&gt;x&lt;/script&gt;&amp;") && !page.contains("<script>"), "{page}");
-        assert!(callback_page(&Ok(("c".into(), "i".into()))).contains("You can close this tab"));
     }
 
     #[test]

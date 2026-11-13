@@ -1009,6 +1009,21 @@ pub fn ai_confirm_panel(m: &Metrics, provider: &str, offset: (f32, f32)) -> Pane
     b.finish()
 }
 
+/// `text` in lines of at most `width` characters, broken between words.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if l.chars().count() + 1 + word.chars().count() <= width => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+    lines
+}
+
 /// Options → AI: provider, key, model and the list of models.
 fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
     let label_w = 20.0;
@@ -1083,8 +1098,23 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
         let model = if s.ai_model.is_empty() { "none chosen" } else { s.ai_model.as_str() };
         b.text(label_w, model, TextStyle::Normal);
         let c = b.button(label_w + model.chars().count() as f32 + 2.0, "Test", Action::AiTest, false);
-        b.text(c, &s.ai_status, TextStyle::Dim);
-        b.next();
+        // Room left on the panel's row, in characters.
+        let room = ((b.rect.w - 2.0 * b.pad) / b.m.cw).floor() - c;
+        if s.ai_status.chars().count() as f32 <= room {
+            b.text(c, &s.ai_status, TextStyle::Dim);
+            b.next();
+        } else {
+            // A long message (a failed sign-in says why) gets rows of its own.
+            b.next();
+            let width = (((b.rect.w - 2.0 * b.pad) / b.m.cw).floor() - label_w).max(20.0) as usize;
+            for line in wrap(&s.ai_status, width) {
+                if !b.fits_rows(1) {
+                    break;
+                }
+                b.text(label_w, &line, TextStyle::Dim);
+                b.next();
+            }
+        }
     }
     if !b.fits_rows(2) || s.ai_models.is_empty() {
         return;
@@ -1637,6 +1667,20 @@ mod tests {
         let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::Custom, ai_base_url: "http://localhost:11434/v1".into(), ..OptionsState::default() };
         let p = options_panel(&m(), &s, (0.0, 0.0));
         assert!(p.lines.iter().any(|l| l.text.contains("http://localhost:11434/v1")));
+    }
+
+    #[test]
+    fn a_long_ai_status_wraps_inside_the_panel() {
+        let status = "OpenAI didn't allow this sign-in. Using a ChatGPT plan in other apps needs Plus or Pro (OpenAI's page may have said a required permission is unavailable for your plan).";
+        let s = OptionsState { ai_status: status.into(), ..ai_state() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        let lines: Vec<&TextLine> = p.lines.iter().filter(|l| status.contains(l.text.trim()) && l.text.len() > 10).collect();
+        assert!(lines.len() >= 2, "wrapped onto rows of its own");
+        let joined: Vec<&str> = lines.iter().map(|l| l.text.trim()).collect();
+        assert_eq!(joined.join(" "), status);
+        for l in &lines {
+            assert!(l.x + l.text.chars().count() as f32 * m().cw <= p.rect.x + p.rect.w, "{} inside", l.text);
+        }
     }
 
     #[test]

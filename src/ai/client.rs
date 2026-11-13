@@ -254,7 +254,13 @@ pub mod testserver {
         String::from_utf8_lossy(&raw).into_owned()
     }
 
+    /// Writes a response; a 302's `body` is where it points.
     fn answer(s: &mut TcpStream, status: u16, body: &str) {
+        if status == 302 {
+            let reply = format!("HTTP/1.1 302 Found\r\nlocation: {body}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            s.write_all(reply.as_bytes()).unwrap();
+            return;
+        }
         let reply = format!(
             "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
             body.len()
