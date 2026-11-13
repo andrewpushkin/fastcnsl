@@ -396,11 +396,11 @@ and gives false comfort. Autopilot is a plain choice to let the AI act.
 1. **Fix**: `[ai]` settings, key file, Options → AI, both clients, the
    context builder, the gutter and right-click items, Fix. (Built first
    with all output sent up front.)
-1c. **ChatGPT sign-in**: the plan instead of an API key, through the
-   Responses API (above).
 1b. **Fix with a list and tools**: the command list, bookmarks, the tool
    loop (`get_output`, `add_bookmark`) in both API formats. The chat
    reuses all of it.
+1c. **ChatGPT sign-in**: the plan instead of an API key, through the
+   Responses API (above).
 2. **Chat**: the split and resize, the panel, focus, cards with Insert and
    Run, the `run_command` loop with Autopilot fixed off.
 3. **Autopilot**: the switch, "finished" detection, `wait` and

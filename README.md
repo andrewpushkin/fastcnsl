@@ -184,12 +184,21 @@ and reads the output of an earlier command when it needs it. It can
 bookmark lines too, such as the one with the error, and says so (*The -C
 option needs a folder. · Bookmarked line 4*).
 
-To set it up, open Options → AI, pick ChatGPT, Grok or Claude, copy your API
-key from the provider's website and click **Paste key**, then pick a model.
-**Custom** works with any server that speaks the OpenAI chat format, such as
-a local Ollama (`base_url` in the settings file). A ChatGPT, Claude or X
-subscription can't be used: these need an API key, which providers bill
-per use.
+To set it up, open Options → AI and pick ChatGPT, Grok or Claude.
+
+- **ChatGPT with your plan:** click **Continue with ChatGPT** and sign in in
+  the browser. Fixes then use your ChatGPT Plus or Pro plan's allowance, with
+  no API key. **Manage usage** opens ChatGPT's page where you can see and cap
+  what fastcnsl uses; **Sign out** ends it. The sign-in is kept in
+  `chatgpt-login.json` beside the settings file, readable only by you.
+- **With an API key** (ChatGPT, Grok, Claude): copy the key from the
+  provider's website and click **Paste key**.
+
+Then pick a model. **Custom** works with any server that speaks the OpenAI
+chat format, such as a local Ollama (`base_url` in the settings file).
+
+Grok and Claude need an API key: Anthropic doesn't allow other apps to use
+Claude Pro or Max subscriptions, and xAI has no sign-in for other apps.
 
 **What is sent.** Only when you ask for a fix: the list of your last 50
 commands (`listed_commands`; the command lines, not their output), the
