@@ -4,6 +4,28 @@ Notable changes to fastcnsl, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
+## Unreleased
+
+- **The time beside an output line is now a count of seconds** since its
+  command (or since the tab opened), such as `3` or `65`, instead of
+  `00:00:03`. Command lines still show the time of day they were entered.
+- **Bookmarked lines are marked with an icon** in the time column instead
+  of a tint across the window, so the line's own colours stay as they are.
+- Text is drawn by FreeType on every platform, the way wezterm draws it.
+  Light text on a dark background looks thinner than before.
+- Options → Font: pick an installed monospace font from a list and set the
+  size, line height, bold as bright and (on Windows) ClearType or grayscale
+  smoothing. Changes apply at once.
+- Options: a changed setting shows ↺; click it to put that setting back to
+  its default.
+- Windows installer (`-setup.exe`) for x64 and ARM: installs for your user
+  without admin rights, can add fastcnsl to the Start menu, the desktop and
+  PATH, and updates in place.
+- The Windows portable zip keeps its settings in `config.toml` next to
+  `fastcnsl.exe`. On first run it copies your existing settings from
+  `%APPDATA%`.
+- Bug fixes.
+
 ## 0.1.129 (2026-11-12)
 
 - **A tab's scrollback has no limit any more.** It keeps everything printed
