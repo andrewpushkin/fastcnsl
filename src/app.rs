@@ -301,6 +301,8 @@ enum Overlay {
     /// Asks before a Fix first sends terminal text to the provider; holds
     /// the line the Fix is for.
     AiConfirm(Option<u64>),
+    /// "You're using your ChatGPT plan", once after the first sign-in.
+    AiWelcome,
 }
 
 struct State {
@@ -394,6 +396,13 @@ struct State {
     ai_test_job: Option<u64>,
     /// The model chosen when the list was asked for, to scroll to it.
     ai_model_shown: String,
+    /// ChatGPT: the email signed in, and a sign-in waiting for the browser
+    /// (its job and the flag that cancels it).
+    ai_account: Option<String>,
+    ai_signin: Option<(u64, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    /// The sign-in changed: the model (named differently on a plan) must be
+    /// chosen again. Done by `App`, which owns the settings.
+    ai_reset_model: bool,
 }
 
 /// Fastest frame rate while output streams in (120/s).
@@ -625,6 +634,9 @@ impl App {
             ai_models_job: None,
             ai_test_job: None,
             ai_model_shown: String::new(),
+            ai_account: ai::login::Login::path().map(|p| ai::login::Login::load(&p)).filter(|l| l.signed_in()).map(|l| l.email),
+            ai_signin: None,
+            ai_reset_model: false,
         };
         st.show_size();
         let (name, command) = self.first_tab.clone();
@@ -724,6 +736,9 @@ impl App {
                 | Action::AiRemoveKey
                 | Action::AiModel(_)
                 | Action::AiTest
+                | Action::AiSignIn
+                | Action::AiSignOut
+                | Action::AiManageUsage
         )
             || matches!(st.overlay, Overlay::Menu(_))
         {
@@ -890,6 +905,27 @@ impl App {
                 }
             }
             Action::AiTest => st.test_ai(&self.cfg),
+            Action::AiSignIn => st.sign_in_or_cancel(),
+            Action::AiSignOut => {
+                st.sign_out_chatgpt();
+                self.change_config(|c| c.ai.model.clear());
+                if let Some(st) = self.state.as_mut() {
+                    st.load_ai_models(&self.cfg);
+                }
+            }
+            Action::AiManageUsage => st.open("https://chatgpt.com/settings/usage"),
+            Action::AiWelcomeDone => {
+                if let Some(path) = ai::login::Login::path() {
+                    let _one = ai::login::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut l = ai::login::Login::load(&path);
+                    l.welcomed = true;
+                    if let Err(e) = l.save(&path) {
+                        log::warn!("could not save the ChatGPT sign-in: {e}");
+                    }
+                }
+                st.overlay = Overlay::Options;
+                st.options_page = OptionsPage::Ai;
+            }
         }
     }
 }
@@ -1422,6 +1458,8 @@ impl State {
             ai_models: self.ai_models.clone(),
             ai_scroll: self.ai_scroll,
             ai_status: self.ai_status.clone(),
+            ai_account: self.ai_account.clone().filter(|_| cfg.ai.provider == ai::Provider::OpenAi),
+            ai_signing_in: self.ai_signin.is_some(),
         }
     }
 
@@ -1448,6 +1486,7 @@ impl State {
                 Some(chrome::about_panel(&m, &self.renderer.gpu, &self.startup, &path, self.panel_offset))
             }
             Overlay::AiConfirm(_) => Some(chrome::ai_confirm_panel(&m, cfg.ai.provider.label(), self.panel_offset)),
+            Overlay::AiWelcome => Some(chrome::ai_welcome_panel(&m, self.panel_offset)),
             _ => None,
         }
     }
@@ -1643,7 +1682,7 @@ impl State {
         self.ai_budget = ai::context::Budget::new();
         let context = self.ai_budget.take_up_to(context, ai::context::FIRST_MAX);
         self.ai_bookmarked.clear();
-        self.ai_label = provider.label();
+        self.ai_label = if client.on_plan() { "ChatGPT (your plan)" } else { provider.label() };
         let tab_id = tab.id;
         let job = self.ai_job_number();
         self.ai_job = Some((job, tab_id));
@@ -1653,6 +1692,15 @@ impl State {
 
     /// An answer from an AI request thread.
     fn on_ai(&mut self, event: AiEvent) {
+        let signed_out = matches!(
+            &event,
+            AiEvent::Fixed { result: Err(ai::AiError::SignInAgain), .. }
+                | AiEvent::Models { result: Err(ai::AiError::SignInAgain), .. }
+                | AiEvent::Tested { result: Err(ai::AiError::SignInAgain), .. }
+        );
+        if signed_out {
+            self.ai_account = None;
+        }
         match event {
             AiEvent::Fixed { job, tab, result } => {
                 if self.ai_job.map(|(j, _)| j) != Some(job) {
@@ -1715,8 +1763,26 @@ impl State {
                 self.ai_scroll = self.ai_models.iter().position(|m| m == &self.ai_model_shown).unwrap_or(0).saturating_sub(3);
                 self.window.request_redraw();
             }
-            // Options → AI handles it (next commit).
-            AiEvent::SignedIn { .. } => {}
+            AiEvent::SignedIn { job, result } => {
+                if self.ai_signin.as_ref().map(|(j, _)| *j) != Some(job) {
+                    return;
+                }
+                self.ai_signin = None;
+                self.window.request_redraw();
+                match result {
+                    Ok(email) => {
+                        self.ai_status = String::new();
+                        self.ai_account = Some(email);
+                        let welcomed = ai::login::Login::path().is_some_and(|p| ai::login::Login::load(&p).welcomed);
+                        if !welcomed {
+                            self.overlay = Overlay::AiWelcome;
+                            self.panel_offset = (0.0, 0.0);
+                        }
+                        self.ai_reset_model = true;
+                    }
+                    Err(e) => self.ai_status = e.to_string(),
+                }
+            }
             AiEvent::Tested { job, result } => {
                 if self.ai_test_job != Some(job) {
                     return;
@@ -1728,6 +1794,40 @@ impl State {
                 };
                 self.window.request_redraw();
             }
+        }
+    }
+
+    /// Options → AI → Continue with ChatGPT: opens the browser to sign in;
+    /// pressed again while waiting (Cancel), stops waiting.
+    fn sign_in_or_cancel(&mut self) {
+        if let Some((_, cancel)) = self.ai_signin.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.ai_status = "Sign-in cancelled".to_owned();
+            return;
+        }
+        let job = self.ai_job_number();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.ai_signin = Some((job, cancel.clone()));
+        self.ai_status.clear();
+        ai::login::sign_in(job, self.proxy.clone(), cancel);
+    }
+
+    /// Options → AI → Sign out: forgets the tokens here and asks OpenAI to
+    /// revoke them (in the background).
+    fn sign_out_chatgpt(&mut self) {
+        self.ai_account = None;
+        let Some(path) = ai::login::Login::path() else { return };
+        let mut login = {
+            let _one = ai::login::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            ai::login::Login::load(&path)
+        };
+        let old = login.clone();
+        let _ = std::thread::Builder::new().name("ai-logout".into()).spawn(move || ai::login::revoke(&ai::login::agent(), &ai::login::auth_base(), &old));
+        login.sign_out();
+        let _one = ai::login::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        match login.save(&path) {
+            Ok(()) => self.ai_status = "Signed out".to_owned(),
+            Err(e) => self.ai_status = format!("could not save the sign-out: {e}"),
         }
     }
 
@@ -2012,6 +2112,9 @@ impl State {
                     None => 0,
                 };
                 return (len > 0).then_some(Action::FontFamily(next));
+            }
+            Overlay::AiWelcome => {
+                return matches!(event.logical_key, Key::Named(NamedKey::Enter | NamedKey::Escape)).then_some(Action::AiWelcomeDone);
             }
             Overlay::AiConfirm(_) => {
                 return match event.logical_key {
@@ -2763,7 +2866,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Notice(message) => st.show(message),
-            UserEvent::Ai(event) => st.on_ai(event),
+            UserEvent::Ai(event) => {
+                st.on_ai(event);
+                if std::mem::take(&mut st.ai_reset_model) {
+                    self.change_config(|c| c.ai.model.clear());
+                    if let Some(st) = self.state.as_mut() {
+                        st.load_ai_models(&self.cfg);
+                    }
+                }
+            }
             UserEvent::History(id) => {
                 if let Some(i) = st.tabs.iter().position(|t| t.id == id) {
                     st.tabs[i].search_results();

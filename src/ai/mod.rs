@@ -5,7 +5,6 @@ pub mod client;
 pub mod context;
 pub mod fix;
 pub mod keys;
-#[allow(dead_code)] // wired in by the next task (network and app)
 pub mod login;
 pub mod wire;
 
@@ -28,7 +27,6 @@ pub enum AiEvent {
     /// Options → AI's Test.
     Tested { job: u64, result: Result<(), AiError> },
     /// The ChatGPT sign-in ended: the email signed in, or why not.
-    #[allow(dead_code)] // read by Options → AI (next commit)
     SignedIn { job: u64, result: Result<String, AiError> },
 }
 

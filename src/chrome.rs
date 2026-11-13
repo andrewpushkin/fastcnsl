@@ -83,6 +83,13 @@ pub enum Action {
     AiRemoveKey,
     AiModel(usize),
     AiTest,
+    /// Options → AI with ChatGPT: start (or cancel) signing in, sign out,
+    /// and open ChatGPT's usage page.
+    AiSignIn,
+    AiSignOut,
+    AiManageUsage,
+    /// The "You're using your ChatGPT plan" panel's Got it.
+    AiWelcomeDone,
 }
 
 /// The pages of the Options panel.
@@ -684,6 +691,10 @@ pub struct OptionsState {
     pub ai_models: Arc<[String]>,
     pub ai_scroll: usize,
     pub ai_status: String,
+    /// ChatGPT: the email signed in, and whether a sign-in is waiting for
+    /// the browser.
+    pub ai_account: Option<String>,
+    pub ai_signing_in: bool,
 }
 
 impl OptionsState {
@@ -725,6 +736,8 @@ impl Default for OptionsState {
             ai_models: Vec::new().into(),
             ai_scroll: 0,
             ai_status: String::new(),
+            ai_account: None,
+            ai_signing_in: false,
         }
     }
 }
@@ -1019,7 +1032,29 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
         }
         return;
     }
-    if b.fits_rows(1) {
+    if s.ai_provider == Provider::OpenAi && b.fits_rows(1) {
+        b.text(0.0, "Account", TextStyle::Normal);
+        if s.ai_signing_in {
+            let text = "Waiting for the browser…";
+            b.text(label_w, text, TextStyle::Dim);
+            b.button(label_w + text.chars().count() as f32 + 2.0, "Cancel", Action::AiSignIn, false);
+        } else if let Some(email) = &s.ai_account {
+            let email: String = if email.chars().count() > 28 { format!("{}…", email.chars().take(27).collect::<String>()) } else { email.clone() };
+            let text = format!("{email} · Using ChatGPT plan");
+            b.text(label_w, &text, TextStyle::Normal);
+            let c = b.button(label_w + text.chars().count() as f32 + 2.0, "Manage usage", Action::AiManageUsage, false);
+            b.button(c, "Sign out", Action::AiSignOut, false);
+        } else {
+            let c = b.button(label_w, "Continue with ChatGPT", Action::AiSignIn, true);
+            b.text(c, "uses your Plus or Pro plan", TextStyle::Dim);
+        }
+        b.next();
+    }
+    if s.ai_account.is_some() && b.fits_rows(1) {
+        b.text(0.0, "API key", TextStyle::Normal);
+        b.text(label_w, "not used while signed in", TextStyle::Dim);
+        b.next();
+    } else if b.fits_rows(1) {
         b.text(0.0, "API key", TextStyle::Normal);
         let key = match (&s.ai_key, s.ai_key_env) {
             (Some(k), _) => k.clone(),
@@ -1062,6 +1097,20 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
     b.dense();
     let chosen = s.ai_models.iter().position(|m| *m == s.ai_model);
     b.list(&s.ai_models, s.ai_scroll, chosen, Action::AiModel);
+}
+
+/// Shown once, after the first ChatGPT sign-in.
+pub fn ai_welcome_panel(m: &Metrics, offset: (f32, f32)) -> Panel {
+    let mut b = PanelBuilder::new(m, 70.0, 8.0, offset);
+    b.header("You're using your ChatGPT plan");
+    b.text(0.0, "Fix now uses your ChatGPT plan's allowance instead of an API key.", TextStyle::Normal);
+    b.next();
+    b.text(0.0, "You can see and limit what fastcnsl uses in Manage usage.", TextStyle::Normal);
+    b.next();
+    b.gap();
+    let c = b.button(0.0, "Got it", Action::AiWelcomeDone, true);
+    b.button(c, "Manage usage", Action::AiManageUsage, false);
+    b.finish()
 }
 
 pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str, offset: (f32, f32)) -> Panel {
@@ -1541,6 +1590,38 @@ mod tests {
         let env = OptionsState { ai_key_env: Some("OPENAI_API_KEY"), ..s };
         let p = options_panel(&m(), &env, (0.0, 0.0));
         assert!(p.lines.iter().any(|l| l.text.contains("from OPENAI_API_KEY")));
+    }
+
+    #[test]
+    fn chatgpt_signed_out_offers_continue() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::OpenAi, ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiSignIn && b.label == "Continue with ChatGPT"));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiPasteKey), "a key still works instead");
+        let waiting = OptionsState { ai_signing_in: true, ..s.clone() };
+        let p = options_panel(&m(), &waiting, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("Waiting for the browser")));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiSignIn && b.label == "Cancel"));
+        let claude = OptionsState { ai_provider: Provider::Anthropic, ..s };
+        assert!(!options_panel(&m(), &claude, (0.0, 0.0)).buttons.iter().any(|b| b.action == Action::AiSignIn));
+    }
+
+    #[test]
+    fn chatgpt_signed_in_shows_plan_and_sign_out() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::OpenAi, ai_account: Some("me@x.org".into()), ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("me@x.org · Using ChatGPT plan")));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiManageUsage && b.label == "Manage usage"));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiSignOut));
+        assert!(!p.buttons.iter().any(|b| b.action == Action::AiPasteKey));
+        assert!(p.lines.iter().any(|l| l.text.contains("not used while signed in")));
+    }
+
+    #[test]
+    fn welcome_panel_says_plan_and_got_it() {
+        let p = ai_welcome_panel(&m(), (0.0, 0.0));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiWelcomeDone && b.label == "Got it"));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiManageUsage));
     }
 
     #[test]

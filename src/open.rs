@@ -31,13 +31,23 @@ pub fn open(target: impl AsRef<OsStr>) -> Result<(), String> {
 fn openers(target: &OsStr) -> Vec<(String, Vec<OsString>)> {
     let one = |program: &str, args: &[&OsStr]| (program.to_owned(), args.iter().map(|a| a.to_os_string()).collect());
     if cfg!(target_os = "windows") {
-        return vec![one("cmd", &[OsStr::new("/C"), OsStr::new("start"), OsStr::new(""), target])];
+        return windows_openers(target);
     }
     if cfg!(target_os = "macos") {
         return vec![one("open", &[target])];
     }
     let wsl = is_wsl().then(|| windows_path(target));
     linux_openers(target, wsl)
+}
+
+/// Windows: `start` through cmd, except for web addresses, which cmd would
+/// cut at their first `&`: those go to the URL handler directly.
+fn windows_openers(target: &OsStr) -> Vec<(String, Vec<OsString>)> {
+    let text = target.to_string_lossy();
+    if text.starts_with("https://") || text.starts_with("http://") {
+        return vec![("rundll32".to_owned(), vec!["url.dll,FileProtocolHandler".into(), target.to_os_string()])];
+    }
+    vec![("cmd".to_owned(), vec!["/C".into(), "start".into(), "".into(), target.to_os_string()])]
 }
 
 /// Linux: `wsl` is Some under WSL, holding `target` as Windows sees it
@@ -95,6 +105,16 @@ mod tests {
         assert_eq!(programs(&linux_openers(dir, Some(None))), ["wslview", "xdg-open", "gio"]);
         // Elsewhere only the desktop's own openers.
         assert_eq!(programs(&linux_openers(dir, None)), ["xdg-open", "gio"]);
+    }
+
+    #[test]
+    fn windows_urls_skip_cmd() {
+        // cmd would cut a URL at its first &.
+        let url = OsStr::new("https://auth.openai.com/a?x=1&y=2");
+        let o = windows_openers(url);
+        assert_eq!(o[0].0, "rundll32");
+        assert_eq!(o[0].1, [OsString::from("url.dll,FileProtocolHandler"), url.to_os_string()]);
+        assert_eq!(windows_openers(OsStr::new(r"C:\logs"))[0].0, "cmd");
     }
 
     #[test]

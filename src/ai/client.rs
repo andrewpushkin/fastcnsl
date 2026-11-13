@@ -76,7 +76,6 @@ impl Client {
     }
 
     /// Requests spend a ChatGPT plan.
-    #[allow(dead_code)] // used by the Fix notice (next commit)
     pub fn on_plan(&self) -> bool {
         matches!(self.auth, Auth::ChatGpt { .. })
     }
