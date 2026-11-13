@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Windows steps. Runs in docker/windows-<arch>.Dockerfile.
 #   windows.sh x86_64|arm64 build   compile fastcnsl.exe
-#   windows.sh x86_64|arm64 zip     package the compiled exe as a .zip
+#   windows.sh x86_64|arm64 stage   collect the files to ship in
+#                                   $TARGET_DIR/package-windows-<arch>/fastcnsl
+#                                   (the installer's payload, see windows-setup.sh)
+#   windows.sh x86_64|arm64 zip     stage, then zip it with the portable marker
 source "$(dirname "$0")/common.sh"
-ARCH="${1:?usage: windows.sh x86_64|arm64 build|zip}"
-STEP="${2:?usage: windows.sh x86_64|arm64 build|zip}"
+ARCH="${1:?usage: windows.sh x86_64|arm64 build|stage|zip}"
+STEP="${2:?usage: windows.sh x86_64|arm64 build|stage|zip}"
 case "$ARCH" in
     x86_64) TRIPLE=x86_64-pc-windows-gnu;     OBJDUMP=x86_64-w64-mingw32-objdump; SYSROOT=/usr/x86_64-w64-mingw32
             LINUX=x86_64-unknown-linux-musl ;;
@@ -39,11 +42,12 @@ if [[ "$STEP" == build ]]; then
     echo "-> ${EXE#$ROOT/}"
     exit 0
 fi
-[[ "$STEP" == zip ]] || { echo "unknown step: $STEP" >&2; exit 1; }
+[[ "$STEP" == stage || "$STEP" == zip ]] || { echo "unknown step: $STEP" >&2; exit 1; }
 need_binary "$EXE" "windows-$ARCH"
-say "packaging .zip"
+say "staging the files to ship"
 
-STAGE="$TARGET_DIR/package-windows-$ARCH/fastcnsl"
+PKG="$TARGET_DIR/package-windows-$ARCH"
+STAGE="$PKG/fastcnsl"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
 cp "$EXE" "$RELAY" "$STAGE/"
 cp README.md "$STAGE/" 2>/dev/null || true
@@ -61,7 +65,17 @@ for dll in $("$OBJDUMP" -p "$EXE" | sed -n 's/.*DLL Name: //p'); do
     fi
 done
 
+echo "-> ${STAGE#$ROOT/}"
+[[ "$STEP" == zip ]] || exit 0
+
+# The zip is the portable copy: the marker keeps its settings in its folder
+# (src/config.rs, PORTABLE_MARKER). The installer ships the stage without it.
+say "packaging .zip"
+ZIPDIR="$PKG/zip"
+rm -rf "$ZIPDIR" && mkdir -p "$ZIPDIR"
+cp -r "$STAGE" "$ZIPDIR/"
+cp packaging/windows/portable "$ZIPDIR/fastcnsl/"
 OUT="$DIST/fastcnsl-${VERSION}-windows-$ARCH.zip"
 rm -f "$OUT"
-(cd "$(dirname "$STAGE")" && zip -qr "$OUT" fastcnsl)
+(cd "$ZIPDIR" && zip -qr "$OUT" fastcnsl)
 echo "-> ${OUT#$ROOT/}"
