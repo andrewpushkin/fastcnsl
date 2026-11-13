@@ -285,6 +285,31 @@ pub fn tail_text(snap: &Snapshot, live: &Grid<Cell>, max: usize) -> (String, usi
     (text, lines, trimmed || from > snap.first_line())
 }
 
+/// The text of global lines `lines`: from the history, then the live grid
+/// (its first line joined to its part in history). Lines the tab no longer
+/// has are left out; a range lost to a disk error is one marker line.
+#[allow(dead_code)] // until the Fix uses it
+pub fn lines_text(snap: &Snapshot, live: &Grid<Cell>, lines: std::ops::Range<u64>) -> Vec<String> {
+    let start = lines.start.max(snap.first_line().min(live.lines_dropped()));
+    if start >= lines.end {
+        return Vec::new();
+    }
+    let dropped = live.lines_dropped();
+    let mut out = Vec::new();
+    let history_end = lines.end.min(dropped).min(snap.end_line());
+    // Writing to a Vec can't fail.
+    if start < history_end {
+        let _ = write_history(&mut out, snap, start..history_end, "");
+    }
+    if lines.end > dropped {
+        let mut next = start.max(dropped);
+        let lead = partial_text(snap);
+        let _ = write_lines(&mut out, live, Upto::All, &mut next, &mut None, "", &mut String::new(), &lead);
+    }
+    let text = String::from_utf8_lossy(&out);
+    text.lines().take((lines.end - start) as usize).map(str::to_owned).collect()
+}
+
 /// The last `max` lines of `text`, and whether lines were left out.
 pub fn keep_last_lines(text: String, max: usize) -> (String, bool) {
     let count = text.lines().count();
@@ -546,6 +571,28 @@ mod tests {
             // The cursor's empty line comes last, after line 149 999.
             assert_eq!(got[got.len() - 2], "line 149999");
             assert_eq!(got[0], "line 50001");
+        }
+
+        #[test]
+        fn lines_text_spans_history_and_live() {
+            let (mut t, history) = tab("range");
+            numbered(&mut t, 0, 40);
+            let snap = snap(&mut t, &history);
+            assert_eq!(lines_text(&snap, t.term.grid(), 3..6), vec!["line 3", "line 4", "line 5"]);
+            assert_eq!(lines_text(&snap, t.term.grid(), 37..40), vec!["line 37", "line 38", "line 39"]);
+            let across = lines_text(&snap, t.term.grid(), 33..38);
+            assert_eq!(across, (33..38).map(|i| format!("line {i}")).collect::<Vec<_>>());
+            assert!(lines_text(&snap, t.term.grid(), 5..5).is_empty());
+        }
+
+        #[test]
+        fn lines_text_joins_partial_line() {
+            let (mut t, history) = tab("range-partial");
+            let long = "p".repeat(80);
+            t.feed(&format!("{long}\na\nb\nc\nd\ne\nf\ng\n"));
+            let snap = snap(&mut t, &history);
+            assert!(!snap.partial().is_empty(), "the long line straddles the grid's top");
+            assert_eq!(lines_text(&snap, t.term.grid(), 0..2), vec![long, "a".to_owned()]);
         }
 
         #[test]

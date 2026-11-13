@@ -2,6 +2,7 @@
 //! the requests that ask a model to fix a command.
 
 pub mod client;
+pub mod context;
 pub mod keys;
 pub mod wire;
 
