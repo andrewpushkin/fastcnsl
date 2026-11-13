@@ -119,8 +119,9 @@ With no provider set, the AI menu items are shown and open this page.
 ### Where the user starts it
 
 - **Left-click the gutter** beside any line: a menu for the command that
-  line belongs to, with **Fix this command** first and **Ask AI in chat**
-  second. (Today a left click on the gutter does nothing.)
+  line belongs to, with **Fix this command** first, the bookmark toggle,
+  and (from stage 2) **Ask AI in chat**. (Before, a left click on the
+  gutter did nothing.)
 - The same two items in the terminal's right-click menu, and **AI chat** in
   the ⋮ menu.
 - Shortcuts, changeable like the others: `ai_fix` (the last command) and
@@ -143,12 +144,14 @@ them apart. The AI is told so.
 
 ### Fix
 
-1. Build the context and send one request on a new thread. The gutter shows
-   a spinner on that command. Esc cancels.
+1. Build the context and send one request on a new thread. A notice
+   ("Asking Claude… Esc cancels") stays up until the answer. Esc cancels.
 2. The AI answers through a tool, `propose_command(command, explanation)`.
 3. The command is written to the terminal as a paste without the final
    newline, so it sits at the prompt for the user to read, edit and run.
-   The explanation shows in the notice at the bottom of the window.
+   Of a multi-line answer only the first command is used (lines ending in
+   `\`, `&&`, `||` or `|` continue it). The explanation shows in the
+   notice at the bottom of the window.
 
 Fix refuses with a notice when a full-screen program (alt screen) is open.
 If the AI has no command to offer, only the explanation is shown.

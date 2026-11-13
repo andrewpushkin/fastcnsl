@@ -171,6 +171,31 @@ line stays marked as more output arrives. **Ctrl+Shift+↑ / ↓** jump between 
 
 ![Two bookmarked lines, tinted, in a C file](docs/bookmarks.png)
 
+### Fix a command with AI
+
+Forgot how `tar` takes its options? Click the time beside the command and
+choose **Fix this command**, or press **Ctrl+Shift+X** for the last one. An
+AI reads the command and what it printed, types the corrected command at
+your prompt and says in one line what was wrong. The command is not run:
+read it, change it if you like, and press Enter yourself.
+
+To set it up, open Options → AI, pick ChatGPT, Grok or Claude, copy your API
+key from the provider's website and click **Paste key**, then pick a model.
+**Custom** works with any server that speaks the OpenAI chat format, such as
+a local Ollama (`base_url` in the settings file). A ChatGPT, Claude or X
+subscription can't be used: these need an API key, which providers bill
+per use.
+
+**What is sent.** Only when you ask for a fix: your last 5 commands
+(`context_commands`) with what they printed, long output cut to its first
+50 and last 150 lines, and the names of your shell, system and program. A
+password or token shown in that output is sent too. The first fix with
+each provider asks before sending.
+
+Keys are kept in `ai-keys.toml` beside the settings file, readable only by
+you, never in `config.toml`. Without one there, fastcnsl uses
+`OPENAI_API_KEY`, `XAI_API_KEY` or `ANTHROPIC_API_KEY`.
+
 ### Tabs
 
 Each tab has its own shell, scrollback and search, and is labelled with the
@@ -231,7 +256,8 @@ setting you changed has a ↺ next to it that puts back its default.
 ### Menus
 
 **⋮** in the top-right corner holds new tab, find, copy, paste, Options and
-About. Right-click the text for copy, paste, select all and bookmarks.
+About. Right-click the text for copy, paste, select all, fixing a command
+with AI and bookmarks.
 
 | ⋮ menu | Right-click menu |
 |---|---|
@@ -290,6 +316,7 @@ new tab), Cmd+1 … Cmd+0 for tabs, and Cmd+Shift+0 to reset the font size.
 | Shift+PgUp / PgDn / Home / End | scroll the scrollback                 |
 | Ctrl+Shift+B                | add / remove bookmark                    |
 | Ctrl+Shift+↑ / ↓            | previous / next bookmark                 |
+| Ctrl+Shift+X                | fix the last command with AI             |
 
 **Changing shortcuts.** In Options → Keyboard shortcuts, click a command's
 keys and press the new ones. Esc cancels, Backspace removes the shortcut,
@@ -300,7 +327,8 @@ changed.
 
 **Mouse.** Drag to select, double-click to select a word, triple-click for a
 line. Right-click opens the copy, paste and bookmark menu; middle-click
-pastes. On a tab, middle-click closes it and right-click opens the tab
+pastes. A click on a line's time or number offers **Fix this command** and
+the bookmark. On a tab, middle-click closes it and right-click opens the tab
 menu. Hold Shift to select text in programs that use the mouse themselves
 (vim, htop).
 
@@ -344,6 +372,12 @@ wsl_direct = true                # Windows: WSL tabs through fastcnsl-wsl (false
 log_folder = ""                  # empty: fastcnsl-logs in Documents (or home)
 log_new_tabs = false             # log every new tab to a file
 log_timestamps = false           # start each logged line with [HH:MM:SS]
+
+[ai]
+provider = ""                    # "openai" | "xai" | "anthropic" | "custom" | "" (off)
+model = ""                       # empty: the provider's default (Claude: claude-opus-5-5)
+base_url = ""                    # "custom" only, e.g. "http://localhost:11434/v1"
+context_commands = 5             # commands (with their output) a fix sends
 ```
 
 Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
@@ -362,7 +396,8 @@ find = ""                          # no shortcut
 Command names: `new_tab`, `close_tab`, `next_tab`, `previous_tab`, `find`,
 `copy`, `paste`, `options`, `cycle_theme`, `font_bigger`, `font_smaller`,
 `font_reset`, `scroll_page_up`, `scroll_page_down`, `scroll_top`,
-`scroll_bottom`, `toggle_bookmark`, `previous_bookmark`, `next_bookmark`.
+`scroll_bottom`, `toggle_bookmark`, `previous_bookmark`, `next_bookmark`,
+`ai_fix`.
 Modifiers: `Ctrl`, `Shift`, `Alt`, `Cmd` (or `Win`). Keys: a character,
 `Tab`, `Enter`, `Space`, `PageUp`, `PageDown`, `Home`, `End`,
 `Up`/`Down`/`Left`/`Right`, `F1`–`F12`, and similar.
