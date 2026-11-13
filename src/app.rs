@@ -1551,7 +1551,6 @@ impl State {
         }
     }
 
-    /// Viewport cell under the pointer: (grid point, side, col, row).
     /// x (in pixels) is over the gutter's times or numbers.
     fn in_gutter(&self, cfg: &Config, x: f32) -> bool {
         let pad = padding_px(cfg, self.scale());
@@ -1754,6 +1753,7 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Viewport cell under the pointer: (grid point, side, col, row).
     fn mouse_cell(&self, cfg: &Config, display_offset: usize) -> (Point, Side, usize, usize) {
         let cell = self.renderer.cell();
         let pad = padding_px(cfg, self.scale());
