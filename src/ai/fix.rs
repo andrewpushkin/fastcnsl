@@ -83,7 +83,8 @@ pub fn insert_text(command: &str) -> String {
 pub fn start(job: u64, tab: u64, client: Client, model: String, context: String, proxy: EventLoopProxy<UserEvent>) {
     let spawned = std::thread::Builder::new().name("ai-fix".into()).spawn(move || {
         let tools = [fix_tool()];
-        let request = Request { model: &model, system: SYSTEM, user: &context, tools: &tools, max_tokens: 8000 };
+        let messages = [super::wire::user_message(&context)];
+        let request = Request { model: &model, system: SYSTEM, messages: &messages, tools: &tools, max_tokens: 8000 };
         let result = client.send(&request).map(fix_from);
         let _ = proxy.send_event(UserEvent::Ai(AiEvent::Fixed { job, tab, result }));
     });
@@ -102,7 +103,8 @@ pub fn list_models(job: u64, client: Client, proxy: EventLoopProxy<UserEvent>) {
 /// Sends a one-word question to check the key and model (`AiEvent::Tested`).
 pub fn test(job: u64, client: Client, model: String, proxy: EventLoopProxy<UserEvent>) {
     let _ = std::thread::Builder::new().name("ai-test".into()).spawn(move || {
-        let request = Request { model: &model, system: "Reply with the word ok.", user: "ok", tools: &[], max_tokens: 1000 };
+        let messages = [super::wire::user_message("ok")];
+        let request = Request { model: &model, system: "Reply with the word ok.", messages: &messages, tools: &[], max_tokens: 1000 };
         let result: Result<(), AiError> = client.send(&request).map(|_| ());
         let _ = proxy.send_event(UserEvent::Ai(AiEvent::Tested { job, result }));
     });
@@ -135,15 +137,16 @@ mod tests {
     fn fix_from_tool_call_or_text() {
         let call = Reply {
             text: "x".into(),
-            calls: vec![ToolCall { name: "propose_command".into(), input: serde_json::json!({"command":"ls -la","explanation":"Missing -a."}) }],
+            raw: serde_json::Value::Null,
+            calls: vec![ToolCall { id: "1".into(), name: "propose_command".into(), input: serde_json::json!({"command":"ls -la","explanation":"Missing -a."}) }],
         };
         let f = fix_from(call);
         assert_eq!((f.command.as_deref(), f.explanation.as_str()), (Some("ls -la"), "Missing -a."));
-        let text = fix_from(Reply { text: " It worked. ".into(), calls: vec![] });
+        let text = fix_from(Reply { text: " It worked. ".into(), ..Reply::default() });
         assert_eq!((text.command, text.explanation.as_str()), (None, "It worked."));
-        assert_eq!(fix_from(Reply { text: String::new(), calls: vec![] }).explanation, "No suggestion.");
+        assert_eq!(fix_from(Reply::default()).explanation, "No suggestion.");
         // A call with an empty command is no suggestion.
-        let empty = Reply { text: "Fine as is.".into(), calls: vec![ToolCall { name: "propose_command".into(), input: serde_json::json!({"command":" "}) }] };
+        let empty = Reply { text: "Fine as is.".into(), raw: serde_json::Value::Null, calls: vec![ToolCall { id: "1".into(), name: "propose_command".into(), input: serde_json::json!({"command":" "}) }] };
         assert_eq!(fix_from(empty).command, None);
     }
 

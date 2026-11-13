@@ -186,7 +186,8 @@ mod tests {
     }
 
     fn req() -> Request<'static> {
-        Request { model: "m", system: "s", user: "u", tools: &[], max_tokens: 10 }
+        static U: std::sync::LazyLock<[serde_json::Value; 1]> = std::sync::LazyLock::new(|| [crate::ai::wire::user_message("u")]);
+        Request { model: "m", system: "s", messages: &*U, tools: &[], max_tokens: 10 }
     }
 
     #[test]
