@@ -17,9 +17,11 @@
 #   make linux-x86_64-rpm         -> dist/fastcnsl-<ver>-1.x86_64.rpm
 #   make linux-x86_64-appimage    -> dist/Fastcnsl-<ver>-x86_64.AppImage
 #   make windows-x86_64           compile -> target/windows-x86_64/.../fastcnsl.exe
-#   make windows-x86_64-zip       -> dist/fastcnsl-<ver>-windows-x86_64.zip
+#   make windows-x86_64-zip       -> dist/fastcnsl-<ver>-windows-x86_64.zip (portable)
+#   make windows-x86_64-setup     -> dist/fastcnsl-<ver>-windows-x86_64-setup.exe (installer)
 #   make windows-arm64            compile -> target/windows-arm64/.../fastcnsl.exe
-#   make windows-arm64-zip        -> dist/fastcnsl-<ver>-windows-arm64.zip
+#   make windows-arm64-zip        -> dist/fastcnsl-<ver>-windows-arm64.zip (portable)
+#   make windows-arm64-setup      -> dist/fastcnsl-<ver>-windows-arm64-setup.exe (installer)
 #   make macos-arm64              compile -> target/macos-arm64/.../fastcnsl
 #   make macos-arm64-dmg          -> dist/fastcnsl-<ver>-macos-arm64.dmg (Fastcnsl.app)
 #
@@ -58,7 +60,7 @@ CARGO_CACHE  := $(CURDIR)/.cache/cargo
 # 0.1.<commits>; see scripts/get_version.sh. Override with make VERSION=...
 VERSION      ?= $(shell scripts/get_version.sh)
 PLATFORMS    := linux-x86_64 windows-x86_64 windows-arm64 macos-arm64
-PACKAGES     := linux-x86_64-deb linux-x86_64-rpm linux-x86_64-appimage windows-x86_64-zip windows-arm64-zip macos-arm64-dmg
+PACKAGES     := linux-x86_64-deb linux-x86_64-rpm linux-x86_64-appimage windows-x86_64-zip windows-x86_64-setup windows-arm64-zip windows-arm64-setup macos-arm64-dmg
 # Optional overrides for the macOS SDK download (see docker/macos-arm64.Dockerfile).
 MACOS_SDK_ARGS := $(foreach v,MACOS_SDK_VERSION MACOS_SDK_URL MACOS_SDK_SHA256,$(if $($(v)),--build-arg $(v)=$($(v))))
 
@@ -130,6 +132,12 @@ windows-x86_64-zip: windows-x86_64
 	$(WIN_X64) zip
 windows-arm64-zip: windows-arm64
 	$(WIN_ARM) zip
+# Installers (Inno Setup under Wine, docker/windows-setup.Dockerfile) from
+# the files the zip step staged.
+windows-x86_64-setup: windows-x86_64-zip target/.image-windows-setup
+	$(call docker_run,fastcnsl-windows-setup,target/windows-x86_64) scripts/package/windows-setup.sh x86_64
+windows-arm64-setup: windows-arm64-zip target/.image-windows-setup
+	$(call docker_run,fastcnsl-windows-setup,target/windows-arm64) scripts/package/windows-setup.sh arm64
 macos-arm64-dmg: macos-arm64
 	$(MACOS) dmg
 
@@ -203,4 +211,4 @@ clean:
 
 distclean: clean
 	rm -rf .cache
-	-docker image rm $(DEV_IMAGE) $(addprefix fastcnsl-,$(PLATFORMS))
+	-docker image rm $(DEV_IMAGE) $(addprefix fastcnsl-,$(PLATFORMS)) fastcnsl-windows-setup
