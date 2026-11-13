@@ -375,6 +375,11 @@ struct State {
     size_until: Option<Instant>,
     /// The Fix being waited for: its job number and tab id.
     ai_job: Option<(u64, u64)>,
+    /// That Fix's provider (for the notice), what is left of the terminal
+    /// text it may send, and the bookmarks (global lines) the AI set.
+    ai_label: &'static str,
+    ai_budget: ai::context::Budget,
+    ai_bookmarked: Vec<u64>,
     /// Job numbers for AI requests; answers to older ones are dropped.
     next_ai_job: u64,
     /// API keys (`ai-keys.toml`).
@@ -609,6 +614,9 @@ impl App {
             toast: None,
             size_until: None,
             ai_job: None,
+            ai_label: "",
+            ai_budget: ai::context::Budget::new(),
+            ai_bookmarked: Vec::new(),
             next_ai_job: 0,
             ai_keys: ai::Keys::path().map(|p| ai::Keys::load(&p)).unwrap_or_default(),
             ai_models: Vec::new().into(),
@@ -1632,6 +1640,10 @@ impl State {
         let Some(context) = first else {
             return self.show("No command to fix here".to_owned());
         };
+        self.ai_budget = ai::context::Budget::new();
+        let context = self.ai_budget.take_up_to(context, ai::context::FIRST_MAX);
+        self.ai_bookmarked.clear();
+        self.ai_label = provider.label();
         let tab_id = tab.id;
         let job = self.ai_job_number();
         self.ai_job = Some((job, tab_id));
@@ -1647,15 +1659,46 @@ impl State {
                     return;
                 }
                 self.ai_job = None;
+                let mut bookmarks: String = self.ai_bookmarked.iter().map(|l| format!(" · Bookmarked line {}", l + 1)).collect();
+                if !bookmarks.is_empty() {
+                    self.window.request_redraw();
+                }
                 match result {
                     Ok(fix) => {
                         if let Some(command) = fix.command {
                             self.insert_command(tab, &command);
                         }
-                        self.show(fix.explanation);
+                        bookmarks.insert_str(0, &fix.explanation);
+                        self.show(bookmarks);
                     }
-                    Err(e) => self.show(format!("AI: {e}")),
+                    Err(e) => self.show(format!("AI: {e}{bookmarks}")),
                 }
+            }
+            AiEvent::Tools { job, tab, calls, reply } => {
+                // A cancelled Fix, or its tab closed: dropping `reply` ends it.
+                if self.ai_job != Some((job, tab)) {
+                    return;
+                }
+                let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
+                let t = &mut self.tabs[i];
+                let mut live = t.session.term.lock();
+                let results: Vec<String> = if live.mode().contains(TermMode::ALT_SCREEN) {
+                    calls.iter().map(|_| "the terminal shows a full-screen program".to_owned()).collect()
+                } else {
+                    let snap = crate::history::scroll::settled(&mut live, &t.session.history);
+                    let grid = live.grid();
+                    let end = t.lines.cursor_line(grid);
+                    let mut text = TabText { snap: &snap, grid, lines: &mut t.lines, end };
+                    let budget = &mut self.ai_budget;
+                    let added = &mut self.ai_bookmarked;
+                    calls.iter().map(|c| budget.take(ai::context::run_tool(&mut text, &c.name, &c.input, added))).collect()
+                };
+                drop(live);
+                let _ = reply.send(results);
+                if let Some(line) = calls.iter().find(|c| c.name == "get_output").and_then(|c| c.input["line"].as_i64()) {
+                    self.show_for(format!("Asking {}… reading the output of line {line}", self.ai_label), Duration::from_secs(120));
+                }
+                self.window.request_redraw();
             }
             AiEvent::Models { job, result } => {
                 if self.ai_models_job != Some(job) {

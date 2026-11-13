@@ -54,14 +54,12 @@ pub fn user_message(text: &str) -> Value {
 
 /// The model's answer as the next request repeats it. Claude's content goes
 /// back exactly as received: it can hold thinking blocks that must not change.
-#[allow(dead_code)] // until the Fix loop uses it (next task)
 pub fn assistant_message(messages_api: bool, reply: &Reply) -> Value {
     if messages_api { json!({"role": "assistant", "content": reply.raw}) } else { reply.raw.clone() }
 }
 
 /// The results of the model's tool calls, as `(call id, text)` pairs.
 /// Claude takes them in one user turn; Chat Completions one message each.
-#[allow(dead_code)] // until the Fix loop uses it (next task)
 pub fn tool_results(messages_api: bool, results: &[(String, String)]) -> Vec<Value> {
     if messages_api {
         let blocks: Vec<Value> = results.iter().map(|(id, text)| json!({"type": "tool_result", "tool_use_id": id, "content": text})).collect();

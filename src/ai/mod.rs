@@ -2,7 +2,6 @@
 //! the requests that ask a model to fix a command.
 
 pub mod client;
-#[allow(dead_code)] // the tools are wired in by the Fix loop (next task)
 pub mod context;
 pub mod fix;
 pub mod keys;
@@ -16,6 +15,10 @@ pub use keys::Keys;
 /// the request: answers to requests since cancelled or replaced are dropped.
 #[derive(Debug, Clone)]
 pub enum AiEvent {
+    /// Tool calls of the Fix `job` for the tab with id `tab`, to run on the
+    /// UI thread; one result per call goes back on `reply`. Dropping
+    /// `reply` unanswered ends the Fix.
+    Tools { job: u64, tab: u64, calls: Vec<wire::ToolCall>, reply: std::sync::mpsc::Sender<Vec<String>> },
     /// A Fix for the tab with id `tab`.
     Fixed { job: u64, tab: u64, result: Result<fix::Fix, AiError> },
     /// The model list for Options → AI.
@@ -46,6 +49,10 @@ pub enum AiError {
     Api { status: u16, message: String },
     /// An answer that can't be read.
     BadReply(String),
+    /// The model kept calling tools past `fix::MAX_REQUESTS` requests.
+    TooManySteps,
+    /// The user cancelled (never shown).
+    Cancelled,
 }
 
 impl std::fmt::Display for AiError {
@@ -62,6 +69,8 @@ impl std::fmt::Display for AiError {
             AiError::Network(e) => write!(f, "could not reach the provider: {e}"),
             AiError::Api { status, message } => write!(f, "error {status}: {message}"),
             AiError::BadReply(e) => write!(f, "unexpected reply: {e}"),
+            AiError::TooManySteps => write!(f, "the AI took too many steps"),
+            AiError::Cancelled => write!(f, "cancelled"),
         }
     }
 }

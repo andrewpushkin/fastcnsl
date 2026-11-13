@@ -980,9 +980,11 @@ fn font_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
 
 /// Asked once per provider before a Fix first sends terminal text to it.
 pub fn ai_confirm_panel(m: &Metrics, provider: &str, offset: (f32, f32)) -> Panel {
-    let mut b = PanelBuilder::new(m, 72.0, 8.0, offset);
+    let mut b = PanelBuilder::new(m, 76.0, 9.0, offset);
     b.header(&format!("Send to {provider}?"));
-    b.text(0.0, format!("Fix sends your last commands and everything they printed to {provider}."), TextStyle::Normal);
+    b.text(0.0, format!("Fix sends {provider} the list of your recent commands, your bookmarked"), TextStyle::Normal);
+    b.next();
+    b.text(0.0, "lines, the last command's output, and other output the AI asks for.", TextStyle::Normal);
     b.next();
     b.text(0.0, "Passwords or tokens shown in that output are sent too.", TextStyle::Normal);
     b.next();
@@ -1007,7 +1009,7 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
     }
     let compact = !b.fits_rows(8);
     if !compact {
-        b.text(label_w, "Fix sends your last commands and their output to the provider.", TextStyle::Dim);
+        b.text(label_w, "Fix sends your recent commands and the output the AI asks for.", TextStyle::Dim);
         b.next();
     }
     if s.ai_provider == Provider::Off {

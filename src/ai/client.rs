@@ -51,6 +51,11 @@ impl Client {
         Client { provider, key: key.to_owned(), base: base.trim_end_matches('/').to_owned(), agent: ureq::Agent::new_with_config(config) }
     }
 
+    /// Speaks Anthropic's Messages API (else Chat Completions).
+    pub fn messages_api(&self) -> bool {
+        self.provider.uses_messages_api()
+    }
+
     /// Asks one question.
     pub fn send(&self, r: &Request) -> Result<Reply, AiError> {
         let messages = self.provider.uses_messages_api();
@@ -141,49 +146,83 @@ fn dropped(e: &std::io::Error) -> bool {
     matches!(e.kind(), ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof)
 }
 
+/// A local server playing the provider, for tests.
 #[cfg(test)]
-mod tests {
+pub mod testserver {
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
 
-    use super::*;
-    use crate::ai::wire::Request;
+    /// Reads one request (headers and Content-Length bytes) from `s`.
+    fn read_request(s: &mut TcpStream) -> String {
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 4096];
+        let body_start = loop {
+            let n = s.read(&mut buf).unwrap();
+            raw.extend_from_slice(&buf[..n]);
+            if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&raw[..body_start]).to_lowercase();
+        let len = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+            .unwrap_or(0);
+        while raw.len() < body_start + len {
+            let n = s.read(&mut buf).unwrap();
+            raw.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    fn answer(s: &mut TcpStream, status: u16, body: &str) {
+        let reply = format!(
+            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        s.write_all(reply.as_bytes()).unwrap();
+    }
 
     /// Answers one request with `status` and `body`; returns the base URL
     /// and the raw request it got.
-    fn serve_once(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+    pub fn serve_once(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
-            let mut raw = Vec::new();
-            let mut buf = [0u8; 4096];
-            // Headers, then Content-Length bytes of body.
-            let body_start = loop {
-                let n = s.read(&mut buf).unwrap();
-                raw.extend_from_slice(&buf[..n]);
-                if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-                    break i + 4;
-                }
-            };
-            let head = String::from_utf8_lossy(&raw[..body_start]).to_lowercase();
-            let len = head
-                .lines()
-                .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
-                .unwrap_or(0);
-            while raw.len() < body_start + len {
-                let n = s.read(&mut buf).unwrap();
-                raw.extend_from_slice(&buf[..n]);
-            }
-            let reply = format!(
-                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            s.write_all(reply.as_bytes()).unwrap();
-            String::from_utf8_lossy(&raw).into_owned()
+            let raw = read_request(&mut s);
+            answer(&mut s, status, body);
+            raw
         });
         (base, handle)
     }
+
+    /// Answers requests with `bodies` (status 200) in turn, one per
+    /// connection; returns the base URL and the raw requests.
+    pub fn serve(bodies: Vec<&'static str>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            bodies
+                .into_iter()
+                .map(|body| {
+                    let (mut s, _) = listener.accept().unwrap();
+                    let raw = read_request(&mut s);
+                    answer(&mut s, 200, body);
+                    raw
+                })
+                .collect()
+        });
+        (base, handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::wire::Request;
+
+    use super::testserver::serve_once;
 
     fn req() -> Request<'static> {
         static U: std::sync::LazyLock<[serde_json::Value; 1]> = std::sync::LazyLock::new(|| [crate::ai::wire::user_message("u")]);

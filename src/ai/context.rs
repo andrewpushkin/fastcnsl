@@ -18,6 +18,8 @@ pub const MAX_RANGE: u64 = 300;
 pub const MAX_BOOKMARKS: usize = 20;
 /// Terminal text sent in one Fix, in bytes, over all its requests.
 pub const BUDGET: usize = 120_000;
+/// The most the first request's text may take of [`BUDGET`].
+pub const FIRST_MAX: usize = 60_000;
 /// Longer lines (minified code, base64) are cut to this many characters.
 const MAX_LINE: usize = 1000;
 
@@ -197,6 +199,23 @@ impl Budget {
         Budget(BUDGET)
     }
 
+    /// `text`, cut to at most `max` bytes and what is left, which it uses
+    /// up; for the first request, which must go out whole or cut.
+    pub fn take_up_to(&mut self, mut text: String, max: usize) -> String {
+        const NOTE: &str = "\n[cut: limit reached]";
+        let room = max.min(self.0);
+        if text.len() > room {
+            let mut end = room.saturating_sub(NOTE.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            text.push_str(NOTE);
+        }
+        self.0 -= text.len();
+        text
+    }
+
     /// `text` if it fits in what is left (which it then uses up), else a
     /// note saying the limit is reached.
     pub fn take(&mut self, text: String) -> String {
@@ -317,6 +336,16 @@ mod tests {
         assert!(run_tool(&mut t, "get_output", &json!({"line": 1950}), &mut added).starts_with("--- output of line 1901 ---"));
         assert!(run_tool(&mut t, "get_output", &json!({"line": 1, "from": 1950, "to": 1952}), &mut added).contains("1952 | l1951"));
         assert_eq!(run_tool(&mut t, "rm", &json!({}), &mut added), "unknown tool rm");
+    }
+
+    #[test]
+    fn a_long_first_message_is_cut_to_fit() {
+        let mut b = Budget::new();
+        let t = b.take_up_to("é".repeat(BUDGET), FIRST_MAX);
+        assert!(t.len() <= FIRST_MAX && t.ends_with("[cut: limit reached]"), "{}", t.len());
+        assert_eq!(b.0, BUDGET - t.len());
+        let short = b.take_up_to("ok".into(), FIRST_MAX);
+        assert_eq!(short, "ok");
     }
 
     #[test]
