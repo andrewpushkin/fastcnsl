@@ -179,6 +179,11 @@ AI reads the command and what it printed, types the corrected command at
 your prompt and says in one line what was wrong. The command is not run:
 read it, change it if you like, and press Enter yourself.
 
+The AI sees the list of your recent commands and the lines you bookmarked,
+and reads the output of an earlier command when it needs it. It can
+bookmark lines too, such as the one with the error, and says so (*The -C
+option needs a folder. · Bookmarked line 4*).
+
 To set it up, open Options → AI, pick ChatGPT, Grok or Claude, copy your API
 key from the provider's website and click **Paste key**, then pick a model.
 **Custom** works with any server that speaks the OpenAI chat format, such as
@@ -186,11 +191,14 @@ a local Ollama (`base_url` in the settings file). A ChatGPT, Claude or X
 subscription can't be used: these need an API key, which providers bill
 per use.
 
-**What is sent.** Only when you ask for a fix: your last 5 commands
-(`context_commands`) with what they printed, long output cut to its first
-50 and last 150 lines, and the names of your shell, system and program. A
-password or token shown in that output is sent too. The first fix with
-each provider asks before sending.
+**What is sent.** Only when you ask for a fix: the list of your last 50
+commands (`listed_commands`; the command lines, not their output), the
+lines you bookmarked, the output of the last command (and of the one you
+clicked), any other output the AI asks for, and the names of your shell,
+system and program. Long output goes as its first 50 and last 150 lines,
+and one fix sends at most 120 000 characters. A password or token shown in
+that text is sent too. The first fix with each provider asks before
+sending.
 
 Keys are kept in `ai-keys.toml` beside the settings file, readable only by
 you, never in `config.toml`. Without one there, fastcnsl uses
@@ -377,7 +385,7 @@ log_timestamps = false           # start each logged line with [HH:MM:SS]
 provider = ""                    # "openai" | "xai" | "anthropic" | "custom" | "" (off)
 model = ""                       # empty: the provider's default (Claude: claude-opus-5-5)
 base_url = ""                    # "custom" only, e.g. "http://localhost:11434/v1"
-context_commands = 5             # commands (with their output) a fix sends
+listed_commands = 50             # recent commands a fix lists to the AI
 ```
 
 Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,

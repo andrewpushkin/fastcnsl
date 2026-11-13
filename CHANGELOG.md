@@ -10,7 +10,9 @@ releases have a section.
   **Fix this command**, or press Ctrl+Shift+X for the last one: ChatGPT,
   Grok, Claude or a local server reads the command and its output, types
   the corrected command at the prompt (without running it) and says what
-  was wrong. Set the provider, API key and model in Options → AI.
+  was wrong. The AI sees your recent commands and bookmarked lines, reads
+  other output when it needs it, and can bookmark lines for you. Set the
+  provider, API key and model in Options → AI.
 - Jumping to a bookmark scrolls there smoothly and briefly highlights the line.
 - `fastcnsl new-tab`, `close-tab` and `quit` only reach windows of the same
   version; `--pid` naming another version's window is refused.
