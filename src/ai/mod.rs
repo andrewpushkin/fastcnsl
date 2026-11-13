@@ -5,6 +5,7 @@ pub mod client;
 pub mod context;
 pub mod fix;
 pub mod keys;
+#[allow(dead_code)] // the Responses format is wired in with the ChatGPT sign-in
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,14 @@ pub enum AiError {
     Api { status: u16, message: String },
     /// An answer that can't be read.
     BadReply(String),
+    /// The ChatGPT plan can't be used by other apps (Plus or Pro is needed).
+    PlanNotEligible,
+    /// The ChatGPT plan's limit for this app is reached.
+    PlanLimit,
+    /// ChatGPT can't take plan requests just now.
+    PlanBusy,
+    /// The ChatGPT sign-in is no longer valid.
+    SignInAgain,
     /// The model kept calling tools past `fix::MAX_REQUESTS` requests.
     TooManySteps,
     /// The user cancelled (never shown).
@@ -69,6 +78,10 @@ impl std::fmt::Display for AiError {
             AiError::Network(e) => write!(f, "could not reach the provider: {e}"),
             AiError::Api { status, message } => write!(f, "error {status}: {message}"),
             AiError::BadReply(e) => write!(f, "unexpected reply: {e}"),
+            AiError::PlanNotEligible => write!(f, "your ChatGPT plan can't be used here (Plus or Pro is needed)"),
+            AiError::PlanLimit => write!(f, "you have reached your ChatGPT plan's limit; see Manage usage (Options → AI)"),
+            AiError::PlanBusy => write!(f, "ChatGPT is busy; try again"),
+            AiError::SignInAgain => write!(f, "sign in to ChatGPT again (Options → AI)"),
             AiError::TooManySteps => write!(f, "the AI took too many steps"),
             AiError::Cancelled => write!(f, "cancelled"),
         }

@@ -6,6 +6,17 @@ use serde_json::{Value, json};
 
 use super::AiError;
 
+/// The API format a provider speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// Anthropic's Messages API.
+    Messages,
+    /// Chat Completions (OpenAI with a key, xAI, local servers).
+    Chat,
+    /// OpenAI's Responses API, the only one a ChatGPT plan can use.
+    Responses,
+}
+
 /// A tool the model may call.
 pub struct Tool {
     pub name: &'static str,
@@ -54,18 +65,29 @@ pub fn user_message(text: &str) -> Value {
 
 /// The model's answer as the next request repeats it. Claude's content goes
 /// back exactly as received: it can hold thinking blocks that must not change.
-pub fn assistant_message(messages_api: bool, reply: &Reply) -> Value {
-    if messages_api { json!({"role": "assistant", "content": reply.raw}) } else { reply.raw.clone() }
+/// For Responses: its text, then its function calls (`raw`, already cut down
+/// to what may be sent back with `store: false`).
+pub fn assistant_turn(f: Format, reply: &Reply) -> Vec<Value> {
+    match f {
+        Format::Messages => vec![json!({"role": "assistant", "content": reply.raw})],
+        Format::Chat => vec![reply.raw.clone()],
+        Format::Responses => {
+            let text = (!reply.text.is_empty()).then(|| json!({"role": "assistant", "content": reply.text}));
+            text.into_iter().chain(reply.raw.as_array().into_iter().flatten().cloned()).collect()
+        }
+    }
 }
 
 /// The results of the model's tool calls, as `(call id, text)` pairs.
-/// Claude takes them in one user turn; Chat Completions one message each.
-pub fn tool_results(messages_api: bool, results: &[(String, String)]) -> Vec<Value> {
-    if messages_api {
-        let blocks: Vec<Value> = results.iter().map(|(id, text)| json!({"type": "tool_result", "tool_use_id": id, "content": text})).collect();
-        vec![json!({"role": "user", "content": blocks})]
-    } else {
-        results.iter().map(|(id, text)| json!({"role": "tool", "tool_call_id": id, "content": text})).collect()
+/// Claude takes them in one user turn; the others one item each.
+pub fn tool_results(f: Format, results: &[(String, String)]) -> Vec<Value> {
+    match f {
+        Format::Messages => {
+            let blocks: Vec<Value> = results.iter().map(|(id, text)| json!({"type": "tool_result", "tool_use_id": id, "content": text})).collect();
+            vec![json!({"role": "user", "content": blocks})]
+        }
+        Format::Chat => results.iter().map(|(id, text)| json!({"role": "tool", "tool_call_id": id, "content": text})).collect(),
+        Format::Responses => results.iter().map(|(id, text)| json!({"type": "function_call_output", "call_id": id, "output": text})).collect(),
     }
 }
 
@@ -98,6 +120,86 @@ pub fn chat_body(r: &Request) -> Value {
             .collect();
     }
     body
+}
+
+/// The body of `POST /responses` for a ChatGPT plan: nothing stored,
+/// always streamed, and no token-limit or sampling fields (the plan
+/// rejects them).
+pub fn responses_body(r: &Request) -> Value {
+    let mut body = json!({
+        "model": r.model,
+        "instructions": r.system,
+        "input": r.messages,
+        "store": false,
+        "stream": true,
+    });
+    if !r.tools.is_empty() {
+        body["tools"] = r.tools.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": t.schema})).collect();
+    }
+    body
+}
+
+/// Reads a streamed Responses reply (server-sent events) to its end. Only
+/// the final `response.completed` event is used: it holds the whole answer.
+pub fn parse_responses_stream(body: impl std::io::BufRead) -> Result<Reply, AiError> {
+    for line in body.lines() {
+        let line = line.map_err(|e| AiError::Network(e.to_string()))?;
+        let Some(data) = line.strip_prefix("data:") else { continue };
+        let Ok(event) = serde_json::from_str::<Value>(data.trim()) else { continue };
+        match event["type"].as_str() {
+            Some("response.completed") => return Ok(responses_reply(&event["response"]["output"])),
+            Some("response.failed") => {
+                let e = &event["response"]["error"];
+                return Err(error_for_code(e["code"].as_str().unwrap_or(""), e["message"].as_str().unwrap_or("the request failed")));
+            }
+            Some("response.incomplete") => return Err(AiError::TooLong),
+            Some("error") => {
+                return Err(error_for_code(event["code"].as_str().unwrap_or(""), event["message"].as_str().unwrap_or("the request failed")));
+            }
+            _ => {}
+        }
+    }
+    Err(AiError::BadReply("the reply stopped".into()))
+}
+
+/// A Reply from a Responses `output` list. Reasoning items are dropped and
+/// function calls keep only what can be sent back without stored ids.
+fn responses_reply(output: &Value) -> Reply {
+    let mut reply = Reply::default();
+    let mut raw = Vec::new();
+    for item in output.as_array().into_iter().flatten() {
+        match item["type"].as_str() {
+            Some("message") => {
+                for part in item["content"].as_array().into_iter().flatten() {
+                    if part["type"] == "output_text" {
+                        reply.text.push_str(part["text"].as_str().unwrap_or(""));
+                    }
+                }
+            }
+            Some("function_call") => {
+                let args = item["arguments"].as_str().unwrap_or("{}");
+                let call_id = item["call_id"].as_str().unwrap_or("").to_owned();
+                let name = item["name"].as_str().unwrap_or("").to_owned();
+                raw.push(json!({"type": "function_call", "call_id": call_id, "name": name, "arguments": args}));
+                let input = serde_json::from_str(args).unwrap_or(Value::Null);
+                reply.calls.push(ToolCall { id: call_id, name, input });
+            }
+            _ => {}
+        }
+    }
+    reply.raw = Value::Array(raw);
+    reply
+}
+
+/// The error for a ChatGPT plan's error code (others: an API error).
+pub fn error_for_code(code: &str, message: &str) -> AiError {
+    match code {
+        "subscription_sharing_user_not_eligible" => AiError::PlanNotEligible,
+        "subscription_sharing_usage_limit_exceeded" => AiError::PlanLimit,
+        "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => AiError::PlanBusy,
+        "subscription_sharing_invalid_user" => AiError::SignInAgain,
+        _ => AiError::Api { status: 0, message: if code.is_empty() { message.to_owned() } else { format!("{code}: {message}") } },
+    }
 }
 
 fn parse(body: &str) -> Result<Value, AiError> {
@@ -154,7 +256,9 @@ pub fn parse_chat(body: &str) -> Result<Reply, AiError> {
 pub fn parse_models(body: &str) -> Result<Vec<String>, AiError> {
     let v = parse(body)?;
     let data = v["data"].as_array().ok_or_else(|| AiError::BadReply("no model list".into()))?;
-    let mut ids: Vec<String> = data.iter().filter_map(|m| m["id"].as_str().map(str::to_owned)).collect();
+    // A ChatGPT plan's list marks the models to offer with visibility "list".
+    let offered = |m: &&Value| m.get("visibility").is_none_or(|v| v == "list");
+    let mut ids: Vec<String> = data.iter().filter(offered).filter_map(|m| m["id"].as_str().map(str::to_owned)).collect();
     ids.sort();
     ids.dedup();
     Ok(ids)
@@ -163,6 +267,15 @@ pub fn parse_models(body: &str) -> Result<Vec<String>, AiError> {
 /// The error for an HTTP status other than 2xx. Both formats put the
 /// reason in `error.message`.
 pub fn error_for(status: u16, body: &str) -> AiError {
+    let v = serde_json::from_str::<Value>(body).ok();
+    if let Some(code) = v.as_ref().and_then(|v| v["error"]["code"].as_str())
+        && code.starts_with("subscription_sharing_")
+    {
+        return error_for_code(code, "");
+    }
+    if let Some(detail) = v.as_ref().and_then(|v| v["detail"].as_str()) {
+        return AiError::Api { status, message: detail.to_owned() };
+    }
     match status {
         401 | 403 => AiError::BadKey,
         429 => AiError::RateLimited,
@@ -245,10 +358,10 @@ mod tests {
         let body = r#"{"content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"tool_use","id":"tu1","name":"get_output","input":{"line":3}}],"stop_reason":"tool_use"}"#;
         let r = parse_messages(body).unwrap();
         assert_eq!(r.calls[0].id, "tu1");
-        let a = assistant_message(true, &r);
+        let a = &assistant_turn(Format::Messages, &r)[0];
         assert_eq!(a["role"], "assistant");
         assert_eq!(a["content"][0]["signature"], "sig");
-        let t = tool_results(true, &[("tu1".into(), "out".into())]);
+        let t = tool_results(Format::Messages, &[("tu1".into(), "out".into())]);
         assert_eq!(t.len(), 1);
         assert_eq!(t[0]["content"][0]["tool_use_id"], "tu1");
     }
@@ -258,8 +371,8 @@ mod tests {
         let body = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"get_output","arguments":"{\"line\":3}"}}]},"finish_reason":"tool_calls"}]}"#;
         let r = parse_chat(body).unwrap();
         assert_eq!(r.calls[0].id, "c1");
-        assert_eq!(assistant_message(false, &r)["tool_calls"][0]["id"], "c1");
-        let t = tool_results(false, &[("c1".into(), "a".into()), ("c2".into(), "b".into())]);
+        assert_eq!(assistant_turn(Format::Chat, &r)[0]["tool_calls"][0]["id"], "c1");
+        let t = tool_results(Format::Chat, &[("c1".into(), "a".into()), ("c2".into(), "b".into())]);
         assert_eq!((t.len(), t[1]["role"].as_str(), t[1]["tool_call_id"].as_str()), (2, Some("tool"), Some("c2")));
     }
 
@@ -271,6 +384,48 @@ mod tests {
         let chat = chat_body(&r);
         assert_eq!(chat["messages"].as_array().unwrap().len(), 4);
         assert_eq!(chat["messages"][0]["role"], "system");
+    }
+
+    #[test]
+    fn responses_body_follows_the_plan_rules() {
+        let msgs = [user_message("u")];
+        let tools = [Tool { name: "t", description: "d", schema: serde_json::json!({"type":"object"}) }];
+        let b = responses_body(&Request { model: "m", system: "s", messages: &msgs, tools: &tools, max_tokens: 10 });
+        assert_eq!((b["instructions"].as_str(), b["store"].as_bool(), b["stream"].as_bool()), (Some("s"), Some(false), Some(true)));
+        assert_eq!(b["input"][0]["content"], "u");
+        assert_eq!(b["tools"][0]["type"], "function");
+        assert_eq!(b["tools"][0]["name"], "t");
+        for k in ["max_output_tokens", "temperature", "top_p", "previous_response_id", "max_tokens"] {
+            assert!(b.get(k).is_none(), "{k}");
+        }
+    }
+
+    #[test]
+    fn a_stream_with_a_function_call() {
+        let sse = "event: response.created\ndata: {\"type\":\"response.created\"}\n\n\
+                   data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n\
+                   data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\"},{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi\"}]},{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"get_output\",\"arguments\":\"{\\\"line\\\":3}\"}]}}\n\n";
+        let r = parse_responses_stream(sse.as_bytes()).unwrap();
+        assert_eq!(r.text, "Hi");
+        assert_eq!((r.calls[0].id.as_str(), r.calls[0].input["line"].as_i64()), ("call_1", Some(3)));
+        let turn = assistant_turn(Format::Responses, &r);
+        assert_eq!(turn[0]["role"], "assistant");
+        assert_eq!(turn[1]["call_id"], "call_1");
+        assert!(turn[1].get("id").is_none() && turn.iter().all(|i| i["type"] != "reasoning"));
+        let out = tool_results(Format::Responses, &[("call_1".into(), "x".into())]);
+        assert_eq!((out[0]["type"].as_str(), out[0]["output"].as_str()), (Some("function_call_output"), Some("x")));
+    }
+
+    #[test]
+    fn stream_failures_map_to_plan_errors() {
+        let failed = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\",\"message\":\"m\"}}}\n\n";
+        assert_eq!(parse_responses_stream(failed.as_bytes()).unwrap_err(), AiError::PlanLimit);
+        assert_eq!(parse_responses_stream("data: {\"type\":\"response.incomplete\"}\n\n".as_bytes()).unwrap_err(), AiError::TooLong);
+        assert!(matches!(parse_responses_stream("data: {\"type\":\"response.created\"}\n\n".as_bytes()), Err(AiError::BadReply(_))));
+        assert_eq!(error_for(403, r#"{"error":{"code":"subscription_sharing_user_not_eligible","message":"no"}}"#), AiError::PlanNotEligible);
+        assert_eq!(error_for(401, r#"{"error":{"code":"subscription_sharing_invalid_user"}}"#), AiError::SignInAgain);
+        assert_eq!(error_for(503, r#"{"detail":"busy"}"#), AiError::Api { status: 503, message: "busy".into() });
+        assert_eq!(parse_models(r#"{"data":[{"id":"a","visibility":"list"},{"id":"b","visibility":"hidden"},{"id":"c"}]}"#).unwrap(), vec!["a", "c"]);
     }
 
     #[test]

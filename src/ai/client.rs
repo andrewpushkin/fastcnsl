@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::wire::{self, Reply, Request};
+use super::wire::{self, Format, Reply, Request};
 use super::{AiConfig, AiError, Keys, Provider};
 
 const ANTHROPIC_BASE: &str = "https://api.anthropic.com/v1";
@@ -51,9 +51,9 @@ impl Client {
         Client { provider, key: key.to_owned(), base: base.trim_end_matches('/').to_owned(), agent: ureq::Agent::new_with_config(config) }
     }
 
-    /// Speaks Anthropic's Messages API (else Chat Completions).
-    pub fn messages_api(&self) -> bool {
-        self.provider.uses_messages_api()
+    /// The API format requests use.
+    pub fn format(&self) -> Format {
+        if self.provider.uses_messages_api() { Format::Messages } else { Format::Chat }
     }
 
     /// Asks one question.

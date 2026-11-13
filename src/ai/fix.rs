@@ -4,7 +4,7 @@ use serde_json::json;
 use winit::event_loop::EventLoopProxy;
 
 use super::client::Client;
-use super::wire::{Reply, Request, Tool, ToolCall, assistant_message, tool_results, user_message};
+use super::wire::{Reply, Request, Tool, ToolCall, assistant_turn, tool_results, user_message};
 use super::{AiError, AiEvent};
 use crate::session::UserEvent;
 
@@ -118,7 +118,7 @@ pub fn insert_text(command: &str) -> String {
 /// `ask` (None: the Fix was cancelled), sends their results back, until the
 /// model proposes a command or answers in words.
 pub fn run(client: &Client, model: &str, first: String, mut ask: impl FnMut(Vec<ToolCall>) -> Option<Vec<String>>) -> Result<Fix, AiError> {
-    let messages_api = client.messages_api();
+    let format = client.format();
     let tools = tools();
     let mut messages = vec![user_message(&first)];
     for _ in 0..MAX_REQUESTS {
@@ -131,10 +131,10 @@ pub fn run(client: &Client, model: &str, first: String, mut ask: impl FnMut(Vec<
             }
             return Ok(fix_from(reply));
         }
-        messages.push(assistant_message(messages_api, &reply));
+        messages.extend(assistant_turn(format, &reply));
         let results = ask(calls.clone()).ok_or(AiError::Cancelled)?;
         let pairs: Vec<(String, String)> = calls.into_iter().map(|c| c.id).zip(results).collect();
-        messages.extend(tool_results(messages_api, &pairs));
+        messages.extend(tool_results(format, &pairs));
     }
     Err(AiError::TooManySteps)
 }
