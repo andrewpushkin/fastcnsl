@@ -2,10 +2,50 @@
 //! the requests that ask a model to fix a command.
 
 pub mod keys;
+pub mod wire;
 
 use serde::{Deserialize, Serialize};
 
 pub use keys::Keys;
+
+/// Why a request gave no answer, as users are told.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AiError {
+    NoProvider,
+    NoKey,
+    NoModel,
+    /// 401 or 403.
+    BadKey,
+    /// 429.
+    RateLimited,
+    /// The model declined (`stop_reason: refusal`).
+    Refused,
+    /// The reply hit its length limit before it was useful.
+    TooLong,
+    /// No answer from the server: no network, DNS, TLS, timeout.
+    Network(String),
+    /// Another HTTP error, with the server's message.
+    Api { status: u16, message: String },
+    /// An answer that can't be read.
+    BadReply(String),
+}
+
+impl std::fmt::Display for AiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AiError::NoProvider => write!(f, "no AI provider is set (Options → AI)"),
+            AiError::NoKey => write!(f, "no API key is set (Options → AI)"),
+            AiError::NoModel => write!(f, "no model is chosen (Options → AI)"),
+            AiError::BadKey => write!(f, "the API key was not accepted"),
+            AiError::RateLimited => write!(f, "too many requests or no credit left; try again later"),
+            AiError::Refused => write!(f, "the model declined to answer"),
+            AiError::TooLong => write!(f, "the reply was cut off"),
+            AiError::Network(e) => write!(f, "could not reach the provider: {e}"),
+            AiError::Api { status, message } => write!(f, "error {status}: {message}"),
+            AiError::BadReply(e) => write!(f, "unexpected reply: {e}"),
+        }
+    }
+}
 
 /// Who answers: a provider and the API format it speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
