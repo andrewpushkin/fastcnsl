@@ -1,6 +1,7 @@
 //! The AI assistant: provider settings, API keys, and (in later modules)
 //! the requests that ask a model to fix a command.
 
+pub mod client;
 pub mod keys;
 pub mod wire;
 
@@ -13,6 +14,8 @@ pub use keys::Keys;
 pub enum AiError {
     NoProvider,
     NoKey,
+    /// The custom provider has no `base_url`.
+    NoAddress,
     NoModel,
     /// 401 or 403.
     BadKey,
@@ -35,6 +38,7 @@ impl std::fmt::Display for AiError {
         match self {
             AiError::NoProvider => write!(f, "no AI provider is set (Options → AI)"),
             AiError::NoKey => write!(f, "no API key is set (Options → AI)"),
+            AiError::NoAddress => write!(f, "the custom provider has no address: set base_url in config.toml"),
             AiError::NoModel => write!(f, "no model is chosen (Options → AI)"),
             AiError::BadKey => write!(f, "the API key was not accepted"),
             AiError::RateLimited => write!(f, "too many requests or no credit left; try again later"),
