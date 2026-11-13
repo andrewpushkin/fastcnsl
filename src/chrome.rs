@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::config::{Antialiasing, GpuBackend, LineNumbers, ThemeMode};
+use crate::config::{Antialiasing, GpuBackend, LineNumbers, Setting, ThemeMode};
 use crate::shortcuts::{Command, Keymap};
 use crate::shortcuts;
 use crate::ui::Rect;
@@ -49,6 +49,8 @@ pub enum Action {
     ResetKey(Command),
     /// Put every shortcut back to its default.
     ResetKeys,
+    /// Put this setting back to its default.
+    ResetSetting(Setting),
     /// Save the shortcuts just captured (see State::pending_keys).
     ApplyKeys,
     ClosePanel,
@@ -559,6 +561,14 @@ impl<'a> PanelBuilder<'a> {
         self.add_button(col, label, action, active, ButtonStyle::Icon);
     }
 
+    /// A ↺ at column `col` that puts `setting` back to its default, if
+    /// `s` says it was changed.
+    fn reset(&mut self, col: f32, s: &OptionsState, setting: Setting) {
+        if s.changed.contains(&setting) {
+            self.icon_button(col, "↺", Action::ResetSetting(setting), true);
+        }
+    }
+
     /// A page tab; returns the column after it.
     fn tab(&mut self, col: f32, label: &str, action: Action, active: bool) -> f32 {
         self.add_button(col, label, action, active, ButtonStyle::Tab)
@@ -633,6 +643,8 @@ pub struct OptionsState {
     pub line_height: f32,
     pub bold_is_bright: bool,
     pub antialiasing: Antialiasing,
+    /// The settings that differ from their defaults: each gets a ↺.
+    pub changed: Vec<Setting>,
 }
 
 impl OptionsState {
@@ -665,6 +677,7 @@ impl Default for OptionsState {
             line_height: 1.2,
             bold_is_bright: false,
             antialiasing: Antialiasing::Auto,
+            changed: Vec::new(),
         }
     }
 }
@@ -721,6 +734,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 for (name, mode) in [("System", ThemeMode::System), ("Dark", ThemeMode::Dark), ("Light", ThemeMode::Light)] {
                     c = b.button(c, name, Action::Theme(mode), s.theme == mode);
                 }
+                b.reset(c, s, Setting::Theme);
                 b.next();
             }
             if b.fits_rows(1) {
@@ -732,7 +746,8 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
             if b.fits_rows(1) {
                 b.text(0.0, "Code highlighting", TextStyle::Normal);
                 let c = b.button(label_w, "On", Action::CodeHighlight(true), s.code_highlight);
-                b.button(c, "Off", Action::CodeHighlight(false), !s.code_highlight);
+                let c = b.button(c, "Off", Action::CodeHighlight(false), !s.code_highlight);
+                b.reset(c, s, Setting::CodeHighlight);
                 b.next();
             }
             if b.fits_rows(1) {
@@ -741,6 +756,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 for (name, mode) in [("Per command", LineNumbers::Command), ("Per tab", LineNumbers::Tab), ("Off", LineNumbers::Off)] {
                     c = b.button(c, name, Action::LineNumbers(mode), s.line_numbers == mode);
                 }
+                b.reset(c, s, Setting::LineNumbers);
                 b.next();
             }
             if !compact {
@@ -754,6 +770,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 for &g in GpuBackend::choices() {
                     c = b.button(c, g.label(), Action::Gpu(g), s.gpu == g);
                 }
+                b.reset(c, s, Setting::Gpu);
                 b.next();
             }
             if s.gpu_pending && b.fits_rows(1) {
@@ -809,6 +826,8 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
             if b.fits_rows(1) {
                 b.text(0.0, "Folder", TextStyle::Normal);
                 b.text(label_w, &s.log_folder, TextStyle::Normal);
+                // Next to the label: a long path would push it out of the panel.
+                b.reset(7.0, s, Setting::LogFolder);
                 b.next();
             }
             if b.fits_rows(1) {
@@ -824,13 +843,15 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
             if b.fits_rows(1) {
                 b.text(0.0, "Log new tabs", TextStyle::Normal);
                 let c = b.button(label_w, "On", Action::LogNewTabs(true), s.log_new_tabs);
-                b.button(c, "Off", Action::LogNewTabs(false), !s.log_new_tabs);
+                let c = b.button(c, "Off", Action::LogNewTabs(false), !s.log_new_tabs);
+                b.reset(c, s, Setting::LogNewTabs);
                 b.next();
             }
             if b.fits_rows(1) {
                 b.text(0.0, "Timestamps", TextStyle::Normal);
                 let c = b.button(label_w, "On", Action::LogTimestamps(true), s.log_timestamps);
-                b.button(c, "Off", Action::LogTimestamps(false), !s.log_timestamps);
+                let c = b.button(c, "Off", Action::LogTimestamps(false), !s.log_timestamps);
+                b.reset(c, s, Setting::LogTimestamps);
                 b.next();
             }
             if !compact {
@@ -861,6 +882,7 @@ fn font_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
         b.text(c, format!("{:>4}", s.font_size), TextStyle::Normal);
         let c = b.button(c + 5.0, "+", Action::FontBigger, false);
         b.text(c, "points", TextStyle::Dim);
+        b.reset(c + 7.0, s, Setting::FontSize);
         b.next();
     }
     if b.fits_rows(1) {
@@ -869,12 +891,14 @@ fn font_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
         b.text(c, format!("{:>4}", s.line_height), TextStyle::Normal);
         let c = b.button(c + 5.0, "+", Action::LineHeight(true), false);
         b.text(c, "× the font size", TextStyle::Dim);
+        b.reset(c + 16.0, s, Setting::LineHeight);
         b.next();
     }
     if b.fits_rows(1) {
         b.text(0.0, "Bold text", TextStyle::Normal);
         let c = b.button(label_w, "Bold", Action::BoldIsBright(false), !s.bold_is_bright);
-        b.button(c, "Bold and bright", Action::BoldIsBright(true), s.bold_is_bright);
+        let c = b.button(c, "Bold and bright", Action::BoldIsBright(true), s.bold_is_bright);
+        b.reset(c, s, Setting::BoldIsBright);
         b.next();
     }
     if smoothing && b.fits_rows(1) {
@@ -883,6 +907,7 @@ fn font_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
         for (name, aa) in [("Auto", Antialiasing::Auto), ("ClearType", Antialiasing::Subpixel), ("Grayscale", Antialiasing::Grayscale)] {
             c = b.button(c, name, Action::Antialiasing(aa), s.antialiasing == aa);
         }
+        b.reset(c, s, Setting::Antialiasing);
         b.next();
     }
     if !b.fits_rows(2) {
@@ -892,6 +917,7 @@ fn font_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
         b.gap();
     }
     b.text(0.0, "FAMILY", TextStyle::Dim);
+    b.reset(7.0, s, Setting::FontFamily);
     let chosen = s.font_index();
     if !s.font_family.eq_ignore_ascii_case(&s.font_in_use) {
         b.text(label_w, format!("{} is not installed: using {}", s.font_family, s.font_in_use), TextStyle::Dim);
@@ -1319,6 +1345,44 @@ mod tests {
         assert!(off.active);
         let normal = options_panel(&m(), &OptionsState::default(), (0.0, 0.0));
         assert!(normal.buttons.iter().any(|b| b.action == Action::LineNumbers(LineNumbers::Command) && b.active));
+    }
+
+    #[test]
+    fn changed_settings_get_a_reset_button_on_their_row() {
+        let overlaps = |a: Rect, b: Rect| a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        let smoothing = if cfg!(windows) { vec![Setting::Antialiasing] } else { vec![] };
+        let pages = [
+            (OptionsPage::General, vec![Setting::Theme, Setting::CodeHighlight, Setting::LineNumbers, Setting::Gpu]),
+            (OptionsPage::Font, [vec![Setting::FontSize, Setting::LineHeight, Setting::BoldIsBright], smoothing, vec![Setting::FontFamily]].concat()),
+            (OptionsPage::Logging, vec![Setting::LogFolder, Setting::LogNewTabs, Setting::LogTimestamps]),
+        ];
+        for (page, settings) in pages {
+            // Nothing changed: no ↺ at all.
+            let p = options_panel(&m(), &OptionsState { page, ..OptionsState::default() }, (0.0, 0.0));
+            assert!(!p.buttons.iter().any(|b| matches!(b.action, Action::ResetSetting(_))), "{page:?}");
+            // Everything changed: one ↺ per setting on the page, inside the
+            // panel and clear of the other buttons.
+            let s = OptionsState { page, log_folder: "~/a/rather/long/folder/for/the/logs".into(), changed: Setting::ALL.to_vec(), ..OptionsState::default() };
+            let p = options_panel(&m(), &s, (0.0, 0.0));
+            let resets: Vec<&Button> = p.buttons.iter().filter(|b| matches!(b.action, Action::ResetSetting(_))).collect();
+            let shown: Vec<Action> = resets.iter().map(|b| b.action).collect();
+            assert_eq!(shown, settings.iter().map(|s| Action::ResetSetting(*s)).collect::<Vec<_>>(), "{page:?}");
+            for r in &resets {
+                assert_eq!(r.style, ButtonStyle::Icon);
+                assert!(r.rect.x + r.rect.w <= p.rect.x + p.rect.w, "{:?} inside the panel", r.action);
+                for b in p.buttons.iter().filter(|b| b.action != r.action) {
+                    assert!(!overlaps(r.rect, b.rect), "{:?} clear of {:?}", r.action, b.action);
+                }
+                for l in p.lines.iter().filter(|l| (l.y - r.rect.y).abs() < m().ch) {
+                    let text = Rect { x: l.x, y: r.rect.y, w: l.text.chars().count() as f32 * m().cw, h: r.rect.h };
+                    assert!(!overlaps(r.rect, text), "{:?} clear of {:?}", r.action, l.text);
+                }
+            }
+        }
+        // Only the changed setting gets one.
+        let p = options_panel(&m(), &OptionsState { changed: vec![Setting::LineNumbers], ..OptionsState::default() }, (0.0, 0.0));
+        let resets: Vec<Action> = p.buttons.iter().map(|b| b.action).filter(|a| matches!(a, Action::ResetSetting(_))).collect();
+        assert_eq!(resets, [Action::ResetSetting(Setting::LineNumbers)]);
     }
 
     #[test]

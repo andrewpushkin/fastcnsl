@@ -20,7 +20,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
 use crate::chrome::{self, Action, BookmarkMenu, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
-use crate::config::{Config, ConfigWatcher, GpuBackend, ThemeMode};
+use crate::config::{Config, ConfigWatcher, GpuBackend, Setting, ThemeMode};
 use crate::detect;
 use crate::highlight::{self, CodeHighlighter};
 use crate::history::scroll::Scroller;
@@ -602,6 +602,7 @@ impl App {
                 | Action::Rebind(_)
                 | Action::ResetKey(_)
                 | Action::ResetKeys
+                | Action::ResetSetting(_)
                 | Action::ApplyKeys
         )
             || matches!(st.overlay, Overlay::Menu(_))
@@ -695,6 +696,7 @@ impl App {
                 st.capturing = None;
                 self.change_config(|c| c.keys.clear());
             }
+            Action::ResetSetting(setting) => self.change_config(|c| setting.reset(c)),
             Action::ApplyKeys => {
                 if let Some(keys) = st.pending_keys.take() {
                     self.change_config(|c| c.keys = keys);
@@ -1204,6 +1206,7 @@ impl State {
             line_height: cfg.line_height,
             bold_is_bright: cfg.bold_is_bright,
             antialiasing: cfg.antialiasing,
+            changed: Setting::changed(cfg),
         }
     }
 

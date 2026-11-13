@@ -205,7 +205,8 @@ graphics mode. The Font page picks the font from the monospace fonts
 installed (click one, or step through them with ↑ and ↓) and sets its size,
 the line height, whether bold text also turns bright, and on Windows the
 text smoothing (ClearType or grayscale). On the Keyboard shortcuts page you
-can change any shortcut. Changes take effect at once and are remembered.
+can change any shortcut. Changes take effect at once and are remembered. A
+setting you changed has a ↺ next to it that puts back its default.
 
 | General | Keyboard shortcuts |
 |---|---|

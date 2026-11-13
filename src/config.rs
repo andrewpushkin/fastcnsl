@@ -284,6 +284,85 @@ impl Default for Config {
     }
 }
 
+/// A setting the Options panel shows, for its ↺ button: shown while the
+/// setting differs from its default, it puts back that default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setting {
+    Theme,
+    CodeHighlight,
+    LineNumbers,
+    Gpu,
+    FontFamily,
+    FontSize,
+    LineHeight,
+    BoldIsBright,
+    Antialiasing,
+    LogFolder,
+    LogNewTabs,
+    LogTimestamps,
+}
+
+impl Setting {
+    pub const ALL: [Setting; 12] = [
+        Setting::Theme,
+        Setting::CodeHighlight,
+        Setting::LineNumbers,
+        Setting::Gpu,
+        Setting::FontFamily,
+        Setting::FontSize,
+        Setting::LineHeight,
+        Setting::BoldIsBright,
+        Setting::Antialiasing,
+        Setting::LogFolder,
+        Setting::LogNewTabs,
+        Setting::LogTimestamps,
+    ];
+
+    /// True if `cfg` has this setting's default value.
+    pub fn is_default(self, cfg: &Config) -> bool {
+        let d = Config::default();
+        match self {
+            Setting::Theme => cfg.theme == d.theme,
+            Setting::CodeHighlight => cfg.code_highlight == d.code_highlight,
+            Setting::LineNumbers => cfg.line_numbers == d.line_numbers,
+            Setting::Gpu => cfg.gpu == d.gpu,
+            // The font list may spell a family with other capitals.
+            Setting::FontFamily => cfg.font_family.eq_ignore_ascii_case(&d.font_family),
+            Setting::FontSize => cfg.font_size == d.font_size,
+            Setting::LineHeight => (cfg.line_height - d.line_height).abs() < 0.001,
+            Setting::BoldIsBright => cfg.bold_is_bright == d.bold_is_bright,
+            Setting::Antialiasing => cfg.antialiasing == d.antialiasing,
+            Setting::LogFolder => cfg.log_folder == d.log_folder,
+            Setting::LogNewTabs => cfg.log_new_tabs == d.log_new_tabs,
+            Setting::LogTimestamps => cfg.log_timestamps == d.log_timestamps,
+        }
+    }
+
+    /// Puts this setting in `cfg` back to its default.
+    pub fn reset(self, cfg: &mut Config) {
+        let d = Config::default();
+        match self {
+            Setting::Theme => cfg.theme = d.theme,
+            Setting::CodeHighlight => cfg.code_highlight = d.code_highlight,
+            Setting::LineNumbers => cfg.line_numbers = d.line_numbers,
+            Setting::Gpu => cfg.gpu = d.gpu,
+            Setting::FontFamily => cfg.font_family = d.font_family,
+            Setting::FontSize => cfg.font_size = d.font_size,
+            Setting::LineHeight => cfg.line_height = d.line_height,
+            Setting::BoldIsBright => cfg.bold_is_bright = d.bold_is_bright,
+            Setting::Antialiasing => cfg.antialiasing = d.antialiasing,
+            Setting::LogFolder => cfg.log_folder = d.log_folder,
+            Setting::LogNewTabs => cfg.log_new_tabs = d.log_new_tabs,
+            Setting::LogTimestamps => cfg.log_timestamps = d.log_timestamps,
+        }
+    }
+
+    /// The settings in `cfg` that differ from their defaults.
+    pub fn changed(cfg: &Config) -> Vec<Setting> {
+        Setting::ALL.into_iter().filter(|s| !s.is_default(cfg)).collect()
+    }
+}
+
 /// Points. 12 on Windows, like Windows Terminal; 11 elsewhere.
 fn default_font_size() -> f32 {
     if cfg!(target_os = "windows") { 12.0 } else { 11.0 }
@@ -459,6 +538,37 @@ mod tests {
         let low = Config { memory_per_tab_mb: 10, ..Config::default() }.sanitized();
         let high = Config { memory_per_tab_mb: 1_000_000, ..Config::default() }.sanitized();
         assert_eq!((low.memory_per_tab_mb, high.memory_per_tab_mb), (64, 16384));
+    }
+
+    #[test]
+    fn settings_reset_to_their_defaults() {
+        let mut cfg = Config::default();
+        assert!(Setting::changed(&cfg).is_empty());
+        cfg.theme = ThemeMode::Light;
+        cfg.code_highlight = false;
+        cfg.line_numbers = LineNumbers::Off;
+        cfg.gpu = GpuBackend::Software;
+        cfg.font_family = "Some Mono".into();
+        cfg.font_size = 20.0;
+        cfg.line_height = 1.5;
+        cfg.bold_is_bright = true;
+        cfg.antialiasing = Antialiasing::Grayscale;
+        cfg.log_folder = "~/logs".into();
+        cfg.log_new_tabs = true;
+        cfg.log_timestamps = true;
+        assert_eq!(Setting::changed(&cfg), Setting::ALL);
+        for s in Setting::ALL {
+            s.reset(&mut cfg);
+            assert!(s.is_default(&cfg), "{s:?}");
+        }
+        assert_eq!(cfg, Config::default());
+        // The font list may give the default family other capitals.
+        cfg.font_family = cfg.font_family.to_uppercase();
+        assert!(Setting::FontFamily.is_default(&cfg));
+        // Line height stepped away and back by tenths.
+        cfg.line_height = 13.0 / 10.0;
+        cfg.line_height = ((cfg.line_height * 10.0).round() - 1.0) / 10.0;
+        assert!(Setting::LineHeight.is_default(&cfg));
     }
 
     #[test]
