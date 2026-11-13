@@ -412,6 +412,14 @@ impl App {
         // keep it hidden until then (see `resumed`).
         #[cfg(windows)]
         let attrs = attrs.with_visible(false);
+        // The icon build.rs embeds (resource 1). winit registers its window
+        // class without one, so the taskbar and Alt+Tab would show a blank one.
+        #[cfg(windows)]
+        let attrs = {
+            use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
+            use winit::window::Icon;
+            attrs.with_window_icon(Icon::from_resource(1, None).ok()).with_taskbar_icon(Icon::from_resource(1, None).ok())
+        };
         // App id / WM_CLASS, matching StartupWMClass in the .desktop file.
         #[cfg(all(unix, not(target_os = "macos")))]
         let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "fastcnsl", "fastcnsl");
