@@ -4,7 +4,7 @@ Notable changes to fastcnsl, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
-## Unreleased
+## 0.1.147 (2026-11-13)
 
 - **The time beside an output line is now a count of seconds** since its
   command (or since the tab opened), such as `3` or `65`, instead of
