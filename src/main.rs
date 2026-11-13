@@ -5,6 +5,9 @@
 // No console window behind the terminal on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+// Until the app uses all of it (the Fix and Options tasks).
+#[allow(dead_code, unused_imports)]
+mod ai;
 mod app;
 mod chrome;
 mod config;

@@ -218,7 +218,7 @@ pub fn serve(proxy: EventLoopProxy<UserEvent>) -> Option<Server> {
     let dir = instances_dir()?;
     let file = dir.join(std::process::id().to_string());
     let instance = Instance { port, token: token.clone(), version: Some(crate::VERSION.to_owned()) };
-    if let Err(e) = write_private(&dir, &file, &instance.to_text()) {
+    if let Err(e) = crate::config::write_private(&file, &instance.to_text()) {
         log::warn!("remote control: writing {}: {e}", file.display());
         return None;
     }
@@ -234,15 +234,6 @@ pub fn serve(proxy: EventLoopProxy<UserEvent>) -> Option<Server> {
         .ok()?;
     log::info!("remote control on 127.0.0.1:{port}");
     Some(Server { file })
-}
-
-fn write_private(dir: &std::path::Path, file: &std::path::Path, text: &str) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    opts.open(file)?.write_all(text.as_bytes())
 }
 
 fn handle(mut stream: TcpStream, token: &str, proxy: &EventLoopProxy<UserEvent>) -> Result<(), String> {

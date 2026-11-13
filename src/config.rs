@@ -171,7 +171,10 @@ pub struct Config {
     /// Changed keyboard shortcuts: command name -> keys, e.g.
     /// `new_tab = "Ctrl+T"`, `next_tab = "Ctrl+Tab, Ctrl+PageDown"`;
     /// "" turns a command off. Commands not listed keep their defaults.
-    /// (Last: TOML writes tables after plain values.)
+    /// The AI assistant: provider, model and what a Fix sends. API keys
+    /// are kept in `ai-keys.toml` beside this file, not here.
+    /// (Tables last: TOML writes tables after plain values.)
+    pub ai: crate::ai::AiConfig,
     pub keys: BTreeMap<String, String>,
 }
 
@@ -279,6 +282,7 @@ impl Default for Config {
             log_folder: String::new(),
             log_new_tabs: false,
             log_timestamps: false,
+            ai: crate::ai::AiConfig::default(),
             keys: BTreeMap::new(),
         }
     }
@@ -492,7 +496,9 @@ impl Config {
             "# fastcnsl settings. Saved changes apply immediately.\n\
              # theme: \"system\" | \"dark\" | \"light\"\n\
              # code themes: base16-ocean.dark, base16-eighties.dark, base16-mocha.dark,\n\
-             #   base16-ocean.light, InspiredGitHub, Solarized (dark), Solarized (light)\n\n{body}"
+             #   base16-ocean.light, InspiredGitHub, Solarized (dark), Solarized (light)\n\
+             # [ai] provider: \"openai\" | \"xai\" | \"anthropic\" | \"custom\" | \"\" (off);\n\
+             #   API keys are kept in ai-keys.toml beside this file\n\n{body}"
         );
         std::fs::write(path, text)
     }
@@ -518,8 +524,23 @@ impl Config {
         self.padding = self.padding.clamp(0.0, 64.0);
         self.minimum_contrast = self.minimum_contrast.clamp(1.0, 21.0);
         self.memory_per_tab_mb = self.memory_per_tab_mb.clamp(64, 16384);
+        self.ai = self.ai.sanitized();
         self
     }
+}
+
+/// Writes `text` to `file` (creating its folder), readable by the user
+/// only on Unix: for files holding secrets.
+pub fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(file)?.write_all(text.as_bytes())
 }
 
 /// Polls the config file's modification time. Cheap enough to call about
@@ -570,6 +591,18 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_table_round_trips_and_off_is_empty() {
+        use crate::ai::Provider;
+        let cfg: Config = toml::from_str("[ai]\nprovider = \"anthropic\"\nmodel = \"m\"\n").unwrap();
+        assert_eq!(cfg.ai.provider, Provider::Anthropic);
+        assert_eq!(cfg.ai.context_commands, 5);
+        let off: Config = toml::from_str("").unwrap();
+        assert_eq!(off.ai.provider, Provider::Off);
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(text.contains("provider = \"\""), "{text}");
+    }
 
     #[test]
     fn config_path_env_wins_over_portable() {
