@@ -94,6 +94,10 @@ struct Tab {
     numbers: Vec<Option<u64>>,
     /// The screen rows of bookmarked lines, rebuilt each frame.
     bookmarked: Vec<usize>,
+    /// The line a bookmark jump landed on and when, highlighted for a moment.
+    flash: Option<(u64, Instant)>,
+    /// A bookmark jump's scroll while it is under way.
+    glide: Option<Glide>,
     /// Last program started in this tab (the shell's name until then).
     app: String,
     /// Name given with `fastcnsl new-tab NAME`; shown instead of `app`.
@@ -185,6 +189,31 @@ impl Tab {
     /// For the scrollbar: history rows and how far up the view is.
     fn scroll_metrics(&self) -> (usize, usize) {
         self.scroller.metrics(&self.session.term.lock(), &self.session.history)
+    }
+
+    /// Moves a bookmark jump's scroll on a frame; true while it goes on.
+    /// It stops where it is if something else scrolled the view.
+    fn glide_step(&mut self, live: &mut Term<EventProxy>) -> bool {
+        let Some(g) = self.glide.as_mut() else { return false };
+        let history = &self.session.history;
+        let (total, offset) = self.scroller.metrics(live, history);
+        if total - offset != g.seen {
+            self.glide = None;
+            return false;
+        }
+        let budget = self.session.budget();
+        let t = g.start.elapsed().as_secs_f32() / GLIDE_FOR.as_secs_f32();
+        if t >= 1.0 {
+            let line = g.line;
+            self.glide = None;
+            self.scroller.show_line(live, history, &budget, line);
+            return false;
+        }
+        let at = g.from as f32 + (g.to as f32 - g.from as f32) * ease_out(t);
+        self.scroller.set_offset(live, history, &budget, total - (at.round() as usize).min(total));
+        let (total, offset) = self.scroller.metrics(live, history);
+        g.seen = total - offset;
+        true
     }
 
     /// Scrollbar drag to `offset` (in the units of `scroll_metrics`).
@@ -460,7 +489,7 @@ impl App {
         let sb = ui::scrollbar_width(scale as f32);
         let bar = chrome::tab_bar_height(&Metrics { width: 0.0, height: 0.0, scale: scale as f32, cw: cell.width, ch: cell.height });
         let want = PhysicalSize::new(
-            (INITIAL_COLS as f32 * cell.width + 2.0 * pad + gutter_px(cfg, cell.width) + sb).ceil() as u32,
+            (INITIAL_COLS as f32 * cell.width + 2.0 * pad + gutter_px(cfg, cell.width, pad) + sb).ceil() as u32,
             (INITIAL_LINES as f32 * cell.height + 2.0 * pad + bar).ceil() as u32,
         );
         let _ = window.request_inner_size(want);
@@ -754,9 +783,46 @@ fn padding_px(cfg: &Config, scale: f32) -> f32 {
     (cfg.padding * scale).round()
 }
 
-/// Width of the line-number gutter in whole pixels (0 without numbers).
-fn gutter_px(cfg: &Config, cell_width: f32) -> f32 {
-    if cfg.line_numbers.is_on() { (lines::gutter_cells(cfg.line_numbers) as f32 * cell_width).round() } else { 0.0 }
+/// A bookmark jump's scroll: the view's distance from the top of the
+/// history (in `Scroller::metrics` units, which output arriving below
+/// doesn't change) eases from `from` to `to`, then lands exactly on `line`.
+struct Glide {
+    from: usize,
+    to: usize,
+    line: u64,
+    start: Instant,
+    /// The distance after the last step, to notice other scrolling.
+    seen: usize,
+}
+
+/// How long a bookmark jump's scroll takes.
+const GLIDE_FOR: Duration = Duration::from_millis(220);
+
+/// Fast at first, slowing to a stop: 0 at 0, 1 at 1.
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+/// How long a line a bookmark jump lands on stays highlighted.
+const FLASH_FOR: Duration = Duration::from_millis(1200);
+/// How long of that it stays at full strength before fading out.
+const FLASH_HOLD: Duration = Duration::from_millis(500);
+
+/// Strength of the jump highlight `elapsed` after the jump, 1 down to 0.
+fn flash_alpha(elapsed: Duration) -> f32 {
+    let fade = (FLASH_FOR - FLASH_HOLD).as_secs_f32();
+    (1.0 - elapsed.saturating_sub(FLASH_HOLD).as_secs_f32() / fade).clamp(0.0, 1.0)
+}
+
+/// Width of the line-number gutter in whole pixels (0 without numbers):
+/// from the left padding to the text. The times start left of the padding's
+/// edge (see `lines::gutter_inset`) and end a small gap before the text.
+fn gutter_px(cfg: &Config, cell_width: f32, pad: f32) -> f32 {
+    if !cfg.line_numbers.is_on() {
+        return 0.0;
+    }
+    let chars = lines::gutter_cells(cfg.line_numbers) as f32 + lines::GUTTER_GAP;
+    ((lines::gutter_inset(pad) + chars * cell_width).round() - pad).max(0.0)
 }
 
 /// Viewport cell at a window position: (col, row, side of the cell). The
@@ -787,7 +853,7 @@ fn grid_size(r: &Renderer, cfg: &Config, scale: f64) -> WindowSize {
     let pad = padding_px(cfg, scale as f32);
     let sb = ui::scrollbar_width(scale as f32);
     let bar = chrome::tab_bar_height(&Metrics { width: w as f32, height: h as f32, scale: scale as f32, cw: cell.width, ch: cell.height });
-    let cols = ((w as f32 - 2.0 * pad - gutter_px(cfg, cell.width) - sb) / cell.width).floor().max(2.0);
+    let cols = ((w as f32 - 2.0 * pad - gutter_px(cfg, cell.width, pad) - sb) / cell.width).floor().max(2.0);
     let lines = ((h as f32 - 2.0 * pad - bar) / cell.height).floor().max(1.0);
     WindowSize {
         num_cols: cols as u16,
@@ -887,6 +953,8 @@ impl State {
             lines: LineIndex::new(),
             numbers: Vec::new(),
             bookmarked: Vec::new(),
+            flash: None,
+            glide: None,
             app: shell_name(cfg),
             name,
             label: String::new(),
@@ -1282,6 +1350,8 @@ impl State {
         {
             let mut live = shared.lock();
             let tab = &mut self.tabs[self.active];
+            let mut flash = None;
+            animating |= tab.glide_step(&mut live);
             let budget = tab.session.budget();
             tab.scroller.sync(&mut live, &tab.session.history, &budget);
             tab.sync_lines();
@@ -1294,6 +1364,12 @@ impl State {
                 let term = tab.scroller.shown(&live);
                 tab.lines.numbers(term.grid(), cfg.line_numbers, &mut tab.numbers);
                 tab.lines.bookmarked_rows(term.grid(), &mut tab.bookmarked);
+                tab.flash = tab.flash.filter(|(_, at)| at.elapsed() < FLASH_FOR);
+                flash = tab.flash.and_then(|(line, at)| {
+                    let rows = tab.lines.rows_of(term.grid(), line)?;
+                    Some((rows, flash_alpha(at.elapsed())))
+                });
+                animating |= tab.flash.is_some();
             } else {
                 // Full-screen programs (vim, less) number their own lines.
                 tab.numbers.clear();
@@ -1339,10 +1415,11 @@ impl State {
                 scrollbar_alpha: self.scrollbar.fade.value,
                 search_alpha: self.search_fade.value,
                 min_contrast: cfg.minimum_contrast,
-                gutter: gutter_px(cfg, self.renderer.cell().width),
+                gutter: gutter_px(cfg, self.renderer.cell().width, padding_px(cfg, scale)),
                 line_numbers: &tab.numbers,
                 line_number_mode: cfg.line_numbers,
                 bookmarks: &tab.bookmarked,
+                flash,
                 scroll: Some(scroll),
             };
             let c = ChromeView {
@@ -1386,7 +1463,8 @@ impl State {
     /// Viewport cell under the pointer: (grid point, side, col, row).
     fn mouse_cell(&self, cfg: &Config, display_offset: usize) -> (Point, Side, usize, usize) {
         let cell = self.renderer.cell();
-        let (pad, gutter) = (padding_px(cfg, self.scale()), gutter_px(cfg, cell.width));
+        let pad = padding_px(cfg, self.scale());
+        let gutter = gutter_px(cfg, cell.width, pad);
         let (col, row, side) = cell_at(self.mouse, self.top(), pad, gutter, (cell.width, cell.height), self.grid);
         (Point::new(Line(row as i32 - display_offset as i32), Column(col)), side, col, row)
     }
@@ -1439,15 +1517,37 @@ impl State {
         if live.mode().contains(TermMode::ALT_SCREEN) {
             return;
         }
+        // A jump while the last one still glides goes on from where that
+        // one lands.
+        if let Some(g) = tab.glide.take() {
+            let budget = tab.session.budget();
+            tab.scroller.show_line(&mut live, &tab.session.history, &budget, g.line);
+        }
         let Some(line) = tab.lines.step_bookmark(tab.scroller.shown(&live).grid(), down) else {
             drop(live);
             self.show("No bookmarks in this tab".to_owned());
             return;
         };
         let budget = tab.session.budget();
-        tab.scroller.show_line(&mut live, &tab.session.history, &budget, line);
+        let history = &tab.session.history;
+        let before = tab.scroller.metrics(&live, history);
+        tab.scroller.show_line(&mut live, history, &budget, line);
+        let (total, offset) = tab.scroller.metrics(&live, history);
+        // Glide there, over at most a couple of screens: from further away
+        // the view jumps that close first.
+        let to = total - offset;
+        let reach = live.grid().screen_lines() * 2;
+        let from = (before.0 - before.1).clamp(to.saturating_sub(reach), to + reach);
+        tab.glide = None;
+        if from != to {
+            tab.scroller.set_offset(&mut live, history, &budget, total - from.min(total));
+            let (total, offset) = tab.scroller.metrics(&live, history);
+            tab.glide = Some(Glide { from, to, line, start: Instant::now(), seen: total - offset });
+        }
+        tab.flash = Some((line, Instant::now()));
         drop(live);
         self.scrolled();
+        self.window.request_redraw();
     }
 
     fn has_selection(&mut self) -> bool {
@@ -2419,6 +2519,29 @@ mod tests {
         assert!(!repainting_after_resize(None, t));
         assert!(repainting_after_resize(Some(t), t + RESIZE_REPAINT / 2));
         assert!(!repainting_after_resize(Some(t), t + RESIZE_REPAINT));
+    }
+
+    #[test]
+    fn a_glide_eases_out() {
+        assert_eq!(ease_out(0.0), 0.0);
+        assert_eq!(ease_out(1.0), 1.0);
+        assert!(ease_out(0.5) > 0.5, "more than half the way at half the time");
+        let mut last = 0.0;
+        for i in 1..=10 {
+            let now = ease_out(i as f32 / 10.0);
+            assert!(now > last);
+            last = now;
+        }
+    }
+
+    #[test]
+    fn the_jump_highlight_holds_then_fades_out() {
+        assert_eq!(flash_alpha(Duration::ZERO), 1.0);
+        assert_eq!(flash_alpha(FLASH_HOLD), 1.0);
+        let mid = flash_alpha(FLASH_HOLD + (FLASH_FOR - FLASH_HOLD) / 2);
+        assert!((mid - 0.5).abs() < 0.01, "{mid}");
+        assert_eq!(flash_alpha(FLASH_FOR), 0.0);
+        assert_eq!(flash_alpha(FLASH_FOR * 2), 0.0);
     }
 
     #[test]

@@ -20,16 +20,24 @@ use crate::config::LineNumbers;
 
 /// Digits shown in the gutter; bigger numbers show "…" and their last digits.
 pub const DIGITS: usize = 5;
-/// Characters in a time shown in the gutter: `HH:MM:SS`.
-pub const TIME_CHARS: usize = 8;
+/// Characters in a time shown in the gutter: `HH:MM`, as wide as a number.
+pub const TIME_CHARS: usize = 5;
 /// Set on a gutter time that is a time of day (a command's line) rather
 /// than seconds since (its output); see [`format_time`].
 pub const TIME_OF_DAY: u64 = 1 << 63;
 
-/// Width of the gutter in cells: a cell for the bookmark icon, what it
-/// shows and a gap before the text.
+/// Space between the gutter's times or numbers and the text, in cells.
+pub const GUTTER_GAP: f32 = 0.5;
+
+/// Where the gutter's times or numbers start, in pixels from the window's
+/// left edge: a third of the padding, so they sit close to the edge.
+pub fn gutter_inset(padding: f32) -> f32 {
+    (padding / 3.0).round()
+}
+
+/// Characters the gutter shows.
 pub fn gutter_cells(mode: LineNumbers) -> usize {
-    2 + if mode == LineNumbers::Command { TIME_CHARS } else { DIGITS }
+    if mode == LineNumbers::Command { TIME_CHARS } else { DIGITS }
 }
 
 /// The local time of day, in seconds.
@@ -338,6 +346,30 @@ impl LineIndex {
         }
     }
 
+    /// The screen rows global line `line` takes up, top to bottom, if it is
+    /// on screen. Pass the grid shown.
+    pub fn rows_of(&mut self, grid: &Grid<Cell>, line: u64) -> Option<std::ops::Range<usize>> {
+        let top = grid.history_size() - grid.display_offset();
+        let end = (top + grid.screen_lines()).min(cursor_row(grid) + 1);
+        let mut at = ends_before(grid, &mut self.view, top);
+        let mut first = None;
+        for abs in top..end {
+            if at == line && first.is_none() {
+                first = Some(abs - top);
+            }
+            if !wraps(grid, abs) {
+                if at == line {
+                    return first.map(|f| f..abs - top + 1);
+                }
+                at += 1;
+            }
+            if at > line {
+                return None;
+            }
+        }
+        first.map(|f| f..end - top)
+    }
+
     /// Moves to the next bookmark down (or up) from what is on screen and
     /// returns its global line, or None if there are no bookmarks. Pass the
     /// grid shown.
@@ -397,15 +429,18 @@ pub fn format_number(n: u64, buf: &mut String) {
 }
 
 /// A gutter time in [`TIME_CHARS`] characters: a time of day (marked with
-/// [`TIME_OF_DAY`]) as `HH:MM:SS`, seconds since as a right-aligned count.
+/// [`TIME_OF_DAY`]) as `HH:MM`, seconds since as a right-aligned count, in
+/// hours (`27h`) once that no longer fits.
 pub fn format_time(secs: u64, buf: &mut String) {
     use std::fmt::Write;
     buf.clear();
     let _ = if secs & TIME_OF_DAY != 0 {
         let secs = (secs & !TIME_OF_DAY) % 86_400;
-        write!(buf, "{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+        write!(buf, "{:02}:{:02}", secs / 3600, secs / 60 % 60)
+    } else if secs <= 99_999 {
+        write!(buf, "{secs:>TIME_CHARS$}")
     } else {
-        write!(buf, "{:>TIME_CHARS$}", secs.min(99_999_999))
+        write!(buf, "{:>w$}h", (secs / 3600).min(9_999), w = TIME_CHARS - 1)
     };
 }
 
@@ -666,6 +701,22 @@ mod tests {
     }
 
     #[test]
+    fn a_lines_rows_on_screen_cover_its_wrapped_rows() {
+        let mut t = T::new(10, 8, 100);
+        t.feed("short\n0123456789abcdefghijXY\nend\n");
+        let grid = t.term.grid();
+        let top = grid.history_size() - grid.display_offset();
+        let line = |t: &mut T, text| t.index.bookmark_target(t.term.grid(), t.row(text)).unwrap().0;
+        let (short, long, end) = (line(&mut t, "short"), line(&mut t, "abcdefghij"), line(&mut t, "end"));
+        let rows = |t: &mut T, l| t.index.rows_of(t.term.grid(), l).map(|r| (r.start + top, r.end + top));
+        let at = |t: &T, text| t.row(text);
+        assert_eq!(rows(&mut t, short), Some((at(&t, "short"), at(&t, "short") + 1)));
+        assert_eq!(rows(&mut t, long), Some((at(&t, "0123456789"), at(&t, "XY") + 1)));
+        assert_eq!(rows(&mut t, end), Some((at(&t, "end"), at(&t, "end") + 1)));
+        assert_eq!(rows(&mut t, end + 5), None);
+    }
+
+    #[test]
     fn the_second_toggle_removes_the_bookmark() {
         let mut t = T::numbered(20, 6, 100, 3);
         let abs = t.row("l1");
@@ -915,20 +966,22 @@ mod tests {
     fn times_fit_the_gutter() {
         let mut b = String::new();
         for (secs, want) in [
-            (0, "       0"),
-            (65, "      65"),
-            (100 * 3600, "  360000"),
-            (u64::MAX >> 1, "99999999"),
-            (TIME_OF_DAY, "00:00:00"),
-            (TIME_OF_DAY | (9 * 3600 + 14 * 60 + 32), "09:14:32"),
-            (TIME_OF_DAY | (23 * 3600 + 59 * 60 + 59), "23:59:59"),
+            (0, "    0"),
+            (65, "   65"),
+            (99_999, "99999"),
+            (100_000, "  27h"),
+            (100 * 3600, " 100h"),
+            (u64::MAX >> 1, "9999h"),
+            (TIME_OF_DAY, "00:00"),
+            (TIME_OF_DAY | (9 * 3600 + 14 * 60 + 32), "09:14"),
+            (TIME_OF_DAY | (23 * 3600 + 59 * 60 + 59), "23:59"),
         ] {
             format_time(secs, &mut b);
             assert_eq!(b, want);
             assert_eq!(b.chars().count(), TIME_CHARS, "{want}");
         }
-        assert_eq!(gutter_cells(LineNumbers::Command), TIME_CHARS + 2);
-        assert_eq!(gutter_cells(LineNumbers::Tab), DIGITS + 2);
+        assert_eq!(gutter_cells(LineNumbers::Command), TIME_CHARS);
+        assert_eq!(gutter_cells(LineNumbers::Tab), DIGITS);
     }
 
     #[test]

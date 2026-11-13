@@ -49,6 +49,9 @@ pub struct View<'a> {
     /// The screen rows of bookmarked lines, ascending (see
     /// `LineIndex::bookmarked_rows`).
     pub bookmarks: &'a [usize],
+    /// Screen rows of the line a bookmark jump landed on, and how strongly
+    /// to highlight them (1 down to 0 as it fades).
+    pub flash: Option<(std::ops::Range<usize>, f32)>,
     /// For the scrollbar: the tab's history rows and how far up the view is
     /// (see `Scroller::metrics`); None takes them from the terminal drawn.
     pub scroll: Option<(usize, usize)>,
@@ -138,6 +141,7 @@ fn span_at(spans: &[Span], col: u16) -> Option<Rgb> {
 
 pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>, c: &ChromeView<'_>) {
     draw_grid(p, term, v);
+    draw_flash(p, v);
     draw_bookmarks(p, v);
     draw_line_numbers(p, v);
     draw_scrollbar(p, term, v);
@@ -482,47 +486,41 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
     }
 }
 
-/// Bookmarked lines: a ribbon icon in the gutter's first cell, beside the
-/// line's time or number. Without a gutter, a bar in the left padding.
+/// The line a bookmark jump landed on: a band in the accent colour across
+/// the window, over the cells' backgrounds and under the text.
+fn draw_flash(p: &mut Painter<'_>, v: &View<'_>) {
+    let Some((rows, a)) = &v.flash else { return };
+    if rows.is_empty() || *a <= 0.0 {
+        return;
+    }
+    let ch = p.cell.height;
+    let y = v.top + v.padding + rows.start as f32 * ch;
+    p.rect(Layer::Background, 0.0, y, p.width, rows.len() as f32 * ch, v.palette.ui_accent.rgba(0.3 * a));
+}
+
+/// Bookmarked lines: a bar at the left. With a gutter it sits under the
+/// time's first character, which it hides; without one, in the padding.
 fn draw_bookmarks(p: &mut Painter<'_>, v: &View<'_>) {
     let accent = v.palette.ui_accent.rgba(1.0);
     let (cw, ch) = (p.cell.width, p.cell.height);
+    let w = (3.0 * v.scale).round();
+    let x = if v.gutter > 0.0 { (crate::lines::gutter_inset(v.padding) + (cw - w) / 2.0).round() } else { 0.0 };
     for &row in v.bookmarks {
         let y = v.top + v.padding + row as f32 * ch;
-        if v.gutter > 0.0 {
-            ribbon(p, v.padding, y, cw, ch, accent);
-        } else {
-            p.rect(Layer::Background, 0.0, y, (3.0 * v.scale).round(), ch, accent);
-        }
+        p.rect(Layer::Background, x, y, w, ch, accent);
     }
 }
 
-/// A bookmark ribbon, a band with a V cut out of its foot, centred in the
-/// cell at (x, y). Drawn from rects a pixel row at a time for the cut.
-fn ribbon(p: &mut Painter<'_>, x: f32, y: f32, cw: f32, ch: f32, color: [f32; 4]) {
-    let w = (cw * 0.6).round().max(4.0);
-    let h = (ch * 0.7).round().max(6.0);
-    let (x0, y0) = ((x + (cw - w) / 2.0).round(), (y + (ch - h) / 2.0).round());
-    let cut = (w / 2.0).round();
-    p.rect(Layer::Background, x0, y0, w, h - cut, color);
-    for i in 0..cut as usize {
-        // Each row down, the V is wider, up to the half width at the foot.
-        let side = w / 2.0 - (w / 2.0) * (i + 1) as f32 / cut;
-        let ry = y0 + h - cut + i as f32;
-        p.rect(Layer::Background, x0, ry, side.max(1.0), 1.0, color);
-        p.rect(Layer::Background, x0 + w - side.max(1.0), ry, side.max(1.0), 1.0, color);
-    }
-}
-
-/// Line numbers, right-aligned in the gutter left of the text, after the
-/// bookmark cell.
+/// Line numbers, right-aligned in the gutter left of the text. A bookmarked
+/// row's is in the accent colour, less the first character, where the
+/// bookmark bar is.
 fn draw_line_numbers(p: &mut Painter<'_>, v: &View<'_>) {
     if v.gutter <= 0.0 {
         return;
     }
     let dim = v.palette.ui_dim.rgba(1.0);
     let accent = v.palette.ui_accent.rgba(1.0);
-    let x = v.padding + p.cell.width;
+    let x = crate::lines::gutter_inset(v.padding);
     let mut buf = String::new();
     for (row, n) in v.line_numbers.iter().enumerate() {
         let Some(n) = n else { continue };
@@ -531,7 +529,14 @@ fn draw_line_numbers(p: &mut Painter<'_>, v: &View<'_>) {
         } else {
             crate::lines::format_number(*n, &mut buf);
         }
-        let color = if v.bookmarks.binary_search(&row).is_ok() { accent } else { dim };
+        let color = if v.bookmarks.binary_search(&row).is_ok() {
+            if let Some(c) = buf.chars().next() {
+                buf.replace_range(..c.len_utf8(), " ");
+            }
+            accent
+        } else {
+            dim
+        };
         p.text(Layer::Text, &buf, x, v.top + v.padding + row as f32 * p.cell.height, color);
     }
 }
@@ -871,6 +876,7 @@ mod tests {
                 line_numbers: &[],
                 line_number_mode: LineNumbers::Tab,
                 bookmarks: &[],
+                flash: None,
                 scroll: None,
             }
         }
@@ -983,45 +989,55 @@ mod tests {
         c.paint(400.0, 300.0, |p| draw(p, &t, &v, &chrome(vec![])));
         let dim = f.palette.ui_dim.rgba(1.0);
         let shown = c.layer(Layer::Text).iter().filter(|i| i.kind != 0 && i.color == dim).count();
-        assert_eq!(shown, 9, "09:14:32 and 5");
+        assert_eq!(shown, 6, "09:14 and 5");
+        // A bookmark bar takes the place of a bookmarked time's first digit.
+        let v = View { bookmarks: &[0], ..v };
+        c.paint(400.0, 300.0, |p| draw(p, &t, &v, &chrome(vec![])));
+        let accent = f.palette.ui_accent.rgba(1.0);
+        let marked = c.layer(Layer::Text).iter().filter(|i| i.kind != 0 && i.color == accent).count();
+        assert_eq!(marked, 4, "9:14");
     }
 
     #[test]
-    fn a_bookmarked_row_gets_an_icon_in_the_gutter_and_no_tint() {
+    fn a_bookmark_is_a_bar_under_the_times_first_character_or_in_the_padding() {
         let Some(mut c) = Canvas::new() else { return };
         let t = term("ab\r\ncd");
         let f = Fixture::new();
-        let v = View { padding: 6.0, gutter: 60.0, bookmarks: &[1], ..f.view() };
-        let (mut cw, mut ch) = (0.0, 0.0);
-        c.paint(400.0, 300.0, |p| {
-            (cw, ch) = (p.cell.width, p.cell.height);
-            draw(p, &t, &v, &chrome(vec![]));
-        });
-        let accent = f.palette.ui_accent;
-        let (r, g, b) = (accent.rgba(1.0)[0], accent.rgba(1.0)[1], accent.rgba(1.0)[2]);
-        let marks: Vec<_> = c.layer(Layer::Background).iter().filter(|i| i.color[..3] == [r, g, b]).collect();
-        assert!(!marks.is_empty(), "something drawn in the accent colour");
-        // Second row only, in the gutter's first cell: below the tab bar
-        // (30), the padding and row 0.
-        let row = 30.0 + 6.0 + ch;
-        for i in &marks {
-            assert!(i.pos[1] >= row && i.pos[1] + i.size[1] <= row + ch, "{:?}", i.pos);
-            assert!(i.pos[0] >= 6.0 && i.pos[0] + i.size[0] <= 6.0 + cw, "{:?} {:?}", i.pos, i.size);
-            assert_eq!(i.color[3], 1.0, "solid");
+        let accent = f.palette.ui_accent.rgba(1.0);
+        let mut cw = 0.0;
+        for gutter in [0.0, 60.0] {
+            let v = View { padding: 6.0, gutter, bookmarks: &[1], ..f.view() };
+            c.paint(400.0, 300.0, |p| {
+                cw = p.cell.width;
+                draw(p, &t, &v, &chrome(vec![]))
+            });
+            let marks: Vec<_> = c.layer(Layer::Background).iter().filter(|i| i.color == accent).collect();
+            assert_eq!(marks.len(), 1, "gutter {gutter}");
+            let (x, w) = (marks[0].pos[0], marks[0].size[0]);
+            if gutter > 0.0 {
+                // Inside the first character cell, which starts at 2.
+                assert!(x >= 2.0 && x + w <= 2.0 + cw, "{x} {w}");
+            } else {
+                assert!(x == 0.0 && w < 6.0);
+            }
         }
     }
 
     #[test]
-    fn without_a_gutter_a_bookmark_is_a_bar_in_the_padding() {
+    fn a_jumped_to_line_is_highlighted_across_its_rows() {
         let Some(mut c) = Canvas::new() else { return };
-        let t = term("ab\r\ncd");
+        let t = term("ab\r\ncd\r\nef");
         let f = Fixture::new();
-        let v = View { padding: 6.0, bookmarks: &[1], ..f.view() };
-        c.paint(400.0, 300.0, |p| draw(p, &t, &v, &chrome(vec![])));
-        let accent = f.palette.ui_accent.rgba(1.0);
-        let marks: Vec<_> = c.layer(Layer::Background).iter().filter(|i| i.color == accent).collect();
+        let v = View { padding: 6.0, flash: Some((1..3, 0.5)), ..f.view() };
+        let mut ch = 0.0;
+        c.paint(400.0, 300.0, |p| {
+            ch = p.cell.height;
+            draw(p, &t, &v, &chrome(vec![]))
+        });
+        let band = f.palette.ui_accent.rgba(0.15);
+        let marks: Vec<_> = c.layer(Layer::Background).iter().filter(|i| i.color == band).collect();
         assert_eq!(marks.len(), 1);
-        assert!(marks[0].pos[0] == 0.0 && marks[0].size[0] < 6.0);
+        assert_eq!((marks[0].pos[1], marks[0].size[1]), (30.0 + 6.0 + ch, 2.0 * ch));
     }
 
     #[test]

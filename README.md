@@ -157,7 +157,7 @@ it.
 ### Times beside the output
 
 The left margin shows, for each command, the local time you ran it, and for
-each line of its output how long after that it appeared (`HH:MM:SS`). This
+each line of its output how many seconds after that it appeared. This
 makes it easy to see what was slow in a long build or log.
 
 In Options → General you can switch the margin to line numbers counted from
@@ -166,7 +166,7 @@ the start of the tab, or turn it off.
 ### Bookmarks
 
 Right-click a line, or its time, and choose **Add bookmark**, or press
-**Ctrl+Shift+B**. A bookmark icon appears beside the line's time, and the
+**Ctrl+Shift+B**. A bar appears at the left edge and the line's time turns the accent colour; the
 line stays marked as more output arrives. **Ctrl+Shift+↑ / ↓** jump between a tab's bookmarks.
 
 ![Two bookmarked lines, tinted, in a C file](docs/bookmarks.png)
