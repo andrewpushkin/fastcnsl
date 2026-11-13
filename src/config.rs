@@ -408,6 +408,25 @@ fn portable_dir() -> Option<PathBuf> {
     dir.join(PORTABLE_MARKER).is_file().then_some(dir)
 }
 
+/// A portable copy without settings of its own starts from the user's
+/// (`from`, the %APPDATA% file earlier zips used): copies it to `to` once,
+/// leaving the original. Returns whether it copied.
+fn seed_portable_config(to: &Path, from: Option<&Path>) -> bool {
+    let Some(from) = from.filter(|f| f.is_file()) else {
+        return false;
+    };
+    if to.exists() {
+        return false;
+    }
+    match std::fs::copy(from, to) {
+        Ok(_) => true,
+        Err(e) => {
+            log::warn!("could not copy {} to {}: {e}", from.display(), to.display());
+            false
+        }
+    }
+}
+
 impl Config {
     /// The settings file: $FASTCNSL_CONFIG if set; else, for a portable
     /// Windows copy (a `portable` file next to the exe), config.toml in the
@@ -422,6 +441,12 @@ impl Config {
         let Some(path) = Self::path() else {
             return Self::default();
         };
+        if portable_dir().is_some_and(|d| path == d.join("config.toml")) {
+            let user = config_path_from(None, None, dirs::config_dir());
+            if seed_portable_config(&path, user.as_deref()) {
+                log::info!("portable copy: started from the settings in {}", user.unwrap_or_default().display());
+            }
+        }
         match Self::load(&path) {
             Ok(Some(cfg)) => cfg,
             Ok(None) => {
@@ -631,6 +656,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn portable_copy_starts_from_the_users_settings() {
+        let dir = temp_dir("seed");
+        let (from, to) = (dir.join("appdata.toml"), dir.join("portable.toml"));
+        std::fs::write(&from, "font_size = 19.0\n").unwrap();
+        assert!(seed_portable_config(&to, Some(&from)));
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "font_size = 19.0\n");
+        assert!(from.exists(), "copied, not moved");
+    }
+
+    #[test]
+    fn portable_copy_keeps_its_own_settings() {
+        let dir = temp_dir("seed-keep");
+        let (from, to) = (dir.join("appdata.toml"), dir.join("portable.toml"));
+        std::fs::write(&from, "font_size = 19.0\n").unwrap();
+        std::fs::write(&to, "font_size = 11.0\n").unwrap();
+        assert!(!seed_portable_config(&to, Some(&from)));
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "font_size = 11.0\n");
+    }
+
+    #[test]
+    fn portable_copy_without_user_settings_stays_empty() {
+        let dir = temp_dir("seed-none");
+        let to = dir.join("portable.toml");
+        assert!(!seed_portable_config(&to, Some(&dir.join("missing.toml"))));
+        assert!(!seed_portable_config(&to, None));
+        assert!(!to.exists());
     }
 
     #[test]

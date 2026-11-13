@@ -311,7 +311,8 @@ Everything in Options is saved to a settings file, created on first start.
 
 - Windows: `%APPDATA%\fastcnsl\config.toml`
 - Windows, portable zip: `config.toml` next to `fastcnsl.exe`, as long as
-  the file `portable` is there (delete it to use `%APPDATA%`)
+  the file `portable` is there (delete it to use `%APPDATA%`). On first
+  start it begins with a copy of your `%APPDATA%` settings, if you have any
 - macOS: `~/Library/Application Support/fastcnsl/config.toml`
 - Linux: `~/.config/fastcnsl/config.toml`
 
