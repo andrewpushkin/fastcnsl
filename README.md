@@ -200,9 +200,12 @@ Options, or press Ctrl+Shift+L to switch.
 ### Options
 
 Open Options from the **⋮** menu or with **Ctrl+Shift+,**. The General page
-sets theme, font size, code highlighting, the time and line number margin
-and the graphics mode. On the Keyboard shortcuts page you can change any
-shortcut. Changes take effect at once and are remembered.
+sets theme, code highlighting, the time and line number margin and the
+graphics mode. The Font page picks the font from the monospace fonts
+installed (click one, or step through them with ↑ and ↓) and sets its size,
+the line height, whether bold text also turns bright, and on Windows the
+text smoothing (ClearType or grayscale). On the Keyboard shortcuts page you
+can change any shortcut. Changes take effect at once and are remembered.
 
 | General | Keyboard shortcuts |
 |---|---|

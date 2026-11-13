@@ -440,6 +440,23 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
             p.icon(Layer::OverlayText, c, br.x + br.w / 2.0, br.y + br.h / 2.0, fg.rgba(1.0));
             continue;
         }
+        if btn.style == ButtonStyle::Item {
+            let (bg, fg) = if btn.active {
+                (Some(pal.ui_accent), Rgb::hex(0xffffff))
+            } else if hovered {
+                (Some(pal.ui_dim.mix(pal.ui_bg, 0.5)), pal.foreground)
+            } else {
+                (None, pal.ui_fg)
+            };
+            if let Some(bg) = bg {
+                p.rounded(Layer::OverlayShapes, br.x, br.y, br.w, br.h, m.scale * 4.0, bg.rgba(1.0));
+            }
+            let room = (br.w / m.cw).floor().max(0.0) as usize;
+            let text: String = btn.label.chars().take(room.saturating_sub(2)).collect();
+            let ty = (br.y + (br.h - m.ch) / 2.0).round();
+            p.text(Layer::OverlayText, &text, br.x + m.cw, ty, fg.rgba(1.0));
+            continue;
+        }
         let (bg, fg) = if btn.active {
             (pal.ui_accent, Rgb::hex(0xffffff))
         } else if hovered {
@@ -1182,12 +1199,17 @@ mod tests {
         let m = Metrics { width: 900.0, height: 700.0, scale: 1.0, cw: 8.0, ch: 17.0 };
         let opts = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::General, theme: ThemeMode::System, font_size: 11.0, font_family: "X".into(), code_highlight: true, gpu: crate::config::GpuBackend::Auto, gpu_pending: false, keys: Keymap::default(), capturing: None, ..OptionsState::default() }, (0.0, 0.0));
         let about = about_panel(&m, "gpu", "300 ms", "/cfg", (0.0, 0.0));
-        for panel in [&opts, &about] {
+        let families: Vec<String> = ["Mono A", "Mono B", "Mono C"].map(String::from).into();
+        let font = options_panel(&m, &OptionsState { page: crate::chrome::OptionsPage::Font, font_in_use: "Mono B".into(), font_family: "Mono B".into(), font_families: families.into(), ..OptionsState::default() }, (0.0, 0.0));
+        for panel in [&opts, &about, &font] {
             let mut ch = chrome(vec!["Tab 1"]);
             ch.panel = Some(panel);
             c.paint(900.0, 700.0, |p| draw(p, &t, &f.view(), &ch));
-            // Dimmed backdrop + panel + border + buttons.
-            assert!(c.layer(Layer::OverlayShapes).len() >= 3 + panel.buttons.len());
+            // Dimmed backdrop + panel + border + the buttons with a
+            // background (page tabs and list rows only when chosen).
+            use crate::chrome::ButtonStyle;
+            let backed = panel.buttons.iter().filter(|b| b.active || !matches!(b.style, ButtonStyle::Tab | ButtonStyle::Item)).count();
+            assert!(c.layer(Layer::OverlayShapes).len() >= 3 + backed);
             assert!(c.glyph_count(Layer::OverlayText) > 20);
         }
     }

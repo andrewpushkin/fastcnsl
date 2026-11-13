@@ -5,7 +5,9 @@
 //! draws from the layout and the app hit-tests clicks against the same
 //! layout, so they never disagree.
 
-use crate::config::{GpuBackend, LineNumbers, ThemeMode};
+use std::sync::Arc;
+
+use crate::config::{Antialiasing, GpuBackend, LineNumbers, ThemeMode};
 use crate::shortcuts::{Command, Keymap};
 use crate::shortcuts;
 use crate::ui::Rect;
@@ -29,6 +31,12 @@ pub enum Action {
     OpenReleases,
     FontBigger,
     FontSmaller,
+    /// Options → Font: use family N of `OptionsState::font_families`.
+    FontFamily(usize),
+    /// Line height 0.1 taller (true) or shorter.
+    LineHeight(bool),
+    BoldIsBright(bool),
+    Antialiasing(Antialiasing),
     CodeHighlight(bool),
     LineNumbers(LineNumbers),
     /// Switch the Options panel to this page.
@@ -67,6 +75,7 @@ pub enum Action {
 pub enum OptionsPage {
     #[default]
     General,
+    Font,
     Shortcuts,
     Logging,
 }
@@ -388,6 +397,9 @@ pub enum ButtonStyle {
     /// A small one-character button with no background until hovered;
     /// `active` draws it in the accent colour.
     Icon,
+    /// A row of a list: left-aligned text, a background only when chosen
+    /// or hovered.
+    Item,
 }
 
 pub struct Panel {
@@ -398,6 +410,40 @@ pub struct Panel {
     pub rules: Vec<Rect>,
     pub buttons: Vec<Button>,
     pub lines: Vec<TextLine>,
+    /// The scrolling list on the page, if it has one.
+    pub list: Option<ListView>,
+}
+
+/// Which part of a scrolling list a panel shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListView {
+    /// The rows, for the mouse wheel.
+    pub rect: Rect,
+    /// Index of the first row shown.
+    pub first: usize,
+    /// How many rows fit.
+    pub rows: usize,
+    /// How many items there are.
+    pub len: usize,
+}
+
+impl ListView {
+    /// The first row to show for the list to move by `delta` rows
+    /// (negative: up), kept inside it.
+    pub fn scrolled(&self, delta: i64) -> usize {
+        (self.first as i64 + delta).clamp(0, self.len.saturating_sub(self.rows) as i64) as usize
+    }
+
+    /// The first row to show for item `i` to be in view.
+    pub fn revealing(&self, i: usize) -> usize {
+        if i < self.first {
+            i
+        } else if i >= self.first + self.rows {
+            i + 1 - self.rows.max(1)
+        } else {
+            self.first
+        }
+    }
 }
 
 impl Panel {
@@ -417,6 +463,7 @@ struct PanelBuilder<'a> {
     rules: Vec<Rect>,
     buttons: Vec<Button>,
     lines: Vec<TextLine>,
+    list: Option<ListView>,
 }
 
 impl<'a> PanelBuilder<'a> {
@@ -440,6 +487,7 @@ impl<'a> PanelBuilder<'a> {
             rules: Vec::new(),
             buttons: Vec::new(),
             lines: Vec::new(),
+            list: None,
         }
     }
 
@@ -449,7 +497,43 @@ impl<'a> PanelBuilder<'a> {
 
     /// True if `n` more rows fit inside the panel.
     fn fits_rows(&self, n: usize) -> bool {
-        self.y + n as f32 * self.row_h <= self.rect.y + self.rect.h - self.pad + 1.0
+        self.rows_left() >= n
+    }
+
+    /// How many more rows fit inside the panel.
+    fn rows_left(&self) -> usize {
+        ((self.rect.y + self.rect.h - self.pad + 1.0 - self.y) / self.row_h).max(0.0).floor() as usize
+    }
+
+    /// A scrolling list of `items` filling the rest of the panel, from
+    /// item `first` (moved back if that leaves rows empty), with item
+    /// `chosen` lit; clicking item i performs `action(i)`.
+    fn list(&mut self, items: &[String], first: usize, chosen: Option<usize>, action: impl Fn(usize) -> Action) {
+        let rows = self.rows_left();
+        if rows == 0 {
+            return;
+        }
+        let first = first.min(items.len().saturating_sub(rows));
+        let top = self.y;
+        let bar = self.m.px(4.0);
+        let w = self.rect.w - 2.0 * self.pad - bar - self.m.px(4.0);
+        for (i, name) in items.iter().enumerate().skip(first).take(rows) {
+            let rect = Rect { x: self.left(), y: self.y + self.m.px(1.0), w, h: self.row_h - self.m.px(2.0) };
+            self.buttons.push(Button { rect, label: name.clone(), action: action(i), active: chosen == Some(i), style: ButtonStyle::Item });
+            self.next();
+        }
+        let shown = rows.min(items.len());
+        let h = shown as f32 * self.row_h;
+        if items.len() > rows {
+            // A scrollbar thumb at the right.
+            let x = self.rect.x + self.rect.w - self.pad - bar;
+            let len = items.len() as f32;
+            let thumb = (h * rows as f32 / len).max(self.m.px(16.0)).min(h);
+            let y = top + (h - thumb) * first as f32 / (len - rows as f32);
+            self.rules.push(Rect { x, y: y.round(), w: bar, h: thumb.round() });
+        }
+        let rect = Rect { x: self.rect.x, y: top, w: self.rect.w, h };
+        self.list = Some(ListView { rect, first, rows, len: items.len() });
     }
 
     fn text(&mut self, col: f32, text: impl Into<String>, style: TextStyle) {
@@ -518,7 +602,7 @@ impl<'a> PanelBuilder<'a> {
     }
 
     fn finish(self) -> Panel {
-        Panel { rect: self.rect, header: self.header, rules: self.rules, buttons: self.buttons, lines: self.lines }
+        Panel { rect: self.rect, header: self.header, rules: self.rules, buttons: self.buttons, lines: self.lines, list: self.list }
     }
 }
 
@@ -540,6 +624,23 @@ pub struct OptionsState {
     pub log_folder: String,
     pub log_new_tabs: bool,
     pub log_timestamps: bool,
+    /// Options → Font: the installed monospace families, the first one
+    /// the list shows, and the family drawn (the one asked for may not be
+    /// installed).
+    pub font_families: Arc<[String]>,
+    pub font_scroll: usize,
+    pub font_in_use: String,
+    pub line_height: f32,
+    pub bold_is_bright: bool,
+    pub antialiasing: Antialiasing,
+}
+
+impl OptionsState {
+    /// Where the family in use is in `font_families`.
+    pub fn font_index(&self) -> Option<usize> {
+        let find = |name: &str| self.font_families.iter().position(|f| f.eq_ignore_ascii_case(name));
+        find(&self.font_family).or_else(|| find(&self.font_in_use))
+    }
 }
 
 impl Default for OptionsState {
@@ -558,6 +659,12 @@ impl Default for OptionsState {
             log_folder: String::new(),
             log_new_tabs: false,
             log_timestamps: false,
+            font_families: Vec::new().into(),
+            font_scroll: 0,
+            font_in_use: String::new(),
+            line_height: 1.2,
+            bold_is_bright: false,
+            antialiasing: Antialiasing::Auto,
         }
     }
 }
@@ -582,6 +689,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
     b.header("Options");
 
     let c = b.tab(0.0, "General", Action::OptionsPage(OptionsPage::General), s.page == OptionsPage::General);
+    let c = b.tab(c, "Font", Action::OptionsPage(OptionsPage::Font), s.page == OptionsPage::Font);
     let c = b.tab(c, "Keyboard shortcuts", Action::OptionsPage(OptionsPage::Shortcuts), s.page == OptionsPage::Shortcuts);
     b.tab(c, "Logging", Action::OptionsPage(OptionsPage::Logging), s.page == OptionsPage::Logging);
     if s.page == OptionsPage::Shortcuts {
@@ -616,11 +724,9 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 b.next();
             }
             if b.fits_rows(1) {
-                b.text(0.0, "Font size", TextStyle::Normal);
-                let c = b.button(label_w, "−", Action::FontSmaller, false);
-                b.text(c, format!("{:>4}", s.font_size), TextStyle::Normal);
-                let c = b.button(c + 5.0, "+", Action::FontBigger, false);
-                b.text(c, &s.font_family, TextStyle::Dim);
+                b.text(0.0, "Font", TextStyle::Normal);
+                let label = format!("{}, {} pt", s.font_in_use, s.font_size);
+                b.button(label_w, &label, Action::OptionsPage(OptionsPage::Font), false);
                 b.next();
             }
             if b.fits_rows(1) {
@@ -660,6 +766,7 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
                 b.next();
             }
         }
+        OptionsPage::Font => font_page(&mut b, s),
         OptionsPage::Shortcuts => {
             b.dense();
             for cmd in Command::ALL {
@@ -734,6 +841,66 @@ pub fn options_panel(m: &Metrics, s: &OptionsState, offset: (f32, f32)) -> Panel
         }
     }
     b.finish()
+}
+
+/// Options → Font: size, line height, bold, smoothing, and the list of
+/// installed monospace fonts. Every change applies at once, so the
+/// terminal behind the panel (and the panel itself) shows it.
+fn font_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
+    let label_w = 20.0;
+    // Smoothing: sub-pixel text is drawn on Windows only.
+    let smoothing = cfg!(windows);
+    let compact = !b.fits_rows(if smoothing { 11 } else { 10 });
+    if !compact {
+        b.text(0.0, "TEXT", TextStyle::Dim);
+        b.next();
+    }
+    if b.fits_rows(1) {
+        b.text(0.0, "Size", TextStyle::Normal);
+        let c = b.button(label_w, "−", Action::FontSmaller, false);
+        b.text(c, format!("{:>4}", s.font_size), TextStyle::Normal);
+        let c = b.button(c + 5.0, "+", Action::FontBigger, false);
+        b.text(c, "points", TextStyle::Dim);
+        b.next();
+    }
+    if b.fits_rows(1) {
+        b.text(0.0, "Line height", TextStyle::Normal);
+        let c = b.button(label_w, "−", Action::LineHeight(false), false);
+        b.text(c, format!("{:>4}", s.line_height), TextStyle::Normal);
+        let c = b.button(c + 5.0, "+", Action::LineHeight(true), false);
+        b.text(c, "× the font size", TextStyle::Dim);
+        b.next();
+    }
+    if b.fits_rows(1) {
+        b.text(0.0, "Bold text", TextStyle::Normal);
+        let c = b.button(label_w, "Bold", Action::BoldIsBright(false), !s.bold_is_bright);
+        b.button(c, "Bold and bright", Action::BoldIsBright(true), s.bold_is_bright);
+        b.next();
+    }
+    if smoothing && b.fits_rows(1) {
+        b.text(0.0, "Smoothing", TextStyle::Normal);
+        let mut c = label_w;
+        for (name, aa) in [("Auto", Antialiasing::Auto), ("ClearType", Antialiasing::Subpixel), ("Grayscale", Antialiasing::Grayscale)] {
+            c = b.button(c, name, Action::Antialiasing(aa), s.antialiasing == aa);
+        }
+        b.next();
+    }
+    if !b.fits_rows(2) {
+        return;
+    }
+    if !compact {
+        b.gap();
+    }
+    b.text(0.0, "FAMILY", TextStyle::Dim);
+    let chosen = s.font_index();
+    if !s.font_family.eq_ignore_ascii_case(&s.font_in_use) {
+        b.text(label_w, format!("{} is not installed: using {}", s.font_family, s.font_in_use), TextStyle::Dim);
+    } else {
+        b.text(label_w, "↑ ↓ pick the previous or next one", TextStyle::Dim);
+    }
+    b.next();
+    b.dense();
+    b.list(&s.font_families, s.font_scroll, chosen, Action::FontFamily);
 }
 
 pub fn about_panel(m: &Metrics, gpu: &str, startup: &str, config_path: &str, offset: (f32, f32)) -> Panel {
@@ -1002,6 +1169,79 @@ mod tests {
         assert!(p.buttons.iter().all(|b| b.rect.x + b.rect.w <= p.rect.x + p.rect.w), "inside the panel");
         let general = options_panel(&m(), &OptionsState::default(), (0.0, 0.0));
         assert_eq!(p.rect, general.rect, "same size as the other pages");
+    }
+
+    fn font_state(n: usize) -> OptionsState {
+        let families: Vec<String> = (0..n).map(|i| format!("Mono {i:02}")).collect();
+        OptionsState {
+            page: OptionsPage::Font,
+            font_family: "Mono 05".into(),
+            font_in_use: "Mono 05".into(),
+            font_families: families.into(),
+            ..OptionsState::default()
+        }
+    }
+
+    #[test]
+    fn font_page_lists_the_families_and_lights_the_one_in_use() {
+        let s = font_state(4);
+        let p = options_panel(&m(), &OptionsState { font_family: "mono 02".into(), font_in_use: "Mono 02".into(), ..s }, (0.0, 0.0));
+        let items: Vec<&Button> = p.buttons.iter().filter(|b| b.style == ButtonStyle::Item).collect();
+        assert_eq!(items.iter().map(|b| b.label.as_str()).collect::<Vec<_>>(), ["Mono 00", "Mono 01", "Mono 02", "Mono 03"]);
+        assert_eq!(items.iter().map(|b| b.action).collect::<Vec<_>>(), (0..4).map(Action::FontFamily).collect::<Vec<_>>());
+        assert!(items[2].active && items.iter().filter(|b| b.active).count() == 1, "case doesn't matter");
+        let list = p.list.expect("a list");
+        assert_eq!((list.first, list.len), (0, 4));
+        assert!(items.iter().all(|b| list.rect.contains(b.rect.x + 1.0, b.rect.y + 1.0)));
+        for a in [Action::FontBigger, Action::FontSmaller, Action::LineHeight(true), Action::LineHeight(false), Action::BoldIsBright(true)] {
+            assert!(p.buttons.iter().any(|b| b.action == a), "{a:?}");
+        }
+        assert!(p.buttons.iter().any(|b| b.action == Action::BoldIsBright(false) && b.active));
+        assert!(p.buttons.iter().all(|b| b.rect.y + b.rect.h <= p.rect.y + p.rect.h), "inside the panel");
+        assert_eq!(p.rect, options_panel(&m(), &OptionsState::default(), (0.0, 0.0)).rect, "same size as the other pages");
+    }
+
+    #[test]
+    fn a_long_font_list_scrolls_and_stays_inside_the_panel() {
+        let s = OptionsState { font_scroll: 1000, ..font_state(200) };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        let list = p.list.unwrap();
+        assert!(list.rows > 3 && list.rows < 200);
+        assert_eq!(list.first, 200 - list.rows, "scrolled no further than the last row");
+        let items: Vec<&Button> = p.buttons.iter().filter(|b| b.style == ButtonStyle::Item).collect();
+        assert_eq!(items.len(), list.rows);
+        assert_eq!(items.last().unwrap().label, "Mono 199");
+        assert!(items.iter().all(|b| b.rect.y + b.rect.h <= p.rect.y + p.rect.h));
+        // The wheel and the keys move the view inside the list.
+        assert_eq!(list.scrolled(-3), list.first - 3);
+        assert_eq!(list.scrolled(10), list.first);
+        assert_eq!(ListView { first: 2, ..list }.scrolled(-5), 0);
+        let top = ListView { first: 0, ..list };
+        assert_eq!(top.revealing(1), 0, "already shown");
+        assert_eq!(top.revealing(list.rows), 1, "one past the bottom");
+        assert_eq!(ListView { first: 50, ..list }.revealing(10), 10);
+        // A scrollbar thumb, as a rule inside the list.
+        assert!(p.rules.iter().any(|r| r.y >= list.rect.y && r.y + r.h <= list.rect.y + list.rect.h + 1.0 && r.h > 1.0));
+    }
+
+    #[test]
+    fn font_page_says_when_the_font_asked_for_is_missing() {
+        let s = OptionsState { font_family: "Nope Mono".into(), ..font_state(10) };
+        assert_eq!(s.font_index(), Some(5), "the fallback in use is lit");
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("Nope Mono is not installed")));
+        let small = Metrics { width: 500.0, height: 260.0, ..m() };
+        let p = options_panel(&small, &font_state(50), (0.0, 0.0));
+        assert!(p.buttons.iter().all(|b| b.rect.y + b.rect.h <= p.rect.y + p.rect.h), "small window: nothing below the panel");
+        assert!(p.lines.iter().all(|l| l.y + small.ch <= p.rect.y + p.rect.h));
+    }
+
+    #[test]
+    fn general_page_links_to_the_font_page() {
+        let p = options_panel(&m(), &OptionsState { font_in_use: "Mono".into(), font_size: 12.0, ..OptionsState::default() }, (0.0, 0.0));
+        let b = p.buttons.iter().find(|b| b.style == ButtonStyle::Normal && b.action == Action::OptionsPage(OptionsPage::Font)).unwrap();
+        assert_eq!(b.label, "Mono, 12 pt");
+        assert!(p.list.is_none());
     }
 
     #[test]

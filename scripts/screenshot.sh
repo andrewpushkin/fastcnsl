@@ -89,8 +89,10 @@ xdotool key Escape
 
 xdotool key ctrl+shift+comma
 shot options
-# The "Keyboard shortcuts" tab, right of "General".
-click 350 81
+# The "Font" tab, right of "General", then "Keyboard shortcuts" after it.
+click 295 81
+shot font
+click 420 81
 shot shortcuts
 # Drag the panel by its title strip.
 xdotool mousemove --window "$WIN" 400 40 mousedown 1
@@ -114,7 +116,7 @@ xdotool key Escape
 
 # Rebind "New tab" to Alt+N in Options, then use it.
 xdotool key ctrl+shift+comma
-click 350 81
+click 420 81
 click 430 121
 xdotool key alt+n
 shot shortcut_changed
@@ -135,9 +137,9 @@ shot tab_logging
 click 100 15 3
 xdotool key Down Down Return
 shot tab_saved
-# Options → Logging, the third page.
+# Options → Logging, the fourth page.
 xdotool key ctrl+shift+comma
-click 483 81
+click 560 81
 shot options_logging
 xdotool key Escape
 

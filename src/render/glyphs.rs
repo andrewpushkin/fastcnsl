@@ -363,8 +363,9 @@ impl GlyphCache {
         })
     }
 
-    /// Names of installed monospace font families, for the settings help.
-    #[allow(dead_code)]
+    /// Names of the installed monospace font families, in alphabetical
+    /// order, with the family in use among them (for Options → Font).
+    /// Hidden system fonts (macOS names them with a leading dot) are left out.
     pub fn monospace_families(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .font_system
@@ -372,10 +373,17 @@ impl GlyphCache {
             .faces()
             .filter(|f| f.monospaced)
             .filter_map(|f| f.families.first().map(|(n, _)| n.clone()))
+            .filter(|n| !n.starts_with('.'))
             .collect();
-        v.sort();
-        v.dedup();
+        v.push(self.family.clone());
+        v.sort_by_key(|n| n.to_lowercase());
+        v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         v
+    }
+
+    /// The family drawn: the one asked for, or the fallback for it.
+    pub fn family(&self) -> &str {
+        &self.family
     }
 }
 

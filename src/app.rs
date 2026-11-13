@@ -274,6 +274,10 @@ struct State {
     startup: String,
     /// The page the Options panel shows.
     options_page: OptionsPage,
+    /// Options → Font: the installed monospace families (read when the
+    /// page opens) and the first one its list shows.
+    font_families: std::sync::Arc<[String]>,
+    font_scroll: usize,
     /// Graphics API asked for at startup (it changes only on a restart).
     gpu_started: GpuBackend,
     frames: FrameStats,
@@ -494,6 +498,8 @@ impl App {
             cursor: CursorIcon::Text,
             startup: String::new(),
             options_page: OptionsPage::General,
+            font_families: Vec::new().into(),
+            font_scroll: 0,
             gpu_started: self.gpu_override.unwrap_or(cfg.gpu),
             frames: FrameStats::new(),
             panel_offset: (0.0, 0.0),
@@ -582,6 +588,10 @@ impl App {
             action,
             Action::FontBigger
                 | Action::FontSmaller
+                | Action::FontFamily(_)
+                | Action::LineHeight(_)
+                | Action::BoldIsBright(_)
+                | Action::Antialiasing(_)
                 | Action::CodeHighlight(_)
                 | Action::LineNumbers(_)
                 | Action::LogNewTabs(_)
@@ -629,6 +639,20 @@ impl App {
                 let size = (self.cfg.font_size - 1.0).max(4.0);
                 self.change_config(|c| c.font_size = size);
             }
+            Action::FontFamily(i) => {
+                let Some(name) = st.font_families.get(i).cloned() else { return };
+                self.change_config(|c| c.font_family = name);
+                if let Some(st) = self.state.as_mut() {
+                    st.reveal_font(&self.cfg, i);
+                }
+            }
+            Action::LineHeight(taller) => {
+                let tenths = (self.cfg.line_height * 10.0).round() + if taller { 1.0 } else { -1.0 };
+                let height = (tenths / 10.0).clamp(0.8, 3.0);
+                self.change_config(|c| c.line_height = height);
+            }
+            Action::BoldIsBright(on) => self.change_config(|c| c.bold_is_bright = on),
+            Action::Antialiasing(aa) => self.change_config(|c| c.antialiasing = aa),
             Action::CodeHighlight(on) => self.change_config(|c| c.code_highlight = on),
             Action::LineNumbers(mode) => self.change_config(|c| c.line_numbers = mode),
             Action::LogNewTabs(on) => self.change_config(|c| c.log_new_tabs = on),
@@ -698,6 +722,9 @@ impl App {
             Action::OptionsPage(page) => {
                 st.options_page = page;
                 st.capturing = None;
+                if page == OptionsPage::Font {
+                    st.open_font_page(&self.cfg);
+                }
             }
         }
     }
@@ -1141,6 +1168,45 @@ impl State {
         self.resize_grid(cfg);
     }
 
+    /// Options → Font opens: reads the installed families and scrolls the
+    /// list to the one in use, a few rows from the top.
+    fn open_font_page(&mut self, cfg: &Config) {
+        self.font_families = self.renderer.glyphs.monospace_families().into();
+        let i = self.options_state(cfg).font_index().unwrap_or(0);
+        self.font_scroll = i.saturating_sub(3);
+    }
+
+    /// Scrolls the font list so family `i` is in view.
+    fn reveal_font(&mut self, cfg: &Config, i: usize) {
+        if let Some(list) = self.panel(cfg).and_then(|p| p.list) {
+            self.font_scroll = list.revealing(i);
+        }
+    }
+
+    fn options_state(&self, cfg: &Config) -> OptionsState {
+        OptionsState {
+            page: self.options_page,
+            theme: self.theme_mode,
+            font_size: cfg.font_size,
+            font_family: cfg.font_family.clone(),
+            code_highlight: cfg.code_highlight,
+            gpu: cfg.gpu,
+            gpu_pending: cfg.gpu != self.gpu_started,
+            keys: self.keymap.clone(),
+            capturing: self.capturing,
+            line_numbers: cfg.line_numbers,
+            log_folder: logging::display_path(&cfg.log_dir()),
+            log_new_tabs: cfg.log_new_tabs,
+            log_timestamps: cfg.log_timestamps,
+            font_families: self.font_families.clone(),
+            font_scroll: self.font_scroll,
+            font_in_use: self.renderer.glyphs.family().to_owned(),
+            line_height: cfg.line_height,
+            bold_is_bright: cfg.bold_is_bright,
+            antialiasing: cfg.antialiasing,
+        }
+    }
+
     fn apply_palette(&mut self, cfg: &Config) {
         self.palette = Palette::for_mode(self.theme_mode, self.os_dark);
         let code_theme = if self.palette.dark { &cfg.code_theme_dark } else { &cfg.code_theme_light };
@@ -1156,25 +1222,7 @@ impl State {
     fn panel(&self, cfg: &Config) -> Option<Panel> {
         let m = self.metrics();
         match self.overlay {
-            Overlay::Options => Some(chrome::options_panel(
-                &m,
-                &OptionsState {
-                    page: self.options_page,
-                    theme: self.theme_mode,
-                    font_size: cfg.font_size,
-                    font_family: cfg.font_family.clone(),
-                    code_highlight: cfg.code_highlight,
-                    gpu: cfg.gpu,
-                    gpu_pending: cfg.gpu != self.gpu_started,
-                    keys: self.keymap.clone(),
-                    capturing: self.capturing,
-                    line_numbers: cfg.line_numbers,
-                    log_folder: logging::display_path(&cfg.log_dir()),
-                    log_new_tabs: cfg.log_new_tabs,
-                    log_timestamps: cfg.log_timestamps,
-                },
-                self.panel_offset,
-            )),
+            Overlay::Options => Some(chrome::options_panel(&m, &self.options_state(cfg), self.panel_offset)),
             Overlay::About => {
                 let path = Config::path().map(|p| p.display().to_string()).unwrap_or_default();
                 Some(chrome::about_panel(&m, &self.renderer.gpu, &self.startup, &path, self.panel_offset))
@@ -1454,6 +1502,26 @@ impl State {
                 self.capturing = None;
                 self.pending_keys = Some(table);
                 return Some(Action::ApplyKeys);
+            }
+            Overlay::Options if self.options_page == OptionsPage::Font => {
+                // ↑ ↓ pick the previous or next font; Esc and Enter close.
+                let down = match event.logical_key {
+                    Key::Named(NamedKey::ArrowUp) => false,
+                    Key::Named(NamedKey::ArrowDown) => true,
+                    Key::Named(NamedKey::Escape | NamedKey::Enter) => {
+                        self.overlay = Overlay::None;
+                        self.window.request_redraw();
+                        return None;
+                    }
+                    _ => return None,
+                };
+                let len = self.font_families.len();
+                let next = match self.options_state(cfg).font_index() {
+                    Some(i) if down => (i + 1).min(len.saturating_sub(1)),
+                    Some(i) => i.saturating_sub(1),
+                    None => 0,
+                };
+                return (len > 0).then_some(Action::FontFamily(next));
             }
             Overlay::Options | Overlay::About => {
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter)) {
@@ -1998,10 +2066,8 @@ impl State {
         None
     }
 
-    fn on_wheel(&mut self, cfg: &Config, delta: MouseScrollDelta) {
-        if !matches!(self.overlay, Overlay::None) || self.mouse.1 < self.top() {
-            return;
-        }
+    /// Whole lines the wheel has turned, keeping the fraction for next time.
+    fn wheel_lines(&mut self, delta: MouseScrollDelta) -> Option<i32> {
         let cell_h = self.renderer.cell().height;
         let lines = match delta {
             MouseScrollDelta::LineDelta(_, y) => y * 3.0,
@@ -2010,9 +2076,34 @@ impl State {
         self.wheel_accum += lines;
         let whole = self.wheel_accum.trunc() as i32;
         if whole == 0 {
-            return;
+            return None;
         }
         self.wheel_accum -= whole as f32;
+        Some(whole)
+    }
+
+    /// The wheel over the Options panel scrolls its list (Font page).
+    fn wheel_panel_list(&mut self, cfg: &Config, delta: MouseScrollDelta) {
+        let Some(list) = self.panel(cfg).and_then(|p| p.list) else { return };
+        let Some(whole) = self.wheel_lines(delta) else { return };
+        let first = list.scrolled(-i64::from(whole));
+        if first != list.first {
+            self.font_scroll = first;
+            // The rows moved under the pointer.
+            self.hover = self.chrome_hover(cfg, self.mouse.0, self.mouse.1);
+            self.window.request_redraw();
+        }
+    }
+
+    fn on_wheel(&mut self, cfg: &Config, delta: MouseScrollDelta) {
+        if matches!(self.overlay, Overlay::Options) {
+            self.wheel_panel_list(cfg, delta);
+            return;
+        }
+        if !matches!(self.overlay, Overlay::None) || self.mouse.1 < self.top() {
+            return;
+        }
+        let Some(whole) = self.wheel_lines(delta) else { return };
 
         let offset = self.tab_mut().shown(|t| t.grid().display_offset());
         let (_, _, col, row) = self.mouse_cell(cfg, offset);
