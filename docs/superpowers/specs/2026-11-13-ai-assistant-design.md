@@ -92,7 +92,7 @@ Fix, (2) the chat panel, (3) Autopilot.
 provider = ""          # "openai", "xai", "anthropic" or "custom"; "" = AI off
 model = ""             # as the provider names it
 base_url = ""          # "custom" only, e.g. "http://localhost:11434/v1"
-context_commands = 5   # commands (with output) sent by Fix
+listed_commands = 50   # recent commands listed to the AI (lines only)
 panel_width = 0.4      # chat panel's share of the window
 ```
 
@@ -124,34 +124,77 @@ With no provider set, the AI menu items are shown and open this page.
   gutter did nothing.)
 - The same two items in the terminal's right-click menu, and **AI chat** in
   the ⋮ menu.
+- **Open AI chat** in a tab's right-click menu (the menu on the tab
+  itself), opening the chat panel for that tab.
 - Shortcuts, changeable like the others: `ai_fix` (the last command) and
   `ai_chat` (open the panel or move the focus between it and the terminal).
 
-### What is sent ("the context")
+### What is sent: a list first, output on request
 
-A new module builds the text from `Tab::lines` (the command marks) and the
-tab's history plus live grid, the way `logging::tail_text` reads them:
+Like skills: the AI gets a short list up front and asks for the details it
+needs. Every line is named by its number in the tab, the number the gutter
+shows in "Per tab" mode, so the AI, the user and the bookmarks share one
+numbering.
 
-- The last `context_commands` commands up to the one clicked. Each is its
-  command line and its output up to the next command.
-- Long output keeps its first 50 and last 150 lines, with a line saying how
-  many were left out. The whole context is capped at about 30 000
-  characters, dropping the oldest commands first.
-- The shell's name, the operating system, and the tab's program name.
+**Sent with every request:**
 
-The command line includes the prompt text, because fastcnsl cannot tell
-them apart. The AI is told so.
+- The shell's name, the operating system and the tab's program name.
+- The list of the last `listed_commands` commands, newest last: the
+  command's line number, its time of day, the command line as shown (with
+  the prompt: fastcnsl can't tell them apart, and the AI is told so), how
+  many lines it printed, and the numbers of its bookmarked lines.
+- The text of the tab's bookmarked lines (the 20 most recent), each with
+  its number and the command it belongs to.
+- **The output of the last command, always**, with numbered lines; and the
+  output of the clicked command too when Fix is for an older one. Long
+  output comes as its first 50 and last 150 lines with a line saying how
+  many were left out.
+
+```
+Commands in this tab (newest last):
+  line 1    17:31  dev$ make              2340 lines  bookmarked: 812
+  line 2342 17:38  dev$ echo hello           1 line
+  line 2344 17:38  dev$ tar -xf a.tgz -C     2 lines  <- fix this one
+Bookmarked lines:
+  812 (in line 1): src/x.c:41: error: 'n' undeclared
+--- output of line 2344 ---
+2345 | tar: option requires an argument -- 'C'
+2346 | Try 'tar --help' or 'tar --usage' for more information.
+```
+
+A bookmarked line in sent output is marked `*` after its number.
+
+**Tools the AI has:**
+
+- `get_output(line, from?, to?)`: the output of the command on `line`
+  (numbered). Without `from`/`to`: all of it up to 200 lines, else the
+  first 50 and last 150. With them: that range of the tab's lines, at most
+  300.
+- `add_bookmark(line)`: bookmarks a line the tab has (any line up to the
+  prompt). Bookmarks it sets look like the user's.
+- `propose_command(command, explanation)`: ends the Fix (below).
+
+**Limits.** At most 6 requests per Fix; a seventh tool call ends it with
+"the AI took too many steps". Every request carries the whole conversation
+so far, so a Fix sends at most about 120 000 characters of terminal text in
+all; tool results past that say "limit reached". Tool calls are answered on
+the UI thread (the worker asks through `UserEvent` and waits on a channel,
+as `remote.rs` does), so terminal text is read only where it is today.
 
 ### Fix
 
-1. Build the context and send one request on a new thread. A notice
-   ("Asking Claude… Esc cancels") stays up until the answer. Esc cancels.
-2. The AI answers through a tool, `propose_command(command, explanation)`.
+1. Build the first request and send it on a new thread. A notice
+   ("Asking Claude… Esc cancels") stays up until the answer and says what
+   the AI is reading ("reading the output of line 1"). Esc cancels.
+2. The AI may call `get_output` and `add_bookmark`, then answers through
+   `propose_command(command, explanation)`, or with a sentence if there is
+   nothing to fix.
 3. The command is written to the terminal as a paste without the final
    newline, so it sits at the prompt for the user to read, edit and run.
    Of a multi-line answer only the first command is used (lines ending in
    `\`, `&&`, `||` or `|` continue it). The explanation shows in the
-   notice at the bottom of the window.
+   notice at the bottom of the window, followed by "Bookmarked line N"
+   for each bookmark the AI set.
 
 Fix refuses with a notice when a full-screen program (alt screen) is open.
 If the AI has no command to offer, only the explanation is shown.
@@ -174,12 +217,12 @@ If the AI has no command to offer, only the explanation is shown.
   caret; the other side's caret is hollow. Terminal shortcuts (tabs, find,
   copy) work from either side.
 
-**What the AI knows.** The first message carries the context above (for
-"Ask AI in chat", ending at the clicked command). Every later message
-carries what happened in the terminal since the previous one: the commands
-the user ran themselves and their output, capped the same way.
+**What the AI knows.** As in Fix: every message carries the list of
+recent commands and bookmarked lines and the last command's output (for
+"Ask AI in chat", the clicked command's too); other output on request
+with `get_output`. It can bookmark lines with `add_bookmark`.
 
-**One loop for both modes.** In chat the AI has one tool,
+**One loop for both modes.** In chat the AI also has
 `run_command(command)`. Its result is the command's output.
 
 - Autopilot off: the tool call becomes a card. Run, or Insert followed by
@@ -241,10 +284,11 @@ and gives false comfort. Autopilot is a plain choice to let the AI act.
 
 ### Privacy and safety
 
-- Requests are made only by Fix, a chat message, an Autopilot step, the
-  model list and Test.
+- Requests are made only by Fix (and the tool calls inside one), a chat
+  message, an Autopilot step, the model list and Test.
 - The first Fix or chat message with a provider shows, once, what is sent
-  (the last commands and their output, to that provider) and asks to go on.
+  (the list of recent commands, bookmarked lines, the last command's
+  output, and any other output the AI asks for) and asks to go on.
 - Nothing is removed from the text. A password or token printed in those
   lines is sent. This is said in Options → AI and in the README.
 - Terminal output can contain text written to steer the AI (a file that
@@ -256,8 +300,9 @@ and gives false comfort. Autopilot is a plain choice to let the AI act.
 
 ### Tests
 
-- Context builder: with `TestTerm`, as `src/lines.rs` tests do (commands,
-  long output, the caps, a command clicked in the middle).
+- Context builder: with `TestTerm`, as `src/lines.rs` tests do (the
+  command list, numbered output, bookmarks, the caps, a command clicked in
+  the middle).
 - Clients: recorded streaming replies as fixtures; a local `TcpListener`
   playing the provider for a whole Fix and a whole tool loop.
 - "Finished" detection: with a fake clock.
@@ -269,7 +314,11 @@ and gives false comfort. Autopilot is a plain choice to let the AI act.
 ## Stages
 
 1. **Fix**: `[ai]` settings, key file, Options → AI, both clients, the
-   context builder, the gutter and right-click items, Fix.
+   context builder, the gutter and right-click items, Fix. (Built first
+   with all output sent up front.)
+1b. **Fix with a list and tools**: the command list, bookmarks, the tool
+   loop (`get_output`, `add_bookmark`) in both API formats. The chat
+   reuses all of it.
 2. **Chat**: the split and resize, the panel, focus, cards with Insert and
    Run, the `run_command` loop with Autopilot fixed off.
 3. **Autopilot**: the switch, "finished" detection, `wait` and
