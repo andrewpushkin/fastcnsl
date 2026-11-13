@@ -410,8 +410,10 @@ fastcnsl new-tab dev -- powershell -NoExit -Command "cd C:\src\app"
 fastcnsl new-tab cmd -- cmd /k echo hello
 ```
 
-Commands go to the most recently started window; `--pid N` picks one by
-process id. A command prints a short reply (`opened tab 2`, `closed Tab 1:
+Commands go to the most recently started window of the same fastcnsl
+version; `--pid N` picks one by process id. Windows of other versions are
+left alone: without `--pid`, `new-tab` starts a window of this version if
+none is running, and `--pid` naming another version's window is an error. A command prints a short reply (`opened tab 2`, `closed Tab 1:
 logs`) and exits with 0. Errors (`no tab named x`, `no window is running`)
 exit with 1, wrong usage with 2. Only you can control your windows: each
 command must present a secret that only your user account can read.

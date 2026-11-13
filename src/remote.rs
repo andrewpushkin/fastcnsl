@@ -7,10 +7,12 @@
 //! fastcnsl [--pid N] quit
 //! ```
 //!
-//! Each window listens on a loopback TCP port. It writes the port and a
-//! random secret to `<local data dir>/fastcnsl/instances/<pid>` (readable
-//! only by the user); a request must carry the secret. Without `--pid` the
-//! most recently started window is used.
+//! Each window listens on a loopback TCP port. It writes the port, a random
+//! secret and its version to `<local data dir>/fastcnsl/instances/<pid>`
+//! (readable only by the user); a request must carry the secret. Commands
+//! only go to windows of the same version: without `--pid` the most
+//! recently started one is used, and `--pid` naming another version's
+//! window is refused.
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -149,6 +151,42 @@ fn instances_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("fastcnsl").join("instances"))
 }
 
+/// A running window's instance file: `PORT TOKEN VERSION`.
+#[derive(Debug, PartialEq)]
+struct Instance {
+    port: u16,
+    token: String,
+    /// None for windows from before the version was written.
+    version: Option<String>,
+}
+
+impl Instance {
+    fn to_text(&self) -> String {
+        format!("{} {} {}\n", self.port, self.token, self.version.as_deref().unwrap_or_default())
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let mut parts = text.split_whitespace();
+        let port = parts.next()?.parse().ok()?;
+        let token = parts.next()?.to_owned();
+        Some(Self { port, token, version: parts.next().map(str::to_owned) })
+    }
+
+    /// Whether this window runs the same build as `version`; windows of
+    /// other versions may not understand the requests.
+    fn matches(&self, version: &str) -> bool {
+        self.version.as_deref() == Some(version)
+    }
+
+    /// Why window `pid` can't take commands from `version`.
+    fn mismatch(&self, pid: u32, version: &str) -> String {
+        match &self.version {
+            Some(v) => format!("window {pid} runs version {v}; this is {version}"),
+            None => format!("window {pid} runs an older version; this is {version}"),
+        }
+    }
+}
+
 /// A fresh random secret (RandomState is seeded from the OS).
 fn new_token() -> String {
     use std::hash::{BuildHasher, Hasher};
@@ -179,7 +217,8 @@ pub fn serve(proxy: EventLoopProxy<UserEvent>) -> Option<Server> {
     let token = new_token();
     let dir = instances_dir()?;
     let file = dir.join(std::process::id().to_string());
-    if let Err(e) = write_private(&dir, &file, &format!("{port} {token}\n")) {
+    let instance = Instance { port, token: token.clone(), version: Some(crate::VERSION.to_owned()) };
+    if let Err(e) = write_private(&dir, &file, &instance.to_text()) {
         log::warn!("remote control: writing {}: {e}", file.display());
         return None;
     }
@@ -257,7 +296,8 @@ pub enum SendError {
     Failed(String),
 }
 
-/// Sends `command` to a running window and returns its reply.
+/// Sends `command` to a running window of this version and returns its
+/// reply.
 pub fn send(pid: Option<u32>, command: &Command) -> Result<Reply, SendError> {
     let dir = instances_dir().ok_or(SendError::NoInstance)?;
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = match pid {
@@ -272,8 +312,16 @@ pub fn send(pid: Option<u32>, command: &Command) -> Result<Reply, SendError> {
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
     for (_, file) in candidates {
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
-        let mut parts = text.split_whitespace();
-        let (Some(port), Some(token)) = (parts.next().and_then(|p| p.parse::<u16>().ok()), parts.next()) else { continue };
+        let Some(instance) = Instance::parse(&text) else { continue };
+        if !instance.matches(crate::VERSION) {
+            // Another version's window: left alone, and named only when asked for.
+            match pid {
+                Some(p) => return Err(SendError::Failed(instance.mismatch(p, crate::VERSION))),
+                None => continue,
+            }
+        }
+        let Instance { port, token, .. } = instance;
+        let token = token.as_str();
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) else {
             // That window is gone without cleaning up (crash, kill).
@@ -355,6 +403,27 @@ mod tests {
             assert_eq!(back.token, "t");
             assert_eq!(back.command().unwrap(), c);
         }
+    }
+
+    #[test]
+    fn instance_files_carry_the_version() {
+        let i = Instance { port: 4242, token: "abc".into(), version: Some("0.1.148".into()) };
+        assert_eq!(Instance::parse(&i.to_text()), Some(i));
+        assert!(Instance::parse("x abc 0.1.1").is_none(), "bad port");
+        assert!(Instance::parse("4242").is_none(), "no token");
+    }
+
+    #[test]
+    fn only_windows_of_the_same_version_take_commands() {
+        let i = Instance::parse("4242 abc 0.1.148\n").unwrap();
+        assert!(i.matches("0.1.148"));
+        assert!(!i.matches("0.1.147"));
+        assert_eq!(i.mismatch(7, "0.1.147"), "window 7 runs version 0.1.148; this is 0.1.147");
+        // Files written before the version was added.
+        let old = Instance::parse("4242 abc\n").unwrap();
+        assert_eq!(old.version, None);
+        assert!(!old.matches("0.1.148"));
+        assert_eq!(old.mismatch(7, "0.1.148"), "window 7 runs an older version; this is 0.1.148");
     }
 
     #[test]
