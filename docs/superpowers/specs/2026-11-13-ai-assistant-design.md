@@ -28,7 +28,9 @@ Claude (Anthropic). fastcnsl has no account system and no server of its own.
 
 ## Non-goals
 
-- Logging in with a ChatGPT Plus / Claude / X subscription. Only API keys.
+- Logging in with a Claude or X/SuperGrok subscription: neither offers other
+  apps an official sign-in (the SuperGrok logins other tools ship reuse
+  xAI's own CLI client without permission). ChatGPT has one: stage 1c.
 - Suggestions while typing (autocomplete), or anything sent without a click.
 - Saving chats to disk. A chat lives as long as its tab.
 - Full Markdown, images or file attachments in the chat.
@@ -199,6 +201,84 @@ as `remote.rs` does), so terminal text is read only where it is today.
 Fix refuses with a notice when a full-screen program (alt screen) is open.
 If the AI has no command to offer, only the explanation is shown.
 
+### ChatGPT sign-in (stage 1c)
+
+OpenAI's "Sign in with ChatGPT" lets an open-source app spend a ChatGPT
+Plus or Pro plan instead of an API key (docs:
+developers.openai.com/siwc/token-sharing-open-source). fastcnsl is MIT on
+GitHub, so it uses the open-source route: no approval, dynamic client
+registration.
+
+**Options → AI, provider ChatGPT** gets an *Account* row above the key:
+**Continue with ChatGPT** (plain text; the panel draws no images), or once
+signed in `you@example.com · Using ChatGPT plan` with **Manage usage**
+(opens chatgpt.com/settings/usage) and **Sign out**. When signed in, the
+plan is used and the API key (if any) is not. The first successful sign-in
+shows a one-time panel "You're using your ChatGPT plan" (Got it), as
+OpenAI's guidelines ask.
+
+**Sign-in** (a thread, `AiEvent::SignedIn` when done):
+
+1. Listen on `127.0.0.1:1455` (another free port if taken; only the port
+   may change), path `/auth/callback`.
+2. Open in the browser `https://auth.openai.com/api/accounts/authorize`
+   with `response_type=code`, `client_id` (`dynamic_agent_client` the first
+   time, with `agent_name_hint=fastcnsl`; the issued one after),
+   `ext_agent_host_id` (`urn:uuid:<random>`, made once and kept),
+   `redirect_uri`, `scope=openid profile email offline_access
+   resource.invoke chatgpt.tokens.use.direct`,
+   `resource=https://api.openai.com/v1`, `state`, `nonce`,
+   `code_challenge` (S256 of a random verifier), and `id_token_hint` when
+   a previous ID token is kept.
+3. The callback brings `code`, `state` and (first time) `client_id`.
+   Wrong `state`, `error=…`, or a `client_id` different from the saved one
+   end the sign-in. The browser gets a short "You can close this tab" page.
+4. `POST https://auth.openai.com/api/accounts/oauth/token` (form):
+   `grant_type=authorization_code`, the issued `client_id`, `code`,
+   `code_verifier`, `redirect_uri`, `resource`.
+5. The granted scope must include `chatgpt.tokens.use.direct`, else
+   "this ChatGPT plan can't be used by other apps". The ID token's payload
+   gives the email and must carry our `nonce`. Its signature is not
+   checked: fastcnsl uses it only to show the email and as a hint, never
+   to authorise anything.
+6. Saved to `chatgpt-login.json` beside `config.toml` (written whole, then
+   renamed; 0600 on Unix): `client_id`, `ext_agent_host_id`, `email`,
+   `id_token`, `access_token`, `refresh_token`, `expires_at`, `scopes`,
+   `welcomed`.
+
+Five minutes without a callback, or a new sign-in, ends a waiting one.
+
+**Requests.** `POST https://api.openai.com/v1/responses` with
+`Authorization: Bearer <access token>`, `instructions` (the system
+prompt), `input`, function `tools`, `store: false`, `stream: true`; no
+token limit or sampling fields. The stream is read to `response.completed`
+(its `response.output` holds the text and the `function_call` items);
+`response.failed` and `response.incomplete` are errors. Function calls go
+back as `function_call` items without their `id` (nothing is stored), with
+`function_call_output` items after them; reasoning items are not sent back.
+Models: `GET /v1/models`, those with `visibility == "list"`.
+
+**Tokens.** The access token lasts an hour. Within a minute of expiry,
+before a request, it is refreshed (`grant_type=refresh_token`, issued
+`client_id`, `refresh_token`, `resource`), one refresh at a time; the new
+tokens replace the old together. A refresh error such as `invalid_grant`
+clears the tokens: "Sign in to ChatGPT again (Options → AI)".
+
+**Errors** (`error.code`): `subscription_sharing_user_not_eligible` → "your
+ChatGPT plan can't be used here (Plus or Pro is needed)", no retry;
+`subscription_sharing_usage_limit_exceeded` → "you have reached your
+ChatGPT plan's limit; see Manage usage"; the two `…_unavailable` → "ChatGPT
+is busy, try again"; `subscription_sharing_invalid_user` → sign in again.
+
+**Sign out** stops using the tokens, sends the refresh token to the
+`revocation_endpoint` from `https://auth.openai.com/.well-known/openid-configuration`
+(form: `token`, `token_type_hint=refresh_token`, `client_id`) in the
+background, and clears the tokens. The client id and host id stay.
+
+**Testing.** Debug builds read `FASTCNSL_CHATGPT_AUTH` and
+`FASTCNSL_CHATGPT_API` to point at a fake server; release builds ignore
+them.
+
 ### The chat panel
 
 - Per tab, on the right, `panel_width` of the window, with a divider that
@@ -316,6 +396,8 @@ and gives false comfort. Autopilot is a plain choice to let the AI act.
 1. **Fix**: `[ai]` settings, key file, Options → AI, both clients, the
    context builder, the gutter and right-click items, Fix. (Built first
    with all output sent up front.)
+1c. **ChatGPT sign-in**: the plan instead of an API key, through the
+   Responses API (above).
 1b. **Fix with a list and tools**: the command list, bookmarks, the tool
    loop (`get_output`, `add_bookmark`) in both API formats. The chat
    reuses all of it.
