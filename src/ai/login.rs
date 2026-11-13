@@ -328,9 +328,20 @@ fn oauth_code(body: &str) -> String {
 }
 
 fn oauth_error(status: u16, body: &str) -> AiError {
-    match oauth_code(body) {
-        code if code.is_empty() => super::wire::error_for(status, body),
-        code => AiError::Login(format!("sign-in failed: {code}")),
+    let description = serde_json::from_str::<Value>(body).ok().and_then(|v| v["error_description"].as_str().map(str::to_owned));
+    match (oauth_code(body), description) {
+        (code, _) if code.is_empty() => super::wire::error_for(status, body),
+        (code, Some(d)) => AiError::Login(format!("sign-in failed: {code} ({d})")),
+        (code, None) => AiError::Login(format!("sign-in failed: {code}")),
+    }
+}
+
+/// How a sign-in ended, for the notice at the bottom of the window.
+pub fn outcome_text(result: &Result<String, AiError>) -> String {
+    match result {
+        Ok(email) if email.is_empty() => "Signed in to ChatGPT".to_owned(),
+        Ok(email) => format!("Signed in to ChatGPT as {email}"),
+        Err(e) => format!("ChatGPT sign-in failed: {e}"),
     }
 }
 
@@ -467,11 +478,13 @@ pub fn sign_in_with(
         if !target.starts_with(CALLBACK_PATH) {
             continue;
         }
+        log::info!("ChatGPT sign-in: the browser came back ({})", if result.is_ok() { "ok" } else { "refused" });
         break result.map_err(AiError::Login)?;
     };
 
-    let tokens = exchange(&agent(), auth, &client_id, &code, &pending)?;
+    let tokens = exchange(&agent(), auth, &client_id, &code, &pending).inspect_err(|e| log::warn!("ChatGPT sign-in: token exchange: {e}"))?;
     let (email, nonce) = id_token_claims(&tokens.id_token).unwrap_or_default();
+    log::info!("ChatGPT sign-in: tokens received; ID token {}", if tokens.id_token.is_empty() { "missing" } else if nonce == pending.nonce { "matches" } else { "has another nonce" });
     if !tokens.id_token.is_empty() && nonce != pending.nonce {
         return Err(AiError::Login("the sign-in's ID token is not for this sign-in".into()));
     }
@@ -646,6 +659,20 @@ mod tests {
         for part in ["token=r1", "token_type_hint=refresh_token", "client_id=oaiapp_1"] {
             assert!(post.contains(part), "{part} in {post}");
         }
+    }
+
+    #[test]
+    fn the_outcome_is_said_in_words() {
+        assert_eq!(outcome_text(&Ok("me@x.org".into())), "Signed in to ChatGPT as me@x.org");
+        assert_eq!(outcome_text(&Ok(String::new())), "Signed in to ChatGPT");
+        assert_eq!(outcome_text(&Err(AiError::PlanNotEligible)), format!("ChatGPT sign-in failed: {}", AiError::PlanNotEligible));
+    }
+
+    #[test]
+    fn token_errors_say_what_openai_answered() {
+        let e = oauth_error(400, r#"{"error":"invalid_request","error_description":"redirect_uri does not match"}"#);
+        assert_eq!(e.to_string(), "sign-in failed: invalid_request (redirect_uri does not match)");
+        assert_eq!(oauth_error(500, "<html>oops</html>").to_string(), "error 500: <html>oops</html>");
     }
 
     #[test]

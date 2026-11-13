@@ -1769,6 +1769,8 @@ impl State {
                 }
                 self.ai_signin = None;
                 self.window.request_redraw();
+                // Said where it is seen even with Options closed.
+                self.show(ai::login::outcome_text(&result));
                 match result {
                     Ok(email) => {
                         self.ai_status = String::new();
