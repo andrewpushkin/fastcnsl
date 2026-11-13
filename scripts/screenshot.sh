@@ -132,14 +132,14 @@ shot shortcut_used
 click 100 15
 click 100 15 3
 shot tab_menu
-# "Log to file" (third item), then run something: a dot on the tab and
-# a notice at the bottom.
-xdotool key Down Down Down Return
+# "Log to file" (fifth item, after previous/next tab, copy and save),
+# then run something: a dot on the tab and a notice at the bottom.
+xdotool key Down Down Down Down Down Return
 type_line "seq 3"
 shot tab_logging
-# "Save text to file" (second item).
+# "Save text to file" (fourth item).
 click 100 15 3
-xdotool key Down Down Return
+xdotool key Down Down Down Down Return
 shot tab_saved
 # Options → Logging, the fourth page.
 xdotool key ctrl+shift+comma
