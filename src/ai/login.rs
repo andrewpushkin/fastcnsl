@@ -398,6 +398,17 @@ pub fn revoke(agent: &ureq::Agent, auth: &str, login: &Login) {
     }
 }
 
+/// The page the browser shows when it comes back. Error text can carry
+/// what was in the address, so it is escaped.
+fn callback_page(result: &Result<(String, String), String>) -> String {
+    let text = match result {
+        Ok(_) => "Signed in to ChatGPT. You can close this tab and go back to fastcnsl.".to_owned(),
+        Err(e) => format!("fastcnsl: {e}"),
+    };
+    let text = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    format!("<!doctype html><meta charset=utf-8><title>fastcnsl</title><p style=\"font:16px sans-serif\">{text}</p>")
+}
+
 /// How long the browser has to come back.
 const SIGN_IN_TIME: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -449,12 +460,8 @@ pub fn sign_in_with(
         let head = String::from_utf8_lossy(&buf[..n]);
         let target = head.lines().next().and_then(|l| l.split(' ').nth(1)).unwrap_or("");
         let result = parse_callback(target, &pending, &login.client_id);
-        let page = match &result {
-            Ok(_) => "Signed in to ChatGPT. You can close this tab and go back to fastcnsl.".to_owned(),
-            Err(e) => format!("fastcnsl: {e}"),
-        };
         let status = if target.starts_with(CALLBACK_PATH) { "200 OK" } else { "404 Not Found" };
-        let html = format!("<!doctype html><meta charset=utf-8><title>fastcnsl</title><p style=\"font:16px sans-serif\">{page}</p>");
+        let html = callback_page(&result);
         let _ = write!(stream, "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}", html.len());
         // A browser's other requests (the icon) don't end the sign-in.
         if !target.starts_with(CALLBACK_PATH) {
@@ -639,6 +646,13 @@ mod tests {
         for part in ["token=r1", "token_type_hint=refresh_token", "client_id=oaiapp_1"] {
             assert!(post.contains(part), "{part} in {post}");
         }
+    }
+
+    #[test]
+    fn the_browser_page_escapes_what_came_back() {
+        let page = callback_page(&Err("sign-in failed: <script>x</script>&".into()));
+        assert!(page.contains("&lt;script&gt;x&lt;/script&gt;&amp;") && !page.contains("<script>"), "{page}");
+        assert!(callback_page(&Ok(("c".into(), "i".into()))).contains("You can close this tab"));
     }
 
     #[test]
