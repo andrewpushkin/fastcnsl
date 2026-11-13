@@ -294,6 +294,8 @@ Everything in Options is saved to a settings file, created on first start.
 **Options → Open config.toml** opens it. It lives at:
 
 - Windows: `%APPDATA%\fastcnsl\config.toml`
+- Windows, portable zip: `config.toml` next to `fastcnsl.exe`, as long as
+  the file `portable` is there (delete it to use `%APPDATA%`)
 - macOS: `~/Library/Application Support/fastcnsl/config.toml`
 - Linux: `~/.config/fastcnsl/config.toml`
 

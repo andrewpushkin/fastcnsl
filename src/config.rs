@@ -378,14 +378,42 @@ pub fn default_font() -> &'static str {
     }
 }
 
+/// A file with this name next to fastcnsl.exe makes a portable copy: its
+/// settings are kept in that folder. The Windows zip ships one.
+pub const PORTABLE_MARKER: &str = "portable";
+
+/// The settings file, from $FASTCNSL_CONFIG (`env`), the portable copy's
+/// folder (`portable_dir`) and the system's config folder, in that order.
+/// An empty $FASTCNSL_CONFIG counts as unset.
+fn config_path_from(
+    env: Option<std::ffi::OsString>,
+    portable_dir: Option<&Path>,
+    config_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(p) = env.filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    if let Some(dir) = portable_dir {
+        return Some(dir.join("config.toml"));
+    }
+    config_dir.map(|d| d.join("fastcnsl").join("config.toml"))
+}
+
+/// On Windows, the exe's folder when the portable marker sits next to it.
+fn portable_dir() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    dir.join(PORTABLE_MARKER).is_file().then_some(dir)
+}
+
 impl Config {
-    /// The settings file: $FASTCNSL_CONFIG if set, else
-    /// <config dir>/fastcnsl/config.toml.
+    /// The settings file: $FASTCNSL_CONFIG if set; else, for a portable
+    /// Windows copy (a `portable` file next to the exe), config.toml in the
+    /// exe's folder; else <config dir>/fastcnsl/config.toml.
     pub fn path() -> Option<PathBuf> {
-        if let Some(p) = std::env::var_os("FASTCNSL_CONFIG").filter(|p| !p.is_empty()) {
-            return Some(PathBuf::from(p));
-        }
-        dirs::config_dir().map(|d| d.join("fastcnsl").join("config.toml"))
+        config_path_from(std::env::var_os("FASTCNSL_CONFIG"), portable_dir().as_deref(), dirs::config_dir())
     }
 
     /// Loads the config file, writing a default one if none exists.
@@ -517,6 +545,25 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_path_env_wins_over_portable() {
+        let p = config_path_from(Some("/x/my.toml".into()), Some(Path::new("/app")), Some("/cfg".into()));
+        assert_eq!(p, Some(PathBuf::from("/x/my.toml")));
+    }
+
+    #[test]
+    fn config_path_portable_is_next_to_exe() {
+        let p = config_path_from(None, Some(Path::new("/app")), Some("/cfg".into()));
+        assert_eq!(p, Some(PathBuf::from("/app/config.toml")));
+    }
+
+    #[test]
+    fn config_path_default_is_config_dir() {
+        let p = config_path_from(None, None, Some("/cfg".into()));
+        assert_eq!(p, Some(PathBuf::from("/cfg/fastcnsl/config.toml")));
+        assert_eq!(config_path_from(Some("".into()), None, None), None);
+    }
 
     #[test]
     fn partial_file_uses_defaults_for_missing_keys() {
