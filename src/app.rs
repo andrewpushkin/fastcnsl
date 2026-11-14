@@ -945,7 +945,8 @@ impl App {
                     }
                 }
             }
-            Action::AiChat => st.toggle_chat(&self.cfg),
+            // From a menu: open it with the keyboard (the shortcut toggles, in on_key).
+            Action::AiChat => st.open_chat(&self.cfg, None),
             Action::AiChatAt(i) => {
                 if i < st.tabs.len() {
                     st.select_tab(i);
@@ -2135,7 +2136,7 @@ impl State {
             MouseScrollDelta::PixelDelta(p) => p.y as f32,
         };
         let chat = &mut self.tab_mut().chat;
-        chat.scroll = (chat.scroll + dy).clamp(0.0, l.content_height);
+        chat.scroll = (chat.scroll + dy).clamp(0.0, l.max_scroll);
         self.window.request_redraw();
         true
     }
@@ -2735,7 +2736,10 @@ impl State {
                 Command::NextBookmark if !alt_screen => return Some(Action::NextBookmark),
                 Command::CycleTheme => return Some(Action::Theme(self.theme_mode.next())),
                 Command::AiFix => return Some(Action::AiFix(None)),
-                Command::AiChat => return Some(Action::AiChat),
+                Command::AiChat => {
+                    self.toggle_chat(cfg);
+                    return None;
+                }
                 Command::NextTab | Command::PreviousTab => {
                     self.cycle_tab(cmd == Command::NextTab);
                     return None;

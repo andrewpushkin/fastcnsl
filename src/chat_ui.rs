@@ -99,8 +99,8 @@ pub struct ChatLayout {
     pub caret: (f32, f32),
     /// `input_lines` is the placeholder: the box is empty.
     pub placeholder: bool,
-    /// Height of all messages, for clamping the scroll.
-    pub content_height: f32,
+    /// The most the messages scroll: their height past the space they have.
+    pub max_scroll: f32,
 }
 
 impl ChatLayout {
@@ -371,11 +371,8 @@ pub fn layout(area: Rect, ui: (f32, f32), term: (f32, f32), scale: f32, panel: &
 
     // Short content starts at the top; long content ends at the bottom,
     // shifted by the scroll.
-    let base = if content_height <= msg.h {
-        msg.y
-    } else {
-        msg.y + msg.h - content_height + panel.scroll.clamp(0.0, content_height - msg.h)
-    };
+    let max_scroll = (content_height - msg.h).max(0.0);
+    let base = if content_height <= msg.h { msg.y } else { msg.y + msg.h - content_height + panel.scroll.clamp(0.0, max_scroll) };
     let visible = |y: f32, h: f32| y >= msg.y && y + h <= msg.y + msg.h;
     let mut tints = vec![];
     for item in items {
@@ -402,7 +399,7 @@ pub fn layout(area: Rect, ui: (f32, f32), term: (f32, f32), scale: f32, panel: &
             }
         }
     }
-    ChatLayout { area, divider, header, title, title_y, buttons, tints, lines, input, input_lines, caret, placeholder, content_height }
+    ChatLayout { area, divider, header, title, title_y, buttons, tints, lines, input, input_lines, caret, placeholder, max_scroll }
 }
 
 #[cfg(test)]
@@ -511,9 +508,24 @@ mod tests {
         let l = lay(&p, a);
         let shows = |l: &ChatLayout, t: &str| l.lines.iter().any(|line| line.text == t);
         assert!(shows(&l, "message 199") && !shows(&l, "message 0"));
-        p.scroll = l.content_height;
+        p.scroll = l.max_scroll;
         let top = lay(&p, a);
         assert!(shows(&top, "message 0") && !shows(&top, "message 199"));
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_oldest_message() {
+        let mut p = panel((0..200).map(|i| Entry::User(format!("message {i}"))).collect());
+        let a = area(400.0, 600.0);
+        let l = lay(&p, a);
+        assert!(l.max_scroll > 0.0);
+        p.scroll = l.max_scroll;
+        let at_top = lay(&p, a);
+        p.scroll = l.max_scroll + 500.0;
+        let past = lay(&p, a);
+        let first = |l: &ChatLayout| l.lines.iter().map(|x| x.y).fold(f32::MAX, f32::min);
+        assert_eq!(first(&at_top), first(&past));
+        assert_eq!(lay(&panel(vec![Entry::User("hi".into())]), a).max_scroll, 0.0);
     }
 
     #[test]
