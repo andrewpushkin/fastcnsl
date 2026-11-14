@@ -14,6 +14,8 @@ const PAD: f32 = 10.0;
 pub const INPUT_PAD: f32 = 6.0;
 /// The input box grows to this many lines, then scrolls.
 const INPUT_LINES: usize = 6;
+/// Output lines shown under a command Autopilot ran.
+const AUTO_LINES: usize = 4;
 const PLACEHOLDER: &str = "Message the AI · Enter sends, Shift+Enter new line";
 
 /// A tab's chat: the conversation and the panel showing it.
@@ -56,6 +58,9 @@ pub enum ChatHit {
     Divider,
     NewChat,
     Close,
+    /// The Autopilot switch, and Stop while a reply is awaited.
+    Autopilot,
+    Stop,
     /// Buttons of entry `i`.
     Copy(usize),
     Insert(usize),
@@ -87,6 +92,9 @@ pub struct ChatLayout {
     pub header: Rect,
     pub title: String,
     pub title_y: f32,
+    /// Autopilot is on: its switch is drawn in the warning colour.
+    #[allow(dead_code)] // TEMP: wired in by the Autopilot UI task
+    pub autopilot: bool,
     /// Header and per-entry buttons, with their labels.
     pub buttons: Vec<(Rect, ChatHit, &'static str)>,
     /// Behind user messages, code and card commands.
@@ -247,10 +255,13 @@ pub fn layout(area: Rect, ui: (f32, f32), term: (f32, f32), scale: f32, panel: &
     };
     let by = header.y + pad / 4.0;
     let close = button("×", right - pad / 2.0, by);
-    let new_chat = button("New chat", close.x - pad / 2.0, by);
-    let mut buttons = vec![(new_chat, ChatHit::NewChat, "New chat"), (close, ChatHit::Close, "×")];
+    let (middle, middle_hit) = if panel.chat.job.is_some() { ("Stop", ChatHit::Stop) } else { ("New chat", ChatHit::NewChat) };
+    let new_chat = button(middle, close.x - pad / 2.0, by);
+    let switch = if panel.chat.autopilot { "Autopilot on" } else { "Autopilot off" };
+    let pilot = button(switch, new_chat.x - pad / 2.0, by);
+    let mut buttons = vec![(pilot, ChatHit::Autopilot, switch), (new_chat, middle_hit, middle), (close, ChatHit::Close, "×")];
     let ai_name = title.split(" · ").next().unwrap_or("AI").to_owned();
-    let title_cols = ((new_chat.x - area.x - pad) / uw).floor().max(0.0) as usize;
+    let title_cols = ((pilot.x - area.x - pad) / uw).floor().max(0.0) as usize;
     let title = fit(title, title_cols);
     let title_y = header.y + pad / 2.0;
 
@@ -348,6 +359,16 @@ pub fn layout(area: Rect, ui: (f32, f32), term: (f32, f32), scale: f32, panel: &
                 }
                 y += pad / 4.0;
                 code(&card.command, &mut y, &mut items);
+                if let CardState::Auto { running, .. } = card.state {
+                    for line in &card.output[card.output.len().saturating_sub(AUTO_LINES)..] {
+                        items.push(Item::Line(Line { x, y, text: fit(line, tcols), face: Face::Term, dim: true }, th));
+                        y += th;
+                    }
+                    items.push(ui_line((if running { "running…" } else { "done" }).into(), y + pad / 4.0, true));
+                    y += uh + pad / 2.0;
+                    y += pad;
+                    continue;
+                }
                 let row_h = uh + pad / 2.0;
                 let left = |label: &str, x: f32| Rect { x, y, w: text_width(label) as f32 * uw + pad, h: row_h };
                 match card.state {
@@ -361,6 +382,7 @@ pub fn layout(area: Rect, ui: (f32, f32), term: (f32, f32), scale: f32, panel: &
                     CardState::Inserted => items.push(ui_line("inserted".into(), y + pad / 4.0, true)),
                     CardState::Answered => items.push(ui_line("sent".into(), y + pad / 4.0, true)),
                     CardState::Skipped => items.push(ui_line("skipped".into(), y + pad / 4.0, true)),
+                    CardState::Auto { .. } => unreachable!("drawn above"),
                 }
                 y += row_h;
             }
@@ -399,7 +421,7 @@ pub fn layout(area: Rect, ui: (f32, f32), term: (f32, f32), scale: f32, panel: &
             }
         }
     }
-    ChatLayout { area, divider, header, title, title_y, buttons, tints, lines, input, input_lines, caret, placeholder, max_scroll }
+    ChatLayout { area, divider, header, title, title_y, autopilot: panel.chat.autopilot, buttons, tints, lines, input, input_lines, caret, placeholder, max_scroll }
 }
 
 #[cfg(test)]
@@ -415,7 +437,7 @@ mod tests {
     }
 
     fn card(state: CardState) -> Entry {
-        Entry::Card(Card { call_id: "r1".into(), command: "ls -la".into(), explanation: "Lists files.".into(), state })
+        Entry::Card(Card { call_id: "r1".into(), command: "ls -la".into(), explanation: "Lists files.".into(), state, output: vec![] })
     }
 
     fn panel(entries: Vec<Entry>) -> ChatPanel {
@@ -484,6 +506,51 @@ mod tests {
         assert!(!l.buttons.iter().any(|(_, h, _)| matches!(h, ChatHit::Insert(_) | ChatHit::Run(_))));
         let done = lay(&panel(vec![card(CardState::Skipped)]), area(400.0, 600.0));
         assert!(done.lines.iter().any(|line| line.text == "skipped" && line.dim));
+    }
+
+    #[test]
+    fn the_switch_is_in_the_header() {
+        let mut p = panel(vec![]);
+        let l = lay(&p, area(400.0, 600.0));
+        let (x, y) = centre(&l, ChatHit::Autopilot);
+        assert_eq!(l.hit(x, y), Some(ChatHit::Autopilot));
+        assert!(l.buttons.iter().any(|(_, h, label)| *h == ChatHit::Autopilot && *label == "Autopilot off") && !l.autopilot);
+        p.chat.autopilot = true;
+        let on = lay(&p, area(400.0, 600.0));
+        assert!(on.buttons.iter().any(|(_, h, label)| *h == ChatHit::Autopilot && *label == "Autopilot on") && on.autopilot);
+    }
+
+    #[test]
+    fn stop_shows_while_waiting() {
+        let mut p = panel(vec![]);
+        p.chat.job = Some(3);
+        let l = lay(&p, area(400.0, 600.0));
+        let (x, y) = centre(&l, ChatHit::Stop);
+        assert_eq!(l.hit(x, y), Some(ChatHit::Stop));
+        assert!(!l.buttons.iter().any(|(_, h, _)| *h == ChatHit::NewChat));
+    }
+
+    #[test]
+    fn an_auto_card_shows_its_output() {
+        let mut e = card(CardState::Auto { line: 4, running: true });
+        if let Entry::Card(c) = &mut e {
+            c.output = (1..=6).map(|i| format!("out {i}")).collect();
+        }
+        let l = lay(&panel(vec![e]), area(400.0, 600.0));
+        let texts: Vec<&str> = l.lines.iter().map(|x| x.text.as_str()).collect();
+        assert!(texts.contains(&"out 6") && texts.contains(&"out 3") && !texts.contains(&"out 2"), "{texts:?}");
+        assert!(texts.contains(&"running…"));
+        assert!(!l.buttons.iter().any(|(_, h, _)| matches!(h, ChatHit::Insert(_) | ChatHit::Run(_) | ChatHit::Continue(_))));
+        let done = lay(&panel(vec![card(CardState::Auto { line: 4, running: false })]), area(400.0, 600.0));
+        assert!(done.lines.iter().any(|x| x.text == "done"));
+    }
+
+    #[test]
+    fn new_chat_turns_autopilot_off() {
+        let mut p = panel(vec![]);
+        p.chat.autopilot = true;
+        p.new_chat();
+        assert!(!p.chat.autopilot);
     }
 
     #[test]

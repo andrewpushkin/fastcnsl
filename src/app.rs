@@ -1991,6 +1991,15 @@ impl State {
         match hit {
             H::Divider | H::Input | H::Messages => {}
             H::NewChat => self.tab_mut().chat.new_chat(),
+            H::Autopilot => {
+                let chat = &mut self.tab_mut().chat.chat;
+                chat.autopilot = !chat.autopilot;
+            }
+            H::Stop => {
+                let chat = &mut self.tab_mut().chat.chat;
+                chat.job = None;
+                chat.entries.push(Entry::Note("Stopped".to_owned()));
+            }
             H::Close => return self.close_chat(cfg),
             H::Copy(i) => {
                 let text = match self.tab().chat.chat.entries.get(i) {

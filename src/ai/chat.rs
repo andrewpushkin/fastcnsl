@@ -388,6 +388,10 @@ pub enum CardState {
     Answered,
     /// The user went on without it.
     Skipped,
+    #[allow(dead_code)] // TEMP: wired in by the Autopilot UI task
+    /// Run by Autopilot on global line `line`; `running` until it finished
+    /// or Autopilot moved on.
+    Auto { line: u64, running: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -396,6 +400,8 @@ pub struct Card {
     pub command: String,
     pub explanation: String,
     pub state: CardState,
+    /// The last lines a command Autopilot ran printed.
+    pub output: Vec<String>,
 }
 
 /// What the panel shows.
@@ -418,6 +424,14 @@ pub struct Chat {
     answered: Vec<(String, String)>,
     /// The request being waited for.
     pub job: Option<u64>,
+    /// Autopilot: the AI runs the commands it proposes. Read when a message
+    /// is sent; `driving` while a turn sent with it is under way, and `stop`
+    /// says why it should end (answered at the AI's next step).
+    pub autopilot: bool,
+    #[allow(dead_code)] // TEMP: wired in by the Autopilot UI task
+    pub driving: bool,
+    #[allow(dead_code)] // TEMP: wired in by the Autopilot UI task
+    pub stop: Option<String>,
     /// The conversation's size, serialized.
     bytes: usize,
 }
@@ -453,7 +467,7 @@ impl Chat {
                 CardState::Waiting => ("the user did not run this".to_owned(), CardState::Skipped),
                 CardState::Inserted => ("it was put at the user's prompt; the command list shows whether they ran it".to_owned(), CardState::Answered),
                 CardState::Ran { line } => (format!("the user ran it; its output so far:\n{}", output(line)), CardState::Answered),
-                CardState::Answered | CardState::Skipped => continue,
+                CardState::Answered | CardState::Skipped | CardState::Auto { .. } => continue,
             };
             results.push((c.call_id.clone(), result));
             c.state = state;
@@ -474,15 +488,29 @@ impl Chat {
         self.messages.extend(turn.messages);
         self.entries.extend(turn.texts.into_iter().map(Entry::Ai));
         self.entries.extend(turn.proposals.into_iter().map(|p| {
-            Entry::Card(Card { call_id: p.call_id, command: p.command, explanation: p.explanation, state: CardState::Waiting })
+            Entry::Card(Card { call_id: p.call_id, command: p.command, explanation: p.explanation, state: CardState::Waiting, output: vec![] })
         }));
         self.answered.extend(turn.answered);
+        self.finish_auto_cards();
+        if let Some(reason) = turn.stopped {
+            self.autopilot = false;
+            self.entries.push(Entry::Note(format!("Autopilot stopped: {reason}")));
+        }
         self.measure();
     }
 
     #[cfg(test)]
     pub fn has_waiting_card(&self) -> bool {
         self.entries.iter().any(|e| matches!(e, Entry::Card(c) if c.state == CardState::Waiting))
+    }
+
+    /// Commands Autopilot ran are no longer running.
+    pub fn finish_auto_cards(&mut self) {
+        for e in &mut self.entries {
+            if let Entry::Card(Card { state: CardState::Auto { running, .. }, .. }) = e {
+                *running = false;
+            }
+        }
     }
 
     pub fn near_limit(&self) -> bool {
@@ -650,6 +678,27 @@ mod tests {
         assert_eq!(tools(false)[2].schema["required"], serde_json::json!(["command", "explanation"]));
         assert_eq!(tools(false)[2].schema["additionalProperties"], false);
     }
+    #[test]
+    fn ask_leaves_auto_cards_alone() {
+        let mut chat = Chat::new();
+        chat.ask(Format::Chat, Some("x"), "C", |_| String::new());
+        chat.entries.push(Entry::Card(Card { call_id: "r1".into(), command: "ls".into(), explanation: String::new(), state: CardState::Auto { line: 3, running: false }, output: vec![] }));
+        let h = chat.ask(Format::Chat, Some("y"), "C", |_| String::new());
+        assert_eq!(h.iter().filter(|m| m["role"] == "tool").count(), 0);
+        assert!(matches!(&chat.entries[1], Entry::Card(Card { state: CardState::Auto { .. }, .. })));
+    }
+
+    #[test]
+    fn a_stopped_turn_leaves_a_note_and_finishes_its_cards() {
+        let mut chat = Chat::new();
+        chat.autopilot = true;
+        chat.entries.push(Entry::Card(Card { call_id: "r1".into(), command: "ls".into(), explanation: String::new(), state: CardState::Auto { line: 3, running: true }, output: vec![] }));
+        chat.on_turn(Turn { stopped: Some("you typed in the terminal".into()), ..Default::default() });
+        assert!(matches!(chat.entries.last(), Some(Entry::Note(n)) if n == "Autopilot stopped: you typed in the terminal"));
+        assert!(matches!(&chat.entries[0], Entry::Card(Card { state: CardState::Auto { running: false, .. }, .. })));
+        assert!(!chat.autopilot);
+    }
+
     /// A terminal on a fake clock: commands print `out`, quiet from when
     /// they were typed unless `busy`; drive call `stop_on.0` (from 1) and
     /// later ones answer Stopped.
