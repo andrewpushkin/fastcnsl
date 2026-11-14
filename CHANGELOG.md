@@ -4,7 +4,7 @@ Notable changes to fastcnsl, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
-## Unreleased
+## 0.1.193 (2026-11-14)
 
 - **Chat with AI** about a tab: right-click the tab (or press
   Ctrl+Shift+I) and a chat opens beside the terminal. The AI sees the tab's
