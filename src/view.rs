@@ -68,6 +68,9 @@ pub enum Hover {
     PanelButton(usize),
     /// A part of the search bars.
     Search(ui::SearchHit),
+    /// A part of the AI chat panel.
+    #[allow(dead_code)] // set once the chat panel is wired in
+    Chat(crate::chat_ui::ChatHit),
     Minimize,
     Maximize,
     CloseWindow,

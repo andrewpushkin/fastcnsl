@@ -7,6 +7,7 @@
 
 mod ai;
 mod app;
+mod chat_ui;
 mod chrome;
 mod config;
 mod detect;
