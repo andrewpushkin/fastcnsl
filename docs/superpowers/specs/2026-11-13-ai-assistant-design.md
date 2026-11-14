@@ -28,9 +28,8 @@ Claude (Anthropic). fastcnsl has no account system and no server of its own.
 
 ## Non-goals
 
-- Logging in with a Claude or X/SuperGrok subscription: neither offers other
-  apps an official sign-in (the SuperGrok logins other tools ship reuse
-  xAI's own CLI client without permission). ChatGPT has one: stage 1c.
+- Logging in with a Claude subscription: Anthropic forbids other apps from
+  using it. ChatGPT (stage 1c) and Grok (stage 1d) have sign-ins.
 - Suggestions while typing (autocomplete), or anything sent without a click.
 - Saving chats to disk. A chat lives as long as its tab.
 - Full Markdown, images or file attachments in the chat.
@@ -279,6 +278,67 @@ background, and clears the tokens. The client id and host id stay.
 `FASTCNSL_CHATGPT_API` to point at a fake server; release builds ignore
 them.
 
+### Grok sign-in (stage 1d)
+
+xAI lets other apps spend a SuperGrok or X Premium plan (it announced
+OpenCode; Hermes Agent, Kilo, Warp and OpenClaw do the same). There is no
+registration for apps: all of them use xAI's shared client, the Grok Build
+CLI's id `b1a00492-073a-47ea-816f-4c329264a828`, and say who they are with
+`referrer` (xAI's own code: "so analytics can attribute OAuth usage"). So
+xAI's page names the app "Grok Build"; Options says so. xAI may close the
+shared client to other apps; the API key stays the fallback.
+
+**Approaches.** (a) Device code (RFC 8628), as OpenCode and Hermes do:
+fastcnsl shows a code, opens xAI's page with it filled in, and polls.
+(b) Browser redirect to a loopback port: OpenCode dropped it because xAI
+sometimes shows a code instead of redirecting, and its fixed port clashes
+with Grok Build. (c) Running Grok Build itself over ACP (T3 Code): fully
+official, but needs Grok Build installed and is an agent, not a model API.
+Chosen: (a).
+
+**Options → AI, provider Grok** gets an *Account* row: **Continue with
+Grok** ("uses your SuperGrok or X Premium plan"); while waiting `Enter
+code ABCD-1234 at accounts.x.ai` with **Open page** and **Cancel**; signed
+in `you@example.com · Using Grok plan` with **Sign out**. A dim line below
+says "xAI's page names this app Grok Build (xAI's shared sign-in)".
+
+**Sign-in** (a thread; `AiEvent::DeviceCode` once the code is known,
+`AiEvent::SignedIn` when done):
+
+1. `POST https://auth.x.ai/oauth2/device/code` (form): `client_id`,
+   `scope=openid profile email offline_access grok-cli:access api:access`,
+   `referrer=fastcnsl`. The answer has `device_code`, `user_code`,
+   `verification_uri`, `verification_uri_complete`, `expires_in` (1800),
+   `interval` (5).
+2. Open `verification_uri_complete` (else `verification_uri`) in the
+   browser, and show the code.
+3. Every `interval` seconds `POST https://auth.x.ai/oauth2/token`:
+   `grant_type=urn:ietf:params:oauth:grant-type:device_code`, `client_id`,
+   `device_code`. `authorization_pending` waits; `slow_down` adds 5 s;
+   `access_denied` is "sign-in was cancelled"; `expired_token` or
+   `expires_in` passing is "the code expired"; Cancel stops at once.
+4. The email comes from the ID token, else from
+   `https://auth.x.ai/oauth2/userinfo`; none is fine ("Signed in").
+5. Saved to `grok-login.json` beside `config.toml` (written whole, then
+   renamed; 0600): `email`, `access_token`, `refresh_token`, `expires_at`.
+
+**Requests.** `POST https://api.x.ai/v1/responses` with `Authorization:
+Bearer <access token>`, the same body and stream reading as ChatGPT's.
+Models: `GET /v1/models`. A 401 refreshes the token and tries once more. A
+403 is the plan gate: "xAI didn't allow your Grok plan here (SuperGrok or
+X Premium is needed); you can use an API key instead".
+
+**Tokens** last about six hours. Within five minutes of expiry, before a
+request, they are refreshed (`grant_type=refresh_token`, `client_id`,
+`refresh_token`), one at a time. `invalid_grant` (or another 400/401)
+clears them: "sign in again (Options → AI)". A 403 keeps them and says
+the plan text above.
+
+**Sign out** posts `token`, `token_type_hint=refresh_token`, `client_id`
+to `https://auth.x.ai/oauth2/revoke` in the background and clears the file.
+
+**Testing.** Debug builds read `FASTCNSL_GROK_AUTH` and `FASTCNSL_GROK_API`.
+
 ### The chat panel
 
 - Per tab, on the right, `panel_width` of the window, with a divider that
@@ -401,6 +461,7 @@ and gives false comfort. Autopilot is a plain choice to let the AI act.
    reuses all of it.
 1c. **ChatGPT sign-in**: the plan instead of an API key, through the
    Responses API (above).
+1d. **Grok sign-in**: a SuperGrok or X Premium plan, by device code.
 2. **Chat**: the split and resize, the panel, focus, cards with Insert and
    Run, the `run_command` loop with Autopilot fixed off.
 3. **Autopilot**: the switch, "finished" detection, `wait` and

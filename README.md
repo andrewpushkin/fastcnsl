@@ -191,14 +191,21 @@ To set it up, open Options → AI and pick ChatGPT, Grok or Claude.
   no API key. **Manage usage** opens ChatGPT's page where you can see and cap
   what fastcnsl uses; **Sign out** ends it. The sign-in is kept in
   `chatgpt-login.json` beside the settings file, readable only by you.
+- **Grok with your plan:** click **Continue with Grok**. fastcnsl shows a
+  code and opens xAI's page with it filled in; approve there. Fixes then
+  use your SuperGrok or X Premium plan, with no API key. xAI has no sign-up
+  for apps, so fastcnsl uses xAI's shared sign-in (as OpenCode and others
+  do) and xAI's page calls it **Grok Build**. xAI decides which plans may
+  be used this way; if it refuses yours, use an API key. The sign-in is
+  kept in `grok-login.json`, readable only by you.
 - **With an API key** (ChatGPT, Grok, Claude): copy the key from the
   provider's website and click **Paste key**.
 
 Then pick a model. **Custom** works with any server that speaks the OpenAI
 chat format, such as a local Ollama (`base_url` in the settings file).
 
-Grok and Claude need an API key: Anthropic doesn't allow other apps to use
-Claude Pro or Max subscriptions, and xAI has no sign-in for other apps.
+Claude needs an API key: Anthropic doesn't allow other apps to use Claude
+Pro or Max subscriptions.
 
 **What is sent.** Only when you ask for a fix: the list of your last 50
 commands (`listed_commands`; the command lines, not their output), the

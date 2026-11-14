@@ -88,6 +88,8 @@ pub enum Action {
     AiSignIn,
     AiSignOut,
     AiManageUsage,
+    /// Grok: open xAI's page with the sign-in code filled in, again.
+    AiOpenSignInPage,
     /// The "You're using your ChatGPT plan" panel's Got it.
     AiWelcomeDone,
 }
@@ -695,6 +697,8 @@ pub struct OptionsState {
     /// the browser.
     pub ai_account: Option<String>,
     pub ai_signing_in: bool,
+    /// Grok: the code to enter on xAI's page, once known.
+    pub ai_sign_in_code: Option<String>,
 }
 
 impl OptionsState {
@@ -738,6 +742,7 @@ impl Default for OptionsState {
             ai_status: String::new(),
             ai_account: None,
             ai_signing_in: false,
+            ai_sign_in_code: None,
         }
     }
 }
@@ -1047,23 +1052,46 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
         }
         return;
     }
-    if s.ai_provider == Provider::OpenAi && b.fits_rows(1) {
+    let grok = s.ai_provider == Provider::Xai;
+    if (s.ai_provider == Provider::OpenAi || grok) && b.fits_rows(1) {
         b.text(0.0, "Account", TextStyle::Normal);
         if s.ai_signing_in {
-            let text = "Waiting for the browser…";
-            b.text(label_w, text, TextStyle::Dim);
-            b.button(label_w + text.chars().count() as f32 + 2.0, "Cancel", Action::AiSignIn, false);
+            let text = match &s.ai_sign_in_code {
+                Some(code) => format!("Enter code {code} at accounts.x.ai"),
+                None if grok => "Asking xAI for a code…".to_owned(),
+                None => "Waiting for the browser…".to_owned(),
+            };
+            b.text(label_w, &text, if s.ai_sign_in_code.is_some() { TextStyle::Normal } else { TextStyle::Dim });
+            let mut c = label_w + text.chars().count() as f32 + 2.0;
+            if s.ai_sign_in_code.is_some() {
+                c = b.button(c, "Open page", Action::AiOpenSignInPage, false);
+            }
+            b.button(c, "Cancel", Action::AiSignIn, false);
         } else if let Some(email) = &s.ai_account {
-            let email: String = if email.chars().count() > 28 { format!("{}…", email.chars().take(27).collect::<String>()) } else { email.clone() };
-            let text = format!("{email} · Using ChatGPT plan");
+            let email: String = match email.chars().count() {
+                0 => "Signed in".to_owned(),
+                n if n > 28 => format!("{}…", email.chars().take(27).collect::<String>()),
+                _ => email.clone(),
+            };
+            let text = format!("{email} · Using {} plan", s.ai_provider.label());
             b.text(label_w, &text, TextStyle::Normal);
-            let c = b.button(label_w + text.chars().count() as f32 + 2.0, "Manage usage", Action::AiManageUsage, false);
+            let mut c = label_w + text.chars().count() as f32 + 2.0;
+            if !grok {
+                c = b.button(c, "Manage usage", Action::AiManageUsage, false);
+            }
             b.button(c, "Sign out", Action::AiSignOut, false);
+        } else if grok {
+            let c = b.button(label_w, "Continue with Grok", Action::AiSignIn, true);
+            b.text(c, "uses your SuperGrok or X Premium plan", TextStyle::Dim);
         } else {
             let c = b.button(label_w, "Continue with ChatGPT", Action::AiSignIn, true);
             b.text(c, "uses your Plus or Pro plan", TextStyle::Dim);
         }
         b.next();
+        if grok && s.ai_account.is_none() && !compact && b.fits_rows(1) {
+            b.text(label_w, "xAI's page names this app Grok Build (xAI's shared sign-in)", TextStyle::Dim);
+            b.next();
+        }
     }
     if s.ai_account.is_some() && b.fits_rows(1) {
         b.text(0.0, "API key", TextStyle::Normal);
@@ -1645,6 +1673,41 @@ mod tests {
         assert!(p.buttons.iter().any(|b| b.action == Action::AiSignOut));
         assert!(!p.buttons.iter().any(|b| b.action == Action::AiPasteKey));
         assert!(p.lines.iter().any(|l| l.text.contains("not used while signed in")));
+    }
+
+    #[test]
+    fn grok_signed_out_offers_continue_and_says_xai_names_it_grok_build() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::Xai, ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiSignIn && b.label == "Continue with Grok"));
+        assert!(p.lines.iter().any(|l| l.text.contains("SuperGrok or X Premium")));
+        assert!(p.lines.iter().any(|l| l.text.contains("xAI's page names this app Grok Build")));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiPasteKey), "a key still works instead");
+    }
+
+    #[test]
+    fn grok_waiting_shows_the_code_with_open_page_and_cancel() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::Xai, ai_signing_in: true, ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("Asking xAI")), "before the code comes");
+        let s = OptionsState { ai_sign_in_code: Some("ABCD-1234".into()), ..s };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("Enter code ABCD-1234 at accounts.x.ai")));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiOpenSignInPage && b.label == "Open page"));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiSignIn && b.label == "Cancel"));
+    }
+
+    #[test]
+    fn grok_signed_in_shows_plan_and_sign_out() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::Xai, ai_account: Some("me@x.org".into()), ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("me@x.org · Using Grok plan")));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiSignOut));
+        assert!(!p.buttons.iter().any(|b| b.action == Action::AiManageUsage), "ChatGPT's usage page is not Grok's");
+        assert!(p.lines.iter().any(|l| l.text.contains("not used while signed in")));
+        let nameless = OptionsState { ai_account: Some(String::new()), ..s };
+        let p = options_panel(&m(), &nameless, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text.contains("Signed in · Using Grok plan")));
     }
 
     #[test]

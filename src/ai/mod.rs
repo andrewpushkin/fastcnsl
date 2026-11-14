@@ -4,6 +4,7 @@
 pub mod client;
 pub mod context;
 pub mod fix;
+pub mod grok;
 pub mod keys;
 pub mod login;
 pub mod wire;
@@ -26,8 +27,11 @@ pub enum AiEvent {
     Models { job: u64, result: Result<Vec<String>, AiError> },
     /// Options → AI's Test.
     Tested { job: u64, result: Result<(), AiError> },
-    /// The ChatGPT sign-in ended: the email signed in, or why not.
-    SignedIn { job: u64, result: Result<String, AiError> },
+    /// A Grok sign-in's code, to show until it ends; `page` is xAI's page
+    /// with the code filled in.
+    DeviceCode { job: u64, code: String, page: String },
+    /// A sign-in (ChatGPT or Grok) ended: the email signed in, or why not.
+    SignedIn { job: u64, provider: Provider, result: Result<String, AiError> },
 }
 
 /// Why a request gave no answer, as users are told.
@@ -58,8 +62,10 @@ pub enum AiError {
     PlanLimit,
     /// ChatGPT can't take plan requests just now.
     PlanBusy,
-    /// The ChatGPT sign-in is no longer valid.
+    /// The sign-in (ChatGPT or Grok) is no longer valid.
     SignInAgain,
+    /// xAI doesn't let the Grok plan be used by other apps.
+    GrokPlan,
     /// Signing in went wrong; says how.
     Login(String),
     /// The model kept calling tools past `fix::MAX_REQUESTS` requests.
@@ -85,7 +91,8 @@ impl std::fmt::Display for AiError {
             AiError::PlanNotEligible => write!(f, "your ChatGPT plan can't be used here (Plus or Pro is needed)"),
             AiError::PlanLimit => write!(f, "you have reached your ChatGPT plan's limit; see Manage usage (Options → AI)"),
             AiError::PlanBusy => write!(f, "ChatGPT is busy; try again"),
-            AiError::SignInAgain => write!(f, "sign in to ChatGPT again (Options → AI)"),
+            AiError::SignInAgain => write!(f, "sign in again (Options → AI)"),
+            AiError::GrokPlan => write!(f, "xAI didn't allow your Grok plan here (SuperGrok or X Premium is needed); you can use an API key instead"),
             AiError::Login(e) => write!(f, "{e}"),
             AiError::TooManySteps => write!(f, "the AI took too many steps"),
             AiError::Cancelled => write!(f, "cancelled"),
@@ -94,7 +101,7 @@ impl std::fmt::Display for AiError {
 }
 
 /// Who answers: a provider and the API format it speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     /// No provider: the AI items open Options → AI.

@@ -5,6 +5,7 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use super::grok::{self, GrokLogin};
 use super::login::{self, Login};
 use super::wire::{self, Format, Reply, Request};
 use super::{AiConfig, AiError, Keys, Provider};
@@ -23,6 +24,8 @@ enum Auth {
     /// A ChatGPT sign-in: the saved login (refreshed when it is about to
     /// expire) and the sign-in server.
     ChatGpt { path: PathBuf, auth: String },
+    /// A Grok sign-in, likewise.
+    Grok { path: PathBuf, auth: String },
 }
 
 /// A connection to one provider.
@@ -43,6 +46,12 @@ impl Client {
             && Login::load(&path).signed_in()
         {
             return Ok(Client::chatgpt_with(path, &login::auth_base(), &login::api_base()));
+        }
+        if p == Provider::Xai
+            && let Some(path) = GrokLogin::path()
+            && GrokLogin::load(&path).signed_in()
+        {
+            return Ok(Client::grok_with(path, &grok::auth_base(), &grok::api_base()));
         }
         let base = match p {
             Provider::Off => return Err(AiError::NoProvider),
@@ -75,15 +84,25 @@ impl Client {
         }
     }
 
-    /// Requests spend a ChatGPT plan.
+    /// A client spending the Grok plan of the login saved at `path`.
+    pub fn grok_with(path: PathBuf, auth: &str, api: &str) -> Client {
+        Client {
+            provider: Provider::Xai,
+            auth: Auth::Grok { path, auth: auth.trim_end_matches('/').to_owned() },
+            base: api.trim_end_matches('/').to_owned(),
+            agent: agent(Duration::from_secs(120)),
+        }
+    }
+
+    /// Requests spend a ChatGPT or Grok plan.
     pub fn on_plan(&self) -> bool {
-        matches!(self.auth, Auth::ChatGpt { .. })
+        matches!(self.auth, Auth::ChatGpt { .. } | Auth::Grok { .. })
     }
 
     /// The API format requests use.
     pub fn format(&self) -> Format {
         match &self.auth {
-            Auth::ChatGpt { .. } => Format::Responses,
+            Auth::ChatGpt { .. } | Auth::Grok { .. } => Format::Responses,
             Auth::Key(_) if self.provider.uses_messages_api() => Format::Messages,
             Auth::Key(_) => Format::Chat,
         }
@@ -116,13 +135,20 @@ impl Client {
     /// is 2xx. A connection dropped before any answer (a pooled connection
     /// the server closed) is tried once more.
     fn request(&self, path: &str, body: Option<&str>) -> Result<ureq::http::Response<ureq::Body>, AiError> {
-        let header = self.auth_header()?;
+        let mut header = self.auth_header(false)?;
         let started = Instant::now();
         let mut tries = 0;
+        let mut refreshed = false;
         let result = loop {
             tries += 1;
             match self.request_once(path, body, &header) {
                 Err(ureq::Error::Io(e)) if tries == 1 && dropped(&e) => continue,
+                // A Grok token xAI stopped taking before its time: once more
+                // with a fresh one.
+                Ok(r) if r.status().as_u16() == 401 && matches!(self.auth, Auth::Grok { .. }) && !refreshed => {
+                    refreshed = true;
+                    header = self.auth_header(true)?;
+                }
                 r => break r,
             }
         };
@@ -132,7 +158,16 @@ impl Client {
                 let status = response.status().as_u16();
                 // Never the key or the bodies: they hold secrets and terminal text.
                 log::info!("AI: {} {url_path}: {status} in {} ms", self.provider.name(), started.elapsed().as_millis());
-                if (200..300).contains(&status) { Ok(response) } else { Err(wire::error_for(status, &read_text(response).unwrap_or_default())) }
+                if (200..300).contains(&status) {
+                    return Ok(response);
+                }
+                let text = read_text(response).unwrap_or_default();
+                if status == 403 && matches!(self.auth, Auth::Grok { .. }) {
+                    // xAI's plan gate: an error body has no secrets.
+                    log::warn!("AI: Grok plan refused: {}", text.chars().take(500).collect::<String>());
+                    return Err(AiError::GrokPlan);
+                }
+                Err(wire::error_for(status, &text))
             }
             Err(e) => {
                 log::info!("AI: {} {url_path}: {e}", self.provider.name());
@@ -169,9 +204,9 @@ impl Client {
     }
 
     /// The header that carries the key or the plan's access token (None:
-    /// no key). A plan's token about to expire is refreshed first, one
-    /// refresh at a time across threads.
-    fn auth_header(&self) -> Result<Option<(&'static str, String)>, AiError> {
+    /// no key). A plan's token about to expire (or any Grok token, with
+    /// `force`) is refreshed first, one refresh at a time across threads.
+    fn auth_header(&self, force: bool) -> Result<Option<(&'static str, String)>, AiError> {
         match &self.auth {
             Auth::Key(k) if k.is_empty() => Ok(None),
             Auth::Key(k) if self.provider.uses_messages_api() => Ok(Some(("x-api-key", k.clone()))),
@@ -188,6 +223,23 @@ impl Client {
                     // Saved either way: a failed refresh may have signed out.
                     if let Err(e) = l.save(path) {
                         log::warn!("could not save the ChatGPT sign-in: {e}");
+                    }
+                    refreshed?;
+                }
+                Ok(Some(("authorization", format!("Bearer {}", l.access_token))))
+            }
+            Auth::Grok { path, auth } => {
+                let _one = login::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let mut l = GrokLogin::load(path);
+                if !l.signed_in() {
+                    return Err(AiError::SignInAgain);
+                }
+                let now = login::now();
+                if force || l.needs_refresh(now) {
+                    let refreshed = grok::refresh(&login::agent(), auth, &mut l, now);
+                    // Saved either way: a failed refresh may have signed out.
+                    if let Err(e) = l.save(path) {
+                        log::warn!("could not save the Grok sign-in: {e}");
                     }
                     refreshed?;
                 }
@@ -315,7 +367,7 @@ mod tests {
     use super::*;
     use crate::ai::wire::Request;
 
-    use super::testserver::serve_once;
+    use super::testserver::{serve_once, serve_with};
 
     fn req() -> Request<'static> {
         static U: std::sync::LazyLock<[serde_json::Value; 1]> = std::sync::LazyLock::new(|| [crate::ai::wire::user_message("u")]);
@@ -358,6 +410,70 @@ mod tests {
         assert!(got.join().unwrap().to_lowercase().starts_with("get /models?limit=1000 "));
         let dead = Client::with_base(Provider::Xai, "k", "http://127.0.0.1:9");
         assert!(matches!(dead.models(), Err(AiError::Network(_))));
+    }
+
+    const COMPLETED: &str = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n";
+
+    /// A Grok login saved in a new folder, its token good for an hour.
+    fn grok_login(name: &str) -> PathBuf {
+        let path = crate::testterm::temp_dir(name).join("grok-login.json");
+        let l = super::super::grok::GrokLogin { email: "e".into(), access_token: "a1".into(), refresh_token: "r1".into(), expires_at: login::now() + 3600 };
+        l.save(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_grok_plan_sends_responses_with_its_token() {
+        let path = grok_login("grok-client");
+        let (base, got) = serve_with(1, |_| (200, COMPLETED.to_owned()));
+        let c = Client::grok_with(path, "http://127.0.0.1:9", &base);
+        assert!(c.on_plan());
+        assert_eq!(c.send(&req()).unwrap().text, "ok");
+        let raw = got.join().unwrap()[0].to_lowercase();
+        assert!(raw.starts_with("post /responses ") && raw.contains("authorization: bearer a1"), "{raw}");
+    }
+
+    #[test]
+    fn a_grok_401_refreshes_the_token_and_tries_once_more() {
+        let path = grok_login("grok-401");
+        let mut asked = 0;
+        let (base, got) = serve_with(3, move |raw: &str| {
+            if raw.starts_with("POST /oauth2/token") {
+                return (200, r#"{"access_token":"a2","refresh_token":"r2","expires_in":21600}"#.to_owned());
+            }
+            asked += 1;
+            if asked == 1 { (401, r#"{"error":"The OAuth2 access token could not be validated."}"#.to_owned()) } else { (200, COMPLETED.to_owned()) }
+        });
+        let c = Client::grok_with(path.clone(), &base, &base);
+        assert_eq!(c.send(&req()).unwrap().text, "ok");
+        let raws = got.join().unwrap();
+        assert!(raws[2].to_lowercase().contains("authorization: bearer a2"), "{}", raws[2]);
+        let l = super::super::grok::GrokLogin::load(&path);
+        assert_eq!((l.access_token.as_str(), l.refresh_token.as_str()), ("a2", "r2"));
+    }
+
+    #[test]
+    fn a_grok_403_is_the_plan_gate() {
+        let path = grok_login("grok-403");
+        let (base, got) = serve_with(1, |_| (403, r#"{"code":"x","error":"does not have permission to execute the specified operation"}"#.to_owned()));
+        let c = Client::grok_with(path, "http://127.0.0.1:9", &base);
+        assert_eq!(c.send(&req()).unwrap_err(), AiError::GrokPlan);
+        got.join().unwrap();
+    }
+
+    #[test]
+    fn a_grok_token_about_to_expire_is_refreshed_first() {
+        let path = grok_login("grok-expiring");
+        let mut l = super::super::grok::GrokLogin::load(&path);
+        l.expires_at = login::now() + 60;
+        l.save(&path).unwrap();
+        let (base, got) = serve_with(2, |raw: &str| {
+            if raw.starts_with("POST /oauth2/token") { (200, r#"{"access_token":"a3","expires_in":21600}"#.to_owned()) } else { (200, COMPLETED.to_owned()) }
+        });
+        let c = Client::grok_with(path, &base, &base);
+        assert_eq!(c.send(&req()).unwrap().text, "ok");
+        let raws = got.join().unwrap();
+        assert!(raws[0].starts_with("POST /oauth2/token") && raws[1].to_lowercase().contains("authorization: bearer a3"));
     }
 
     #[test]

@@ -84,10 +84,7 @@ impl Login {
     /// Writes the whole file under another name, then renames it, so a
     /// crash never leaves half a file; readable by the user only.
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        let text = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
-        let tmp = path.with_extension("json.tmp");
-        crate::config::write_private(&tmp, &text)?;
-        std::fs::rename(&tmp, path)
+        save_json(self, path)
     }
 
     /// Signed in, with the right to spend the plan.
@@ -116,6 +113,15 @@ impl Login {
         self.expires_at = t.expires_at;
         self.scopes = t.scopes;
     }
+}
+
+/// Writes `value` as JSON under another name, then renames it, so a crash
+/// never leaves half a file; readable by the user only.
+pub fn save_json(value: &impl Serialize, path: &Path) -> io::Result<()> {
+    let text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    crate::config::write_private(&tmp, &text)?;
+    std::fs::rename(&tmp, path)
 }
 
 /// `bytes` random bytes from the system, as URL-safe base64.
@@ -170,7 +176,7 @@ pub fn encode(s: &str) -> String {
     out
 }
 
-fn decode(s: &str) -> String {
+pub(crate) fn decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -315,7 +321,7 @@ pub fn agent() -> ureq::Agent {
 }
 
 /// POSTs a form; the status and the body's text.
-fn post_form(agent: &ureq::Agent, url: &str, body: &str) -> Result<(u16, String), AiError> {
+pub(crate) fn post_form(agent: &ureq::Agent, url: &str, body: &str) -> Result<(u16, String), AiError> {
     let mut r = agent
         .post(url)
         .header("content-type", "application/x-www-form-urlencoded")
@@ -327,11 +333,11 @@ fn post_form(agent: &ureq::Agent, url: &str, body: &str) -> Result<(u16, String)
 }
 
 /// The OAuth error in a failed token response, e.g. "invalid_grant".
-fn oauth_code(body: &str) -> String {
+pub(crate) fn oauth_code(body: &str) -> String {
     serde_json::from_str::<Value>(body).ok().and_then(|v| v["error"].as_str().map(str::to_owned)).unwrap_or_default()
 }
 
-fn oauth_error(status: u16, body: &str) -> AiError {
+pub(crate) fn oauth_error(status: u16, body: &str) -> AiError {
     let description = serde_json::from_str::<Value>(body).ok().and_then(|v| v["error_description"].as_str().map(str::to_owned));
     match (oauth_code(body), description) {
         (code, _) if code.is_empty() => super::wire::error_for(status, body),
@@ -341,11 +347,12 @@ fn oauth_error(status: u16, body: &str) -> AiError {
 }
 
 /// How a sign-in ended, for the notice at the bottom of the window.
-pub fn outcome_text(result: &Result<String, AiError>) -> String {
+/// `name` is the provider's label ("ChatGPT", "Grok").
+pub fn outcome_text(name: &str, result: &Result<String, AiError>) -> String {
     match result {
-        Ok(email) if email.is_empty() => "Signed in to ChatGPT".to_owned(),
-        Ok(email) => format!("Signed in to ChatGPT as {email}"),
-        Err(e) => format!("ChatGPT sign-in failed: {e}"),
+        Ok(email) if email.is_empty() => format!("Signed in to {name}"),
+        Ok(email) => format!("Signed in to {name} as {email}"),
+        Err(e) => format!("{name} sign-in failed: {e}"),
     }
 }
 
@@ -608,7 +615,7 @@ pub fn sign_in(job: u64, proxy: winit::event_loop::EventLoopProxy<crate::session
             sign_in_with(listener, &auth_base(), &path, open, &cancel)
         })();
         if result != Err(AiError::Cancelled) {
-            let _ = proxy.send_event(crate::session::UserEvent::Ai(super::AiEvent::SignedIn { job, result }));
+            let _ = proxy.send_event(crate::session::UserEvent::Ai(super::AiEvent::SignedIn { job, provider: super::Provider::OpenAi, result }));
         }
     });
 }
@@ -877,9 +884,10 @@ mod tests {
 
     #[test]
     fn the_outcome_is_said_in_words() {
-        assert_eq!(outcome_text(&Ok("me@x.org".into())), "Signed in to ChatGPT as me@x.org");
-        assert_eq!(outcome_text(&Ok(String::new())), "Signed in to ChatGPT");
-        assert_eq!(outcome_text(&Err(AiError::PlanNotEligible)), format!("ChatGPT sign-in failed: {}", AiError::PlanNotEligible));
+        assert_eq!(outcome_text("ChatGPT", &Ok("me@x.org".into())), "Signed in to ChatGPT as me@x.org");
+        assert_eq!(outcome_text("Grok", &Ok("me@x.org".into())), "Signed in to Grok as me@x.org");
+        assert_eq!(outcome_text("ChatGPT", &Ok(String::new())), "Signed in to ChatGPT");
+        assert_eq!(outcome_text("ChatGPT", &Err(AiError::PlanNotEligible)), format!("ChatGPT sign-in failed: {}", AiError::PlanNotEligible));
     }
 
     #[test]

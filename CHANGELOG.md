@@ -15,6 +15,9 @@ releases have a section.
   provider, API key and model in Options → AI.
 - **Continue with ChatGPT** in Options → AI: fixes use your ChatGPT Plus or
   Pro plan instead of an API key.
+- **Continue with Grok** in Options → AI: fixes use your SuperGrok or X
+  Premium plan instead of an API key (enter the code fastcnsl shows on
+  xAI's page).
 - Jumping to a bookmark scrolls there smoothly and briefly highlights the line.
 - `fastcnsl new-tab`, `close-tab` and `quit` only reach windows of the same
   version; `--pid` naming another version's window is refused.

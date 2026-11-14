@@ -305,6 +305,25 @@ enum Overlay {
     AiWelcome,
 }
 
+/// A sign-in under way: its job, provider, the flag that cancels it, and
+/// (Grok) the code to enter and xAI's page with it filled in.
+struct SignIn {
+    job: u64,
+    provider: ai::Provider,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    code: Option<(String, String)>,
+}
+
+/// The email signed in to ChatGPT, if signed in.
+fn chatgpt_account() -> Option<String> {
+    ai::login::Login::path().map(|p| ai::login::Login::load(&p)).filter(|l| l.signed_in()).map(|l| l.email)
+}
+
+/// The email signed in to Grok, if signed in.
+fn grok_account() -> Option<String> {
+    ai::grok::GrokLogin::path().map(|p| ai::grok::GrokLogin::load(&p)).filter(|l| l.signed_in()).map(|l| l.email)
+}
+
 struct State {
     window: Arc<Window>,
     renderer: Renderer,
@@ -396,10 +415,11 @@ struct State {
     ai_test_job: Option<u64>,
     /// The model chosen when the list was asked for, to scroll to it.
     ai_model_shown: String,
-    /// ChatGPT: the email signed in, and a sign-in waiting for the browser
-    /// (its job and the flag that cancels it).
+    /// The emails signed in to ChatGPT and to Grok ("" when the provider
+    /// didn't say), and a sign-in under way.
     ai_account: Option<String>,
-    ai_signin: Option<(u64, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    ai_grok_account: Option<String>,
+    ai_signin: Option<SignIn>,
     /// The sign-in changed: the model (named differently on a plan) must be
     /// chosen again. Done by `App`, which owns the settings.
     ai_reset_model: bool,
@@ -634,7 +654,8 @@ impl App {
             ai_models_job: None,
             ai_test_job: None,
             ai_model_shown: String::new(),
-            ai_account: ai::login::Login::path().map(|p| ai::login::Login::load(&p)).filter(|l| l.signed_in()).map(|l| l.email),
+            ai_account: chatgpt_account(),
+            ai_grok_account: grok_account(),
             ai_signin: None,
             ai_reset_model: false,
         };
@@ -739,6 +760,7 @@ impl App {
                 | Action::AiSignIn
                 | Action::AiSignOut
                 | Action::AiManageUsage
+                | Action::AiOpenSignInPage
         )
             || matches!(st.overlay, Overlay::Menu(_))
         {
@@ -905,9 +927,14 @@ impl App {
                 }
             }
             Action::AiTest => st.test_ai(&self.cfg),
-            Action::AiSignIn => st.sign_in_or_cancel(),
+            Action::AiSignIn => st.sign_in_or_cancel(self.cfg.ai.provider),
+            Action::AiOpenSignInPage => {
+                if let Some(page) = st.ai_signin.as_ref().and_then(|s| s.code.as_ref()).map(|(_, page)| page.clone()) {
+                    st.open(page);
+                }
+            }
             Action::AiSignOut => {
-                st.sign_out_chatgpt();
+                st.sign_out(self.cfg.ai.provider);
                 self.change_config(|c| c.ai.model.clear());
                 if let Some(st) = self.state.as_mut() {
                     st.load_ai_models(&self.cfg);
@@ -1458,8 +1485,13 @@ impl State {
             ai_models: self.ai_models.clone(),
             ai_scroll: self.ai_scroll,
             ai_status: self.ai_status.clone(),
-            ai_account: self.ai_account.clone().filter(|_| cfg.ai.provider == ai::Provider::OpenAi),
-            ai_signing_in: self.ai_signin.is_some(),
+            ai_account: match cfg.ai.provider {
+                ai::Provider::OpenAi => self.ai_account.clone(),
+                ai::Provider::Xai => self.ai_grok_account.clone(),
+                _ => None,
+            },
+            ai_signing_in: self.ai_signin.as_ref().is_some_and(|s| s.provider == cfg.ai.provider),
+            ai_sign_in_code: self.ai_signin.as_ref().filter(|s| s.provider == cfg.ai.provider).and_then(|s| s.code.as_ref()).map(|(code, _)| code.clone()),
         }
     }
 
@@ -1682,7 +1714,11 @@ impl State {
         self.ai_budget = ai::context::Budget::new();
         let context = self.ai_budget.take_up_to(context, ai::context::FIRST_MAX);
         self.ai_bookmarked.clear();
-        self.ai_label = if client.on_plan() { "ChatGPT (your plan)" } else { provider.label() };
+        self.ai_label = match (client.on_plan(), provider) {
+            (true, ai::Provider::Xai) => "Grok (your plan)",
+            (true, _) => "ChatGPT (your plan)",
+            (false, p) => p.label(),
+        };
         let tab_id = tab.id;
         let job = self.ai_job_number();
         self.ai_job = Some((job, tab_id));
@@ -1699,7 +1735,8 @@ impl State {
                 | AiEvent::Tested { result: Err(ai::AiError::SignInAgain), .. }
         );
         if signed_out {
-            self.ai_account = None;
+            self.ai_account = chatgpt_account();
+            self.ai_grok_account = grok_account();
         }
         match event {
             AiEvent::Fixed { job, tab, result } => {
@@ -1763,15 +1800,27 @@ impl State {
                 self.ai_scroll = self.ai_models.iter().position(|m| m == &self.ai_model_shown).unwrap_or(0).saturating_sub(3);
                 self.window.request_redraw();
             }
-            AiEvent::SignedIn { job, result } => {
-                if self.ai_signin.as_ref().map(|(j, _)| *j) != Some(job) {
+            AiEvent::DeviceCode { job, code, page } => {
+                let Some(signin) = self.ai_signin.as_mut().filter(|s| s.job == job) else { return };
+                signin.code = Some((code.clone(), page));
+                // Said where it is seen even with Options closed.
+                self.show_for(format!("Grok sign-in: enter code {code} on xAI's page (opened in your browser)"), Duration::from_secs(300));
+                self.window.request_redraw();
+            }
+            AiEvent::SignedIn { job, provider, result } => {
+                if self.ai_signin.as_ref().map(|s| s.job) != Some(job) {
                     return;
                 }
                 self.ai_signin = None;
                 self.window.request_redraw();
                 // Said where it is seen even with Options closed.
-                self.show(ai::login::outcome_text(&result));
+                self.show(ai::login::outcome_text(provider.label(), &result));
                 match result {
+                    Ok(email) if provider == ai::Provider::Xai => {
+                        self.ai_status = String::new();
+                        self.ai_grok_account = Some(email);
+                        self.ai_reset_model = true;
+                    }
                     Ok(email) => {
                         self.ai_status = String::new();
                         self.ai_account = Some(email);
@@ -1799,23 +1848,49 @@ impl State {
         }
     }
 
-    /// Options → AI → Continue with ChatGPT: opens the browser to sign in;
-    /// pressed again while waiting (Cancel), stops waiting.
-    fn sign_in_or_cancel(&mut self) {
-        if let Some((_, cancel)) = self.ai_signin.take() {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    /// Options → AI → Continue with ChatGPT (or Grok): opens the browser to
+    /// sign in; pressed again while waiting (Cancel), stops waiting.
+    fn sign_in_or_cancel(&mut self, provider: ai::Provider) {
+        if let Some(signin) = self.ai_signin.take() {
+            signin.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             self.ai_status = "Sign-in cancelled".to_owned();
             return;
         }
         let job = self.ai_job_number();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.ai_signin = Some((job, cancel.clone()));
+        self.ai_signin = Some(SignIn { job, provider, cancel: cancel.clone(), code: None });
         self.ai_status.clear();
-        ai::login::sign_in(job, self.proxy.clone(), cancel);
+        match provider {
+            ai::Provider::Xai => ai::grok::sign_in(job, self.proxy.clone(), cancel),
+            _ => ai::login::sign_in(job, self.proxy.clone(), cancel),
+        }
     }
 
-    /// Options → AI → Sign out: forgets the tokens here and asks OpenAI to
-    /// revoke them (in the background).
+    /// Options → AI → Sign out, for `provider`.
+    fn sign_out(&mut self, provider: ai::Provider) {
+        if provider == ai::Provider::Xai {
+            self.sign_out_grok();
+        } else {
+            self.sign_out_chatgpt();
+        }
+    }
+
+    /// Forgets the Grok tokens here and asks xAI to revoke them (in the
+    /// background).
+    fn sign_out_grok(&mut self) {
+        self.ai_grok_account = None;
+        let Some(path) = ai::grok::GrokLogin::path() else { return };
+        let _one = ai::login::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = ai::grok::GrokLogin::load(&path);
+        let _ = std::thread::Builder::new().name("ai-logout".into()).spawn(move || ai::grok::revoke(&ai::login::agent(), &ai::grok::auth_base(), &old));
+        match ai::grok::GrokLogin::default().save(&path) {
+            Ok(()) => self.ai_status = "Signed out".to_owned(),
+            Err(e) => self.ai_status = format!("could not save the sign-out: {e}"),
+        }
+    }
+
+    /// Forgets the ChatGPT tokens here and asks OpenAI to revoke them (in
+    /// the background).
     fn sign_out_chatgpt(&mut self) {
         self.ai_account = None;
         let Some(path) = ai::login::Login::path() else { return };
