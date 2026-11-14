@@ -6,8 +6,14 @@ releases have a section.
 
 ## Unreleased
 
+- **Chat with AI** about a tab: right-click the tab (or press
+  Ctrl+Shift+I) and a chat opens beside the terminal. The AI sees the tab's
+  commands and output as a fix does, and suggests commands you can insert
+  at the prompt or run with one click; after a run, Continue hands it the
+  output. Ask AI in chat, beside a command, asks about that one.
 - **Fix a command with AI.** Click the time beside a command and choose
-  **Fix this command**, or press Ctrl+Shift+X for the last one: ChatGPT,
+  **Fix this command**, or press Ctrl+Shift+X (or right-click and choose
+  **Fix last command with AI**) for the last one: ChatGPT,
   Grok, Claude or a local server reads the command and its output, types
   the corrected command at the prompt (without running it) and says what
   was wrong. The AI sees your recent commands and bookmarked lines, reads

@@ -445,6 +445,16 @@ The conversation is kept in memory and only ever appended to. When it
 nears the model's limit the panel says so and offers New chat; nothing is
 trimmed. For Claude, replies are stored and sent back exactly as received.
 
+**As built in stage 2** (`docs/superpowers/plans/2026-11-14-ai-chat.md`):
+the menu item is **Chat with AI** (tab right-click, terminal right-click,
+⋮), `ai_chat` is Ctrl+Shift+I / Cmd+Shift+I. Replies come whole, not
+streamed (Esc stops waiting). The header has no token count (replies carry
+no usage); past 300 000 bytes the panel suggests New chat. Without
+"finished" detection a run card offers **Continue**, which sends the
+command's output as the `run_command` result; a new message does the same,
+and answers cards left alone with "the user did not run this". Each
+message's terminal text is cut at 20 000 bytes.
+
 ### Autopilot
 
 Off by default, per chat, and off again after New chat. While it is on,

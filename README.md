@@ -174,7 +174,8 @@ line stays marked as more output arrives. **Ctrl+Shift+↑ / ↓** jump between 
 ### Fix a command with AI
 
 Forgot how `tar` takes its options? Click the time beside the command and
-choose **Fix this command**, or press **Ctrl+Shift+X** for the last one. An
+choose **Fix this command**, or press **Ctrl+Shift+X** (or right-click
+and choose **Fix last command with AI**) for the last one. An
 AI reads the command and what it printed, types the corrected command at
 your prompt and says in one line what was wrong. The command is not run:
 read it, change it if you like, and press Enter yourself.
@@ -223,7 +224,7 @@ Provider **Claude** needs an API key: Anthropic doesn't allow other apps to
 sign in with Claude Pro or Max, so a plan is used only through your own
 Claude Code.
 
-**What is sent.** Only when you ask for a fix: the list of your last 50
+**What is sent.** Only when you ask for a fix or send a chat message: the list of your last 50
 commands (`listed_commands`; the command lines, not their output), the
 lines you bookmarked, the output of the last command (and of the one you
 clicked), any other output the AI asks for, and the names of your shell,
@@ -235,6 +236,29 @@ sending.
 Keys are kept in `ai-keys.toml` beside the settings file, readable only by
 you, never in `config.toml`. Without one there, fastcnsl uses
 `OPENAI_API_KEY`, `XAI_API_KEY` or `ANTHROPIC_API_KEY`.
+
+### Chat with AI about a tab
+
+Right-click a tab and choose **Chat with AI** (or press **Ctrl+Shift+I**,
+or pick it in the ⋮ menu or the right-click menu): a chat opens on the
+right of that tab and the terminal makes room for it. Click the time
+beside a command and choose **Ask AI in chat** to ask about that one.
+
+Each message carries what a fix sends: your recent commands, the lines you
+bookmarked and the last command's output; the AI reads other output when it
+needs it and can bookmark lines. When it suggests a command, the command
+shows with two buttons: **Insert** types it at your prompt, **Run** types
+it and presses Enter. Nothing runs unless you click Run or press Enter
+yourself. After Run, **Continue** sends the command's output to the AI so
+it can go on; a new message does the same.
+
+Enter sends, Shift+Enter starts a new line, Esc stops a reply you are
+waiting for (or, with none, gives the keyboard back to the terminal).
+Ctrl+Shift+I or a click moves the keyboard between the chat and the
+terminal; the other side's cursor turns hollow. Every message has **Copy**.
+Drag the panel's left edge to change its width (`panel_width`, kept for
+next time); **×** closes it and **New chat** starts over. A chat lasts as
+long as its tab and is never saved to disk.
 
 ### Tabs
 
@@ -296,8 +320,9 @@ setting you changed has a ↺ next to it that puts back its default.
 ### Menus
 
 **⋮** in the top-right corner holds new tab, find, copy, paste, Options and
-About. Right-click the text for copy, paste, select all, fixing a command
-with AI and bookmarks.
+About. Right-click the text for copy, paste, select all, fixing the last command
+with AI, chatting with AI and bookmarks. Right-click a tab for its own
+menu, with **Chat with AI** among its items.
 
 | ⋮ menu | Right-click menu |
 |---|---|
@@ -357,6 +382,7 @@ new tab), Cmd+1 … Cmd+0 for tabs, and Cmd+Shift+0 to reset the font size.
 | Ctrl+Shift+B                | add / remove bookmark                    |
 | Ctrl+Shift+↑ / ↓            | previous / next bookmark                 |
 | Ctrl+Shift+X                | fix the last command with AI             |
+| Ctrl+Shift+I                | chat with AI, or switch between the chat and the terminal |
 
 **Changing shortcuts.** In Options → Keyboard shortcuts, click a command's
 keys and press the new ones. Esc cancels, Backspace removes the shortcut,
@@ -417,7 +443,8 @@ log_timestamps = false           # start each logged line with [HH:MM:SS]
 provider = ""                    # "openai" | "xai" | "anthropic" | "custom" | "" (off)
 model = ""                       # empty: the provider's default (Claude: claude-opus-5-5)
 base_url = ""                    # "custom" only, e.g. "http://localhost:11434/v1"
-listed_commands = 50             # recent commands a fix lists to the AI
+listed_commands = 50             # recent commands a fix or chat message lists to the AI
+panel_width = 0.4                # the chat panel's share of the window (0.2-0.8)
 ```
 
 Code themes: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
