@@ -91,6 +91,8 @@ pub struct ChromeView<'a> {
     pub logging: Vec<bool>,
     /// Which tabs printed something since they were last selected (a bell).
     pub activity: Vec<bool>,
+    /// Which tabs' chats have Autopilot on (the title in the warning colour).
+    pub autopilot: Vec<bool>,
     /// A short notice at the bottom of the window ("Saved to ...").
     pub toast: Option<&'a str>,
     /// The grid size, in the bottom right corner for a while after a resize.
@@ -217,9 +219,15 @@ fn draw_chat(p: &mut Painter<'_>, pal: &Palette, scale: f32, l: &crate::chat_ui:
     p.text(Layer::UiText, &l.title, a.x + (10.0 * scale).round(), l.title_y, pal.ui_fg.rgba(1.0));
     for (rect, hit, label) in &l.buttons {
         let hot = hover == Hover::Chat(*hit);
-        p.rounded(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, r, if hot { pal.ui_accent.rgba(0.85) } else { pal.ui_dim.rgba(0.18) });
+        let warn = *hit == ChatHit::Autopilot && l.autopilot;
+        let bg = match (warn, hot) {
+            (true, _) => pal.ansi[3].rgba(if hot { 1.0 } else { 0.85 }),
+            (false, true) => pal.ui_accent.rgba(0.85),
+            (false, false) => pal.ui_dim.rgba(0.18),
+        };
+        p.rounded(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, r, bg);
         let tw = label.chars().map(crate::grid_width).sum::<usize>() as f32 * p.cell.width;
-        let fg = if hot { pal.ui_bg } else { pal.ui_fg };
+        let fg = if hot || warn { pal.ui_bg } else { pal.ui_fg };
         p.text(Layer::UiText, label, (rect.x + (rect.w - tw) / 2.0).round(), (rect.y + (rect.h - cell_h) / 2.0).round(), fg.rgba(1.0));
     }
     for line in &l.lines {
@@ -291,6 +299,7 @@ fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<
         let activity = !active && c.activity.get(i).copied().unwrap_or(false);
         let bell_fits = tx + shown.chars().count() as f32 * m.cw <= slot.close.x;
         let color = match (active, activity && !bell_fits) {
+            _ if c.autopilot.get(i).copied().unwrap_or(false) => pal.ansi[3],
             (true, _) => pal.foreground,
             (false, true) => pal.ui_accent,
             (false, false) => pal.ui_dim,
@@ -963,6 +972,7 @@ mod tests {
             panel: None,
             logging: Vec::new(),
             activity: Vec::new(),
+            autopilot: Vec::new(),
             toast: None,
             size: None,
             chat: None,
@@ -1364,6 +1374,18 @@ mod tests {
         c.paint(800.0, 300.0, |p| draw(p, &t, &f.view(), &ch));
         // Restore icon: two squares, more shapes than the maximize square.
         assert!(c.layer(Layer::UiShapes).len() > plain + 5);
+    }
+
+    #[test]
+    fn an_autopilot_tab_is_marked() {
+        let Some(mut c) = Canvas::new() else { return };
+        let f = Fixture::new();
+        let mut ch = chrome(vec!["Tab 1: one", "Tab 2: two"]);
+        ch.autopilot = vec![false, true];
+        c.paint(900.0, 300.0, |p| draw(p, &term("x"), &f.view(), &ch));
+        let warn = f.palette.ansi[3].rgba(1.0);
+        let marked = c.layer(Layer::UiText).iter().filter(|i| i.color == warn).count();
+        assert!(marked >= "Tab2:two".len(), "{marked} glyphs in the warning colour");
     }
 
     #[test]

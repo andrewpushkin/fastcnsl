@@ -143,7 +143,6 @@ pub enum Drive {
 
 /// The UI thread's answers to [`Drive`].
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // built by the UI once Autopilot is wired in
 pub enum Driven {
     Ran { line: u64 },
     Sent,
@@ -388,7 +387,6 @@ pub enum CardState {
     Answered,
     /// The user went on without it.
     Skipped,
-    #[allow(dead_code)] // TEMP: wired in by the Autopilot UI task
     /// Run by Autopilot on global line `line`; `running` until it finished
     /// or Autopilot moved on.
     Auto { line: u64, running: bool },
@@ -428,9 +426,7 @@ pub struct Chat {
     /// is sent; `driving` while a turn sent with it is under way, and `stop`
     /// says why it should end (answered at the AI's next step).
     pub autopilot: bool,
-    #[allow(dead_code)] // TEMP: wired in by the Autopilot UI task
     pub driving: bool,
-    #[allow(dead_code)] // TEMP: wired in by the Autopilot UI task
     pub stop: Option<String>,
     /// The conversation's size, serialized.
     bytes: usize,
@@ -502,6 +498,18 @@ impl Chat {
     #[cfg(test)]
     pub fn has_waiting_card(&self) -> bool {
         self.entries.iter().any(|e| matches!(e, Entry::Card(c) if c.state == CardState::Waiting))
+    }
+
+    /// Asks a turn running with Autopilot to stop at the AI's next step,
+    /// saying `reason`, and switches Autopilot off. False (and nothing
+    /// changes) when no such turn is running or it is already stopping.
+    pub fn stop_turn(&mut self, reason: &str) -> bool {
+        if self.job.is_none() || !self.driving || self.stop.is_some() {
+            return false;
+        }
+        self.autopilot = false;
+        self.stop = Some(reason.to_owned());
+        true
     }
 
     /// Commands Autopilot ran are no longer running.
@@ -678,6 +686,22 @@ mod tests {
         assert_eq!(tools(false)[2].schema["required"], serde_json::json!(["command", "explanation"]));
         assert_eq!(tools(false)[2].schema["additionalProperties"], false);
     }
+    #[test]
+    fn only_a_running_turn_is_stopped() {
+        let mut chat = Chat::new();
+        chat.autopilot = true;
+        // Nothing running: typing in the terminal leaves Autopilot on.
+        assert!(!chat.stop_turn("you typed in the terminal"));
+        assert!(chat.autopilot && chat.stop.is_none());
+        // A turn with Autopilot: it stops, once, and Autopilot goes off.
+        chat.job = Some(1);
+        chat.driving = true;
+        assert!(chat.stop_turn("you typed in the terminal"));
+        assert!(!chat.autopilot);
+        assert!(!chat.stop_turn("again"));
+        assert_eq!(chat.stop.as_deref(), Some("you typed in the terminal"));
+    }
+
     #[test]
     fn ask_leaves_auto_cards_alone() {
         let mut chat = Chat::new();

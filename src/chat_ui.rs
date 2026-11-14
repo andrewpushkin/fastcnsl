@@ -35,11 +35,13 @@ pub struct ChatPanel {
     pub bookmarked: Vec<u64>,
     /// What the AI is doing while a message is answered ("Asking Claude…").
     pub activity: String,
+    /// When Autopilot last typed in the terminal: output is quiet from then on.
+    pub typed_at: std::time::Instant,
 }
 
 impl ChatPanel {
     pub fn new() -> Self {
-        ChatPanel { chat: Chat::new(), input: TextInput::new(), open: false, focused: false, scroll: 0.0, about: None, budget: Budget::new(), bookmarked: vec![], activity: String::new() }
+        ChatPanel { chat: Chat::new(), input: TextInput::new(), open: false, focused: false, scroll: 0.0, about: None, budget: Budget::new(), bookmarked: vec![], activity: String::new(), typed_at: std::time::Instant::now() }
     }
 
     /// Clears the conversation; the panel stays as it is.
@@ -93,7 +95,6 @@ pub struct ChatLayout {
     pub title: String,
     pub title_y: f32,
     /// Autopilot is on: its switch is drawn in the warning colour.
-    #[allow(dead_code)] // TEMP: wired in by the Autopilot UI task
     pub autopilot: bool,
     /// Header and per-entry buttons, with their labels.
     pub buttons: Vec<(Rect, ChatHit, &'static str)>,

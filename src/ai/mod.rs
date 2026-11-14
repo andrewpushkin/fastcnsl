@@ -28,7 +28,6 @@ pub enum AiEvent {
     ChatTurn { job: u64, tab: u64, result: Result<chat::Turn, AiError> },
     /// Autopilot's work in the terminal of the tab with id `tab`; the
     /// answer goes back on `reply`. Dropping `reply` ends the turn.
-    #[allow(dead_code)] // read once Autopilot is wired in
     Drive { job: u64, tab: u64, request: chat::Drive, reply: std::sync::mpsc::Sender<chat::Driven> },
     /// A Fix for the tab with id `tab`.
     Fixed { job: u64, tab: u64, result: Result<fix::Fix, AiError> },

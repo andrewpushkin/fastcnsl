@@ -159,6 +159,8 @@ struct Tab {
     grid: WindowSize,
     /// The AI chat beside this tab.
     chat: ChatPanel,
+    /// When the program last printed something (Autopilot waits for quiet).
+    last_output: Instant,
 }
 
 impl Tab {
@@ -348,6 +350,20 @@ struct SignIn {
     provider: ai::Provider,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     code: Option<(String, String)>,
+}
+
+/// The last lines of a command's output (as `context::output` numbers
+/// them) for its card: the text after each line's number.
+fn auto_card_lines(output: &str) -> Vec<String> {
+    let lines: Vec<String> = output
+        .lines()
+        .skip(1)
+        .map(|l| match l.split_once("| ") {
+            Some((n, text)) if n.trim_end_matches('*').trim().parse::<u64>().is_ok() => text.to_owned(),
+            _ => l.to_owned(),
+        })
+        .collect();
+    lines[lines.len().saturating_sub(4)..].to_vec()
 }
 
 /// Who answers, for notices: the provider, or the plan it spends.
@@ -1234,6 +1250,7 @@ impl State {
             log_behind: false,
             grid,
             chat: ChatPanel::new(),
+            last_output: Instant::now(),
         });
         self.relabel();
         self.select_tab(self.tabs.len() - 1);
@@ -1763,6 +1780,7 @@ impl State {
                 panel: panel.as_ref(),
                 logging: self.tabs.iter().map(|t| t.log.is_some()).collect(),
                 activity: self.tabs.iter().map(|t| t.activity).collect(),
+                autopilot: self.tabs.iter().map(|t| t.chat.chat.autopilot).collect(),
                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                 size: size_text.as_deref(),
                 chat: chat.as_ref(),
@@ -1872,7 +1890,7 @@ impl State {
         let title = format!("{} · {}", cfg.ai.provider.label(), cfg.ai.model_or_default());
         let chat = &tab.chat;
         let status = if chat.chat.job.is_some() {
-            Some(chat.activity.clone())
+            Some(if chat.chat.stop.is_some() { "Stopping…".to_owned() } else { chat.activity.clone() })
         } else if chat.chat.near_limit() {
             Some("This chat is long; start a New chat".to_owned())
         } else {
@@ -1912,6 +1930,7 @@ impl State {
     }
 
     fn close_chat(&mut self, cfg: &Config) {
+        self.stop_autopilot(self.active, "the chat was closed");
         let chat = &mut self.tab_mut().chat;
         chat.open = false;
         chat.focused = false;
@@ -1968,8 +1987,11 @@ impl State {
         tab.chat.about = None;
         tab.chat.scroll = 0.0;
         tab.chat.chat.job = Some(job);
-        tab.chat.activity = format!("Asking {label}… Esc stops");
-        ai::chat::start(job, tab.id, client, model, history, false, self.proxy.clone());
+        let autopilot = tab.chat.chat.autopilot;
+        tab.chat.chat.driving = autopilot;
+        tab.chat.chat.stop = None;
+        tab.chat.activity = if autopilot { format!("Autopilot is working ({label})… Esc stops") } else { format!("Asking {label}… Esc stops") };
+        ai::chat::start(job, tab.id, client, model, history, autopilot, self.proxy.clone());
         self.window.request_redraw();
     }
 
@@ -1992,14 +2014,19 @@ impl State {
             H::Divider | H::Input | H::Messages => {}
             H::NewChat => self.tab_mut().chat.new_chat(),
             H::Autopilot => {
-                let chat = &mut self.tab_mut().chat.chat;
-                chat.autopilot = !chat.autopilot;
+                let i = self.active;
+                if self.tabs[i].chat.chat.autopilot {
+                    let chat = &mut self.tabs[i].chat.chat;
+                    if !chat.stop_turn("Autopilot was switched off") {
+                        chat.autopilot = false;
+                    }
+                } else {
+                    let chat = &mut self.tabs[i].chat.chat;
+                    chat.autopilot = true;
+                    chat.entries.push(Entry::Note("Autopilot is on: the AI runs the commands it chooses, without asking. Esc or Stop ends it.".to_owned()));
+                }
             }
-            H::Stop => {
-                let chat = &mut self.tab_mut().chat.chat;
-                chat.job = None;
-                chat.entries.push(Entry::Note("Stopped".to_owned()));
-            }
+            H::Stop => self.stop_chat(self.active),
             H::Close => return self.close_chat(cfg),
             H::Copy(i) => {
                 let text = match self.tab().chat.chat.entries.get(i) {
@@ -2040,6 +2067,111 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// A turn running with Autopilot in tab `i` stops at the AI's next
+    /// step, saying `reason`, and Autopilot goes off. Idle, nothing changes.
+    fn stop_autopilot(&mut self, i: usize, reason: &str) {
+        if self.tabs[i].chat.chat.stop_turn(reason) {
+            self.window.request_redraw();
+        }
+    }
+
+    /// Esc or Stop while a reply is awaited: Autopilot stops at its next
+    /// step; otherwise, or pressed again, the reply is dropped.
+    fn stop_chat(&mut self, i: usize) {
+        let chat = &mut self.tabs[i].chat.chat;
+        if chat.stop_turn("you stopped it") {
+            return self.window.request_redraw();
+        }
+        if chat.job.take().is_some() {
+            chat.driving = false;
+            chat.stop = None;
+            chat.autopilot = false;
+            chat.finish_auto_cards();
+            chat.entries.push(ai::chat::Entry::Note("Stopped".to_owned()));
+        }
+    }
+
+    /// Autopilot's work in tab `i`'s terminal.
+    fn drive(&mut self, i: usize, request: ai::chat::Drive) -> ai::chat::Driven {
+        use ai::chat::{Card, CardState, Drive, Driven, Entry};
+        let chat = &self.tabs[i].chat.chat;
+        if let Some(reason) = chat.stop.clone() {
+            return Driven::Stopped(reason);
+        }
+        if !chat.autopilot {
+            return Driven::Stopped("Autopilot was switched off".to_owned());
+        }
+        if self.tabs[i].session.term.lock().mode().contains(TermMode::ALT_SCREEN) {
+            self.tabs[i].chat.chat.autopilot = false;
+            return Driven::Stopped("a full-screen program opened".to_owned());
+        }
+        match request {
+            Drive::Run { command, explanation, said } => {
+                let tab_id = self.tabs[i].id;
+                let chat = &mut self.tabs[i].chat.chat;
+                chat.finish_auto_cards();
+                chat.entries.extend(said.into_iter().map(Entry::Ai));
+                if !self.insert_command(tab_id, &command) {
+                    self.tabs[i].chat.chat.autopilot = false;
+                    return Driven::Stopped("the command could not be typed".to_owned());
+                }
+                let (line, ran) = self.tabs[i].note_enter(&ai::fix::insert_text(&command));
+                self.tabs[i].session.write(b"\r".as_slice());
+                if let Some(name) = ran {
+                    self.tabs[i].app = name;
+                    self.relabel();
+                }
+                let panel = &mut self.tabs[i].chat;
+                panel.typed_at = Instant::now();
+                panel.scroll = 0.0;
+                let state = CardState::Auto { line, running: true };
+                panel.chat.entries.push(Entry::Card(Card { call_id: String::new(), command, explanation, state, output: vec![] }));
+                Driven::Ran { line }
+            }
+            Drive::Keys { text, enter, ctrl_c } => {
+                let mut bytes: Vec<u8> = text.chars().filter(|c| !c.is_control()).collect::<String>().into_bytes();
+                if enter {
+                    bytes.push(b'\r');
+                }
+                if ctrl_c {
+                    bytes.push(0x03);
+                }
+                let tab = &mut self.tabs[i];
+                tab.session.write(bytes);
+                tab.chat.typed_at = Instant::now();
+                Driven::Sent
+            }
+            Drive::Poll { line } => {
+                let tab = &mut self.tabs[i];
+                let mut live = tab.session.term.lock();
+                let snap = crate::history::scroll::settled(&mut live, &tab.session.history);
+                let grid = live.grid();
+                let end = tab.lines.cursor_line(grid);
+                let mut t = TabText { snap: &snap, grid, lines: &mut tab.lines, end };
+                let commands = ai::context::TerminalText::commands(&t);
+                let index = match line {
+                    Some(l) => ai::context::command_of(&commands, l),
+                    None => commands.len().checked_sub(1),
+                };
+                let text = index.map_or_else(|| "(no command yet)".to_owned(), |c| ai::context::output(&mut t, c));
+                drop(live);
+                let quiet = Instant::now().saturating_duration_since(tab.last_output.max(tab.chat.typed_at));
+                // The card of that command shows its last lines.
+                if let Some(at) = index.map(|c| commands[c].0) {
+                    for e in tab.chat.chat.entries.iter_mut().rev() {
+                        if let Entry::Card(Card { state: CardState::Auto { line, .. }, output, .. }) = e
+                            && *line == at
+                        {
+                            *output = auto_card_lines(&text);
+                            break;
+                        }
+                    }
+                }
+                Driven::Output { text, quiet }
+            }
+        }
+    }
+
     /// A key while the chat has the focus. Nothing reaches the shell.
     fn on_chat_key(&mut self, cfg: &Config, event: &KeyEvent) {
         let m = self.mods;
@@ -2048,10 +2180,7 @@ impl State {
         match &event.logical_key {
             Key::Named(NamedKey::Enter) if m.shift_key() => input.newline(),
             Key::Named(NamedKey::Enter) => self.send_chat(cfg, true),
-            Key::Named(NamedKey::Escape) if chat.chat.job.is_some() => {
-                chat.chat.job = None;
-                chat.chat.entries.push(ai::chat::Entry::Note("Stopped".to_owned()));
-            }
+            Key::Named(NamedKey::Escape) if chat.chat.job.is_some() => self.stop_chat(self.active),
             Key::Named(NamedKey::Escape) => chat.focused = false,
             Key::Named(NamedKey::Backspace) => input.backspace(),
             Key::Named(NamedKey::Delete) => input.delete(),
@@ -2164,8 +2293,16 @@ impl State {
             self.ai_grok_account = grok_account();
         }
         match event {
-            // Answered once Autopilot is wired in; dropping `reply` ends the turn.
-            AiEvent::Drive { .. } => {}
+            AiEvent::Drive { job, tab, request, reply } => {
+                // A dropped turn, or its tab closed: dropping `reply` ends it.
+                let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
+                if self.tabs[i].chat.chat.job != Some(job) {
+                    return;
+                }
+                let answer = self.drive(i, request);
+                let _ = reply.send(answer);
+                self.window.request_redraw();
+            }
             AiEvent::ChatTurn { job, tab, result } => {
                 let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
                 let chat = &mut self.tabs[i].chat;
@@ -2173,6 +2310,8 @@ impl State {
                     return;
                 }
                 chat.chat.job = None;
+                chat.chat.driving = false;
+                chat.chat.stop = None;
                 match result {
                     Ok(turn) => chat.chat.on_turn(turn),
                     Err(e) => chat.chat.entries.push(ai::chat::Entry::Note(format!("AI: {e}"))),
@@ -2604,6 +2743,7 @@ impl State {
             return;
         }
         let mode = *tab.session.term.lock().mode();
+        self.stop_autopilot(self.active, "you typed in the terminal");
         self.write(input::paste_bytes(&text, mode));
     }
 
@@ -2789,6 +2929,9 @@ impl State {
 
         let mode = *tab.session.term.lock().mode();
         let bytes = input::encode_key(&event.logical_key, event.text.as_deref(), m, mode)?;
+        // The user takes over: Autopilot stops, the keys go to the shell.
+        self.stop_autopilot(self.active, "you typed in the terminal");
+        let tab = &mut self.tabs[self.active];
         let mut ran = None;
         if matches!(event.logical_key, Key::Named(NamedKey::Enter)) && !mode.contains(TermMode::ALT_SCREEN) {
             ran = tab.note_enter("").1;
@@ -3351,6 +3494,7 @@ impl State {
         let active = i == self.active;
         match event {
             TermEvent::Wakeup => {
+                self.tabs[i].last_output = Instant::now();
                 self.frames.wakeup();
                 self.tabs[i].search.content_changed();
                 self.record_line_times(i);
@@ -3633,6 +3777,13 @@ mod tests {
         assert!((mid - 0.5).abs() < 0.01, "{mid}");
         assert_eq!(flash_alpha(FLASH_FOR), 0.0);
         assert_eq!(flash_alpha(FLASH_FOR * 2), 0.0);
+    }
+
+    #[test]
+    fn an_auto_card_shows_the_last_lines_without_numbers() {
+        let out = "--- output of line 3 ---\n4 | a\n5*| b | c\n[2 lines left out]\n8 | d\n9 | e";
+        assert_eq!(auto_card_lines(out), ["b | c", "[2 lines left out]", "d", "e"]);
+        assert_eq!(auto_card_lines("--- output of line 3 ---\n(no output)"), ["(no output)"]);
     }
 
     #[test]
