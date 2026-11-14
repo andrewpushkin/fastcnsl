@@ -300,7 +300,7 @@ impl Menu {
             MenuItem::new("Select all", Action::SelectAll),
             MenuItem::separator(),
             MenuItem::new("Find…", Action::Find),
-            MenuItem::new("Fix command with AI", Action::AiFix(Some(line))).enabled(bookmarks.target.is_some()),
+            MenuItem::new("Fix last command with AI", Action::AiFix(None)),
             MenuItem::separator(),
             MenuItem::new(toggle, Action::ToggleBookmark(line)).enabled(bookmarks.target.is_some()),
             MenuItem::new("Previous bookmark", Action::PreviousBookmark).enabled(bookmarks.any),
@@ -1352,13 +1352,10 @@ mod tests {
     }
 
     #[test]
-    fn context_menu_fix_needs_a_line() {
-        let none = Menu::context(0.0, 0.0, false, BookmarkMenu::default(), &Keymap::default());
-        let fix = none.items.iter().find(|i| matches!(i.action, Some(Action::AiFix(_)))).unwrap();
-        assert!(!fix.enabled);
-        let some = Menu::context(0.0, 0.0, false, BookmarkMenu { target: Some((7, false)), any: false }, &Keymap::default());
-        let fix = some.items.iter().find(|i| matches!(i.action, Some(Action::AiFix(_)))).unwrap();
-        assert!(fix.enabled && fix.action == Some(Action::AiFix(Some(7))));
+    fn context_menu_fixes_the_last_command() {
+        let menu = Menu::context(0.0, 0.0, false, BookmarkMenu::default(), &Keymap::default());
+        let fix = menu.items.iter().find(|i| matches!(i.action, Some(Action::AiFix(_)))).unwrap();
+        assert!(fix.enabled && fix.action == Some(Action::AiFix(None)) && fix.label == "Fix last command with AI");
     }
 
     #[test]
