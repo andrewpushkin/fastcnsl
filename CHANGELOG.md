@@ -18,6 +18,8 @@ releases have a section.
 - **Continue with Grok** in Options → AI: fixes use your SuperGrok or X
   Premium plan instead of an API key (enter the code fastcnsl shows on
   xAI's page).
+- **Claude Code** provider in Options → AI: fixes run through your
+  installed Claude Code (also inside WSL on Windows) and its Pro or Max plan.
 - Jumping to a bookmark scrolls there smoothly and briefly highlights the line.
 - `fastcnsl new-tab`, `close-tab` and `quit` only reach windows of the same
   version; `--pid` naming another version's window is refused.

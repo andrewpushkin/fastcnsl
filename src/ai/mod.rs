@@ -1,6 +1,7 @@
 //! The AI assistant: provider settings, API keys, and (in later modules)
 //! the requests that ask a model to fix a command.
 
+pub mod claude_code;
 pub mod client;
 pub mod context;
 pub mod fix;
@@ -66,6 +67,10 @@ pub enum AiError {
     SignInAgain,
     /// xAI doesn't let the Grok plan be used by other apps.
     GrokPlan,
+    /// No Claude Code was found.
+    NoClaudeCode,
+    /// Claude Code is not signed in.
+    ClaudeCodeSignIn,
     /// Signing in went wrong; says how.
     Login(String),
     /// The model kept calling tools past `fix::MAX_REQUESTS` requests.
@@ -92,6 +97,8 @@ impl std::fmt::Display for AiError {
             AiError::PlanLimit => write!(f, "you have reached your ChatGPT plan's limit; see Manage usage (Options → AI)"),
             AiError::PlanBusy => write!(f, "ChatGPT is busy; try again"),
             AiError::SignInAgain => write!(f, "sign in again (Options → AI)"),
+            AiError::NoClaudeCode => write!(f, "Claude Code was not found: install it (claude.com/code){}", if cfg!(windows) { " in Windows or WSL" } else { "" }),
+            AiError::ClaudeCodeSignIn => write!(f, "Claude Code is not signed in: run claude in a terminal and sign in"),
             AiError::GrokPlan => write!(f, "xAI didn't allow your Grok plan here (SuperGrok or X Premium is needed); you can use an API key instead"),
             AiError::Login(e) => write!(f, "{e}"),
             AiError::TooManySteps => write!(f, "the AI took too many steps"),
@@ -115,6 +122,9 @@ pub enum Provider {
     Xai,
     /// Anthropic (Claude), Messages API.
     Anthropic,
+    /// The user's installed Claude Code (`claude -p`), with its own sign-in.
+    #[serde(rename = "claude-code")]
+    ClaudeCode,
     /// Any server with the Chat Completions format at `[ai] base_url`,
     /// such as a local Ollama.
     Custom,
@@ -122,7 +132,7 @@ pub enum Provider {
 
 impl Provider {
     /// The providers Options → AI offers, after "Off".
-    pub const CHOICES: [Provider; 4] = [Provider::OpenAi, Provider::Xai, Provider::Anthropic, Provider::Custom];
+    pub const CHOICES: [Provider; 5] = [Provider::OpenAi, Provider::Xai, Provider::Anthropic, Provider::ClaudeCode, Provider::Custom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -130,6 +140,7 @@ impl Provider {
             Provider::OpenAi => "ChatGPT",
             Provider::Xai => "Grok",
             Provider::Anthropic => "Claude",
+            Provider::ClaudeCode => "Claude Code",
             Provider::Custom => "Custom",
         }
     }
@@ -141,6 +152,7 @@ impl Provider {
             Provider::OpenAi => "openai",
             Provider::Xai => "xai",
             Provider::Anthropic => "anthropic",
+            Provider::ClaudeCode => "claude-code",
             Provider::Custom => "custom",
         }
     }
@@ -151,7 +163,7 @@ impl Provider {
             Provider::OpenAi => Some("OPENAI_API_KEY"),
             Provider::Xai => Some("XAI_API_KEY"),
             Provider::Anthropic => Some("ANTHROPIC_API_KEY"),
-            Provider::Off | Provider::Custom => None,
+            Provider::Off | Provider::ClaudeCode | Provider::Custom => None,
         }
     }
 
@@ -160,6 +172,7 @@ impl Provider {
     pub fn default_model(self) -> &'static str {
         match self {
             Provider::Anthropic => "claude-opus-5-5",
+            Provider::ClaudeCode => "sonnet",
             _ => "",
         }
     }

@@ -15,6 +15,9 @@ pub enum Format {
     Chat,
     /// OpenAI's Responses API, the only one a ChatGPT plan can use.
     Responses,
+    /// The user's Claude Code, run as a program: the conversation is
+    /// written out as one prompt (see `claude_code::prompt`).
+    ClaudeCode,
 }
 
 /// A tool the model may call.
@@ -75,6 +78,10 @@ pub fn assistant_turn(f: Format, reply: &Reply) -> Vec<Value> {
             let text = (!reply.text.is_empty()).then(|| json!({"role": "assistant", "content": reply.text}));
             text.into_iter().chain(reply.raw.as_array().into_iter().flatten().cloned()).collect()
         }
+        Format::ClaudeCode => {
+            let calls: Vec<Value> = reply.calls.iter().map(|c| json!({"id": c.id, "name": c.name, "input": c.input})).collect();
+            vec![json!({"role": "assistant", "content": reply.text, "calls": calls})]
+        }
     }
 }
 
@@ -88,6 +95,7 @@ pub fn tool_results(f: Format, results: &[(String, String)]) -> Vec<Value> {
         }
         Format::Chat => results.iter().map(|(id, text)| json!({"role": "tool", "tool_call_id": id, "content": text})).collect(),
         Format::Responses => results.iter().map(|(id, text)| json!({"type": "function_call_output", "call_id": id, "output": text})).collect(),
+        Format::ClaudeCode => results.iter().map(|(id, text)| json!({"role": "tool", "call_id": id, "content": text})).collect(),
     }
 }
 

@@ -198,14 +198,20 @@ To set it up, open Options → AI and pick ChatGPT, Grok or Claude.
   do) and xAI's page calls it **Grok Build**. xAI decides which plans may
   be used this way; if it refuses yours, use an API key. The sign-in is
   kept in `grok-login.json`, readable only by you.
+- **Claude with your plan, through Claude Code:** pick **Claude Code**. If
+  you have Claude Code installed and signed in (Pro or Max), fixes run
+  through it: fastcnsl runs `claude -p` for each step and never sees your
+  sign-in. On Windows a Claude Code installed in WSL works too. Each step
+  takes a few seconds longer than with an API key.
 - **With an API key** (ChatGPT, Grok, Claude): copy the key from the
   provider's website and click **Paste key**.
 
 Then pick a model. **Custom** works with any server that speaks the OpenAI
 chat format, such as a local Ollama (`base_url` in the settings file).
 
-Claude needs an API key: Anthropic doesn't allow other apps to use Claude
-Pro or Max subscriptions.
+Provider **Claude** needs an API key: Anthropic doesn't allow other apps to
+sign in with Claude Pro or Max, so a plan is used only through your own
+Claude Code.
 
 **What is sent.** Only when you ask for a fix: the list of your last 50
 commands (`listed_commands`; the command lines, not their output), the

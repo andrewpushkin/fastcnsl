@@ -26,6 +26,9 @@ enum Auth {
     ChatGpt { path: PathBuf, auth: String },
     /// A Grok sign-in, likewise.
     Grok { path: PathBuf, auth: String },
+    /// The user's Claude Code, found when first needed (on the request's
+    /// thread: finding it in WSL takes a moment).
+    ClaudeCode(Option<super::claude_code::Launcher>),
 }
 
 /// A connection to one provider.
@@ -53,8 +56,12 @@ impl Client {
         {
             return Ok(Client::grok_with(path, &grok::auth_base(), &grok::api_base()));
         }
+        if p == Provider::ClaudeCode {
+            return Ok(Client { provider: p, auth: Auth::ClaudeCode(None), base: String::new(), agent: agent(Duration::from_secs(10)) });
+        }
         let base = match p {
             Provider::Off => return Err(AiError::NoProvider),
+            Provider::ClaudeCode => unreachable!("handled above"),
             Provider::OpenAi => OPENAI_BASE,
             Provider::Xai => XAI_BASE,
             Provider::Anthropic => ANTHROPIC_BASE,
@@ -94,6 +101,20 @@ impl Client {
         }
     }
 
+    /// A client running `launcher` (tests).
+    #[cfg(test)]
+    pub fn claude_code_with(launcher: super::claude_code::Launcher) -> Client {
+        Client { provider: Provider::ClaudeCode, auth: Auth::ClaudeCode(Some(launcher)), base: String::new(), agent: agent(Duration::from_secs(10)) }
+    }
+
+    /// Claude Code: the one given, or the one installed.
+    fn claude_code(&self) -> Result<super::claude_code::Launcher, AiError> {
+        match &self.auth {
+            Auth::ClaudeCode(Some(l)) => Ok(l.clone()),
+            _ => super::claude_code::find(),
+        }
+    }
+
     /// Requests spend a ChatGPT or Grok plan.
     pub fn on_plan(&self) -> bool {
         matches!(self.auth, Auth::ChatGpt { .. } | Auth::Grok { .. })
@@ -103,6 +124,7 @@ impl Client {
     pub fn format(&self) -> Format {
         match &self.auth {
             Auth::ChatGpt { .. } | Auth::Grok { .. } => Format::Responses,
+            Auth::ClaudeCode(_) => Format::ClaudeCode,
             Auth::Key(_) if self.provider.uses_messages_api() => Format::Messages,
             Auth::Key(_) => Format::Chat,
         }
@@ -115,6 +137,7 @@ impl Client {
             Format::Messages => ("/messages", wire::messages_body(r)),
             Format::Chat => ("/chat/completions", wire::chat_body(r)),
             Format::Responses => ("/responses", wire::responses_body(r)),
+            Format::ClaudeCode => return super::claude_code::send(&self.claude_code()?, r),
         };
         let response = self.request(path, Some(&body.to_string()))?;
         if format == Format::Responses {
@@ -127,6 +150,11 @@ impl Client {
 
     /// The models the key (or plan) can use.
     pub fn models(&self) -> Result<Vec<String>, AiError> {
+        if self.format() == Format::ClaudeCode {
+            // Its aliases; finding it tells the user early when it's missing.
+            self.claude_code()?;
+            return Ok(super::claude_code::MODELS.iter().map(|m| (*m).to_owned()).collect());
+        }
         let path = if self.format() == Format::Messages { "/models?limit=1000" } else { "/models" };
         wire::parse_models(&read_text(self.request(path, None)?)?)
     }
@@ -208,6 +236,7 @@ impl Client {
     /// `force`) is refreshed first, one refresh at a time across threads.
     fn auth_header(&self, force: bool) -> Result<Option<(&'static str, String)>, AiError> {
         match &self.auth {
+            Auth::ClaudeCode(_) => Ok(None),
             Auth::Key(k) if k.is_empty() => Ok(None),
             Auth::Key(k) if self.provider.uses_messages_api() => Ok(Some(("x-api-key", k.clone()))),
             Auth::Key(k) => Ok(Some(("authorization", format!("Bearer {k}")))),

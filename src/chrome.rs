@@ -1093,7 +1093,17 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
             b.next();
         }
     }
-    if s.ai_account.is_some() && b.fits_rows(1) {
+    if s.ai_provider == Provider::ClaudeCode {
+        if b.fits_rows(1) {
+            b.text(0.0, "Account", TextStyle::Normal);
+            b.text(label_w, "your installed Claude Code and its sign-in (Pro or Max plan)", TextStyle::Normal);
+            b.next();
+        }
+        if !compact && b.fits_rows(1) {
+            b.text(label_w, "fastcnsl runs claude -p and never sees the sign-in. Test checks it.", TextStyle::Dim);
+            b.next();
+        }
+    } else if s.ai_account.is_some() && b.fits_rows(1) {
         b.text(0.0, "API key", TextStyle::Normal);
         b.text(label_w, "not used while signed in", TextStyle::Dim);
         b.next();
@@ -1708,6 +1718,16 @@ mod tests {
         let nameless = OptionsState { ai_account: Some(String::new()), ..s };
         let p = options_panel(&m(), &nameless, (0.0, 0.0));
         assert!(p.lines.iter().any(|l| l.text.contains("Signed in · Using Grok plan")));
+    }
+
+    #[test]
+    fn claude_code_needs_no_key_and_says_whose_sign_in_it_uses() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::ClaudeCode, ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiProvider(Provider::ClaudeCode) && b.label == "Claude Code"));
+        assert!(!p.buttons.iter().any(|b| matches!(b.action, Action::AiPasteKey | Action::AiSignIn)));
+        assert!(p.lines.iter().any(|l| l.text.contains("your installed Claude Code and its sign-in")));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiTest));
     }
 
     #[test]

@@ -28,8 +28,11 @@ Claude (Anthropic). fastcnsl has no account system and no server of its own.
 
 ## Non-goals
 
-- Logging in with a Claude subscription: Anthropic forbids other apps from
-  using it. ChatGPT (stage 1c) and Grok (stage 1d) have sign-ins.
+- Logging in with a Claude subscription, or reading Claude Code's stored
+  sign-in: Anthropic forbids other apps to "collect, store, or intermediate
+  Claude.ai credentials". ChatGPT (stage 1c) and Grok (stage 1d) have
+  sign-ins; a Claude plan is used only through the user's own Claude Code
+  (stage 1e).
 - Suggestions while typing (autocomplete), or anything sent without a click.
 - Saving chats to disk. A chat lives as long as its tab.
 - Full Markdown, images or file attachments in the chat.
@@ -339,6 +342,44 @@ to `https://auth.x.ai/oauth2/revoke` in the background and clears the file.
 
 **Testing.** Debug builds read `FASTCNSL_GROK_AUTH` and `FASTCNSL_GROK_API`.
 
+### Claude Code (stage 1e)
+
+A provider "Claude Code" (`provider = "claude-code"`) runs the user's own
+installed, unmodified Claude Code in print mode for each request. Claude
+Code signs in by itself (a Pro or Max plan, or its own key); fastcnsl never
+reads, keeps or passes on its credentials.
+
+**Approaches.** (a) Read Claude Code's stored OAuth token and call the API:
+forbidden (above). (b) Run `claude -p` per request, stateless, the
+conversation written out as one prompt, the answer as JSON in a schema of
+tool calls: works through WSL with only stdin and stdout. (c) Run `claude
+-p` once with fastcnsl's tools as an MCP server on localhost: one process
+per Fix, but WSL 2 can't reach Windows' localhost by default. Chosen: (b).
+Anthropic's terms allow "an end user signing in to the unmodified Claude
+Code binary with their own Claude subscription" but say nothing about an
+app running it; the Options text says what happens.
+
+**Finding it.** `claude` (`claude.exe`) on PATH or in `~/.local/bin`; on
+Windows, else in the default WSL distribution (`wsl.exe -e sh -lc 'command
+-v claude'`, or `~/.local/bin/claude`). Found on the request's thread,
+kept once found.
+
+**A run.** `claude -p --output-format json --tools "" --strict-mcp-config
+--no-session-persistence --system-prompt <short> [--model M] [--json-schema
+S]`, in the temp folder (WSL: `/tmp`, through `sh -lc` so an npm install
+finds node). The prompt on stdin: the Fix's instructions, each tool with
+its input schema, then the conversation (`=== From the terminal ===`, `===
+Your answer ===` with the calls, `=== Result of get_output ===`). The
+schema: `{"text": string, "calls": [anyOf per tool {name, input}]}`;
+`structured_output` becomes the Reply. `is_error` with "Not logged in" →
+"Claude Code is not signed in: run claude in a terminal and sign in"; 429
+or "limit reached" → rate limited. Five minutes is the limit of one run.
+
+**Options → AI, Claude Code**: no key row; *Account* says "your installed
+Claude Code and its sign-in (Pro or Max plan)" and that fastcnsl runs
+`claude -p` and never sees the sign-in. Models: `sonnet` (default),
+`opus`, `haiku`, Claude Code's aliases. Test sends one tiny request.
+
 ### The chat panel
 
 - Per tab, on the right, `panel_width` of the window, with a divider that
@@ -462,6 +503,7 @@ and gives false comfort. Autopilot is a plain choice to let the AI act.
 1c. **ChatGPT sign-in**: the plan instead of an API key, through the
    Responses API (above).
 1d. **Grok sign-in**: a SuperGrok or X Premium plan, by device code.
+1e. **Claude Code**: a Claude plan through the user's own `claude -p`.
 2. **Chat**: the split and resize, the panel, focus, cards with Insert and
    Run, the `run_command` loop with Autopilot fixed off.
 3. **Autopilot**: the switch, "finished" detection, `wait` and
