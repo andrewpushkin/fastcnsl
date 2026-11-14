@@ -420,6 +420,8 @@ pub enum TextStyle {
     Normal,
     Dim,
     Key,
+    /// Something needs doing first (a provider chosen but not ready).
+    Warn,
 }
 
 pub struct TextLine {
@@ -450,6 +452,9 @@ pub enum ButtonStyle {
     /// A row of a list: left-aligned text, a background only when chosen
     /// or hovered.
     Item,
+    /// A row of a one-of-many list: a ring before the text, filled and
+    /// with the row tinted when `active`.
+    Choice,
 }
 
 pub struct Panel {
@@ -514,6 +519,9 @@ struct PanelBuilder<'a> {
     buttons: Vec<Button>,
     lines: Vec<TextLine>,
     list: Option<ListView>,
+    /// Columns from the panel's left edge to the column being laid out
+    /// (see `column`).
+    indent: f32,
 }
 
 impl<'a> PanelBuilder<'a> {
@@ -538,11 +546,30 @@ impl<'a> PanelBuilder<'a> {
             buttons: Vec::new(),
             lines: Vec::new(),
             list: None,
+            indent: 0.0,
         }
     }
 
     fn left(&self) -> f32 {
-        self.rect.x + self.pad
+        self.rect.x + self.pad + self.indent * self.m.cw
+    }
+
+    /// Lays out from here on in a column `indent` characters from the
+    /// panel's left edge, starting again at `y`.
+    fn column(&mut self, indent: f32, y: f32) {
+        self.indent = indent;
+        self.y = y;
+    }
+
+    /// How many characters fit from the column's left edge to the
+    /// panel's right one.
+    fn cols_left(&self) -> f32 {
+        ((self.rect.x + self.rect.w - self.pad - self.left()) / self.m.cw).floor().max(0.0)
+    }
+
+    /// The panel's bottom edge, inside its padding.
+    fn bottom(&self) -> f32 {
+        self.rect.y + self.rect.h - self.pad
     }
 
     /// True if `n` more rows fit inside the panel.
@@ -566,7 +593,7 @@ impl<'a> PanelBuilder<'a> {
         let first = first.min(items.len().saturating_sub(rows));
         let top = self.y;
         let bar = self.m.px(4.0);
-        let w = self.rect.w - 2.0 * self.pad - bar - self.m.px(4.0);
+        let w = self.rect.w - 2.0 * self.pad - self.indent * self.m.cw - bar - self.m.px(4.0);
         for (i, name) in items.iter().enumerate().skip(first).take(rows) {
             let rect = Rect { x: self.left(), y: self.y + self.m.px(1.0), w, h: self.row_h - self.m.px(2.0) };
             self.buttons.push(Button { rect, label: name.clone(), action: action(i), active: chosen == Some(i), style: ButtonStyle::Item });
@@ -582,7 +609,7 @@ impl<'a> PanelBuilder<'a> {
             let y = top + (h - thumb) * first as f32 / (len - rows as f32);
             self.rules.push(Rect { x, y: y.round(), w: bar, h: thumb.round() });
         }
-        let rect = Rect { x: self.rect.x, y: top, w: self.rect.w, h };
+        let rect = Rect { x: self.left(), y: top, w: self.rect.x + self.rect.w - self.left(), h };
         self.list = Some(ListView { rect, first, rows, len: items.len() });
     }
 
@@ -602,6 +629,19 @@ impl<'a> PanelBuilder<'a> {
     /// Adds a button at column `col`; returns the column after it.
     fn button(&mut self, col: f32, label: &str, action: Action, active: bool) -> f32 {
         self.add_button(col, label, action, active, ButtonStyle::Normal)
+    }
+
+    /// A row of a one-of-many list at column `col`, `cols` characters
+    /// wide (see ButtonStyle::Choice).
+    fn choice(&mut self, col: f32, cols: f32, label: &str, action: Action, active: bool) {
+        let rect = Rect { x: self.left() + col * self.m.cw, y: self.y + self.m.px(1.0), w: cols * self.m.cw, h: self.row_h - self.m.px(2.0) };
+        self.buttons.push(Button { rect, label: label.to_owned(), action, active, style: ButtonStyle::Choice });
+    }
+
+    /// A thin upright line at column `col`, from `y` to `bottom`.
+    fn vrule(&mut self, col: f32, y: f32, bottom: f32) {
+        let x = (self.left() + col * self.m.cw).round();
+        self.rules.push(Rect { x, y: y.round(), w: self.m.scale.round().max(1.0), h: (bottom - y).max(0.0).round() });
     }
 
     /// A small icon button (see ButtonStyle::Icon).
@@ -1041,31 +1081,154 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// Options → AI: provider, key, model and the list of models.
+/// Options → AI: the width of the provider list, in characters.
+const AI_LIST_COLS: f32 = 33.0;
+
+/// What the chosen provider still needs before Fix can use it, if
+/// anything. Only the chosen provider's key and sign-in are known.
+fn ai_missing(s: &OptionsState) -> Option<&'static str> {
+    let has_key = s.ai_key.is_some() || s.ai_key_env.is_some();
+    match s.ai_provider {
+        Provider::Off | Provider::ClaudeCode => None,
+        Provider::Custom if s.ai_base_url.is_empty() => Some("set base_url in config.toml"),
+        Provider::OpenAi | Provider::Xai if s.ai_account.is_none() && !has_key => Some("sign in or paste a key"),
+        Provider::OpenRouter if !has_key => Some("sign in or paste a key"),
+        Provider::Anthropic if !has_key => Some("paste a key"),
+        _ if s.ai_model.is_empty() => Some("pick a model"),
+        _ => None,
+    }
+}
+
+/// Options → AI: the providers on the left, one of them chosen, and on
+/// the right what the chosen one is and needs: its account or key, its
+/// model and the models it has.
 fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
-    let label_w = 20.0;
+    let top = b.y;
+    let missing = ai_missing(s);
+    ai_providers(b, s, missing);
+    b.vrule(AI_LIST_COLS + 1.0, top, b.bottom());
+    b.column(AI_LIST_COLS + 2.0, top);
+    ai_details(b, s, missing);
+}
+
+/// The left column: every provider, the two ways to use Claude together
+/// under "Claude", and a note on what Fix sends at the bottom.
+fn ai_providers(b: &mut PanelBuilder<'_>, s: &OptionsState, missing: Option<&str>) {
+    const W: f32 = AI_LIST_COLS;
     if b.fits_rows(1) {
-        b.text(0.0, "Provider", TextStyle::Normal);
-        let mut c = label_w;
-        for p in std::iter::once(Provider::Off).chain(Provider::CHOICES) {
-            c = b.button(c, p.label(), Action::AiProvider(p), s.ai_provider == p);
+        b.text(0.0, "PROVIDER", TextStyle::Dim);
+        b.next();
+    }
+    let row = |b: &mut PanelBuilder<'_>, col: f32, label: &str, p: Provider| {
+        if !b.fits_rows(1) {
+            return;
+        }
+        let chosen = s.ai_provider == p;
+        b.choice(col, W - col, label, Action::AiProvider(p), chosen);
+        if chosen && p != Provider::Off {
+            let (tag, style) = if missing.is_some() { ("not ready", TextStyle::Warn) } else { ("in use", TextStyle::Normal) };
+            b.text(W - tag.chars().count() as f32 - 1.0, tag, style);
         }
         b.next();
+    };
+    row(b, 0.0, "Off", Provider::Off);
+    row(b, 0.0, "ChatGPT", Provider::OpenAi);
+    row(b, 0.0, "Grok", Provider::Xai);
+    if b.fits_rows(1) {
+        b.text(1.0, "Claude", TextStyle::Normal);
+        b.next();
+        let y = b.y;
+        row(b, 2.5, "with API key", Provider::Anthropic);
+        row(b, 2.5, "with Claude Code", Provider::ClaudeCode);
+        b.vrule(1.5, y, b.y);
+    }
+    row(b, 0.0, "OpenRouter", Provider::OpenRouter);
+    row(b, 0.0, "Custom", Provider::Custom);
+
+    // At the bottom of the column, if there is room below the list.
+    let note = wrap("Fix sends your recent commands and the output the AI asks for.", (W - 2.0) as usize);
+    if b.fits_rows(note.len() + 1) {
+        b.y = b.bottom() - note.len() as f32 * b.row_h;
+        for line in note {
+            b.text(1.0, line, TextStyle::Dim);
+            b.next();
+        }
+    }
+}
+
+/// `text` wrapped to the column's width from `col`, a row each.
+fn wrapped(b: &mut PanelBuilder<'_>, col: f32, text: &str, style: TextStyle) {
+    let width = (b.cols_left() - col).max(16.0) as usize;
+    for line in wrap(text, width) {
+        if !b.fits_rows(1) {
+            return;
+        }
+        b.text(col, line, style);
+        b.next();
+    }
+}
+
+/// `text` at `col` with `buttons` after it, or on the next row when they
+/// don't fit beside it.
+fn text_and_buttons(b: &mut PanelBuilder<'_>, col: f32, text: &str, style: TextStyle, buttons: &[(&str, Action, bool)]) {
+    if !b.fits_rows(1) {
+        return;
+    }
+    let len = text.chars().count() as f32;
+    let need: f32 = buttons.iter().map(|(l, _, _)| l.chars().count() as f32 + 3.0).sum();
+    let mut c = col;
+    if !text.is_empty() {
+        b.text(col, text, style);
+        c = col + len + 2.0;
+        if !buttons.is_empty() && c + need > b.cols_left() {
+            b.next();
+            if !b.fits_rows(1) {
+                return;
+            }
+            c = col;
+        }
+    }
+    for (label, action, lit) in buttons {
+        c = b.button(c, label, *action, *lit);
+    }
+    b.next();
+}
+
+/// The right column: the chosen provider, whether it is ready, and its
+/// settings.
+fn ai_details(b: &mut PanelBuilder<'_>, s: &OptionsState, missing: Option<&str>) {
+    // Where the values start, after "Account", "API key"…
+    const V: f32 = 10.0;
+    let p = s.ai_provider;
+    if !b.fits_rows(1) {
+        return;
+    }
+    if p == Provider::Off {
+        b.text(0.0, "AI is off", TextStyle::Title);
+        b.next();
+        wrapped(b, 0.0, "Nothing is chosen.", TextStyle::Dim);
+        b.gap();
+        wrapped(b, 0.0, "Pick a provider on the left to fix commands with AI. OpenRouter has free models.", TextStyle::Normal);
+        return;
+    }
+    let title = match p {
+        Provider::Anthropic => "Claude · with API key".to_owned(),
+        Provider::ClaudeCode => "Claude · with Claude Code".to_owned(),
+        _ => p.label().to_owned(),
+    };
+    b.text(0.0, title, TextStyle::Title);
+    b.next();
+    match missing {
+        Some(what) => wrapped(b, 0.0, &format!("Chosen, but not ready: {what}."), TextStyle::Warn),
+        None => wrapped(b, 0.0, &format!("In use · model {}", s.ai_model), TextStyle::Normal),
     }
     let compact = !b.fits_rows(8);
     if !compact {
-        b.text(label_w, "Fix sends your recent commands and the output the AI asks for.", TextStyle::Dim);
-        b.next();
+        b.gap();
     }
-    if s.ai_provider == Provider::Off {
-        if b.fits_rows(1) {
-            b.text(label_w, "Pick one to fix commands with AI. OpenRouter has free models.", TextStyle::Dim);
-            b.next();
-        }
-        return;
-    }
-    let grok = s.ai_provider == Provider::Xai;
-    if (s.ai_provider == Provider::OpenAi || grok) && b.fits_rows(1) {
+
+    let grok = p == Provider::Xai;
+    if (p == Provider::OpenAi || grok) && b.fits_rows(1) {
         b.text(0.0, "Account", TextStyle::Normal);
         if s.ai_signing_in {
             let text = match &s.ai_sign_in_code {
@@ -1073,114 +1236,106 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
                 None if grok => "Asking xAI for a code…".to_owned(),
                 None => "Waiting for the browser…".to_owned(),
             };
-            b.text(label_w, &text, if s.ai_sign_in_code.is_some() { TextStyle::Normal } else { TextStyle::Dim });
-            let mut c = label_w + text.chars().count() as f32 + 2.0;
+            let style = if s.ai_sign_in_code.is_some() { TextStyle::Normal } else { TextStyle::Dim };
+            let mut buttons = Vec::new();
             if s.ai_sign_in_code.is_some() {
-                c = b.button(c, "Open page", Action::AiOpenSignInPage, false);
+                buttons.push(("Open page", Action::AiOpenSignInPage, false));
             }
-            b.button(c, "Cancel", Action::AiSignIn, false);
+            buttons.push(("Cancel", Action::AiSignIn, false));
+            text_and_buttons(b, V, &text, style, &buttons);
         } else if let Some(email) = &s.ai_account {
+            let plan = format!(" · Using {} plan", p.label());
+            // A long address is cut to leave room for the plan.
+            let room = ((b.cols_left() - V) as usize).saturating_sub(plan.chars().count()).clamp(8, 28);
             let email: String = match email.chars().count() {
                 0 => "Signed in".to_owned(),
-                n if n > 28 => format!("{}…", email.chars().take(27).collect::<String>()),
+                n if n > room => format!("{}…", email.chars().take(room - 1).collect::<String>()),
                 _ => email.clone(),
             };
-            let text = format!("{email} · Using {} plan", s.ai_provider.label());
-            b.text(label_w, &text, TextStyle::Normal);
-            let mut c = label_w + text.chars().count() as f32 + 2.0;
-            if !grok {
-                c = b.button(c, "Manage usage", Action::AiManageUsage, false);
-            }
-            b.button(c, "Sign out", Action::AiSignOut, false);
-        } else if grok {
-            let c = b.button(label_w, "Continue with Grok", Action::AiSignIn, true);
-            b.text(c, "uses your SuperGrok or X Premium plan", TextStyle::Dim);
-        } else {
-            let c = b.button(label_w, "Continue with ChatGPT", Action::AiSignIn, true);
-            b.text(c, "uses your Plus or Pro plan", TextStyle::Dim);
-        }
-        b.next();
-        if grok && s.ai_account.is_none() && !compact && b.fits_rows(1) {
-            b.text(label_w, "xAI's page names this app Grok Build (xAI's shared sign-in)", TextStyle::Dim);
+            b.text(V, format!("{email}{plan}"), TextStyle::Normal);
             b.next();
+            let mut buttons = Vec::new();
+            if !grok {
+                buttons.push(("Manage usage", Action::AiManageUsage, false));
+            }
+            buttons.push(("Sign out", Action::AiSignOut, false));
+            text_and_buttons(b, V, "", TextStyle::Normal, &buttons);
+        } else {
+            let (label, plan) = if grok {
+                ("Continue with Grok", "uses your SuperGrok or X Premium plan")
+            } else {
+                ("Continue with ChatGPT", "uses your Plus or Pro plan")
+            };
+            text_and_buttons(b, V, "", TextStyle::Normal, &[(label, Action::AiSignIn, true)]);
+            wrapped(b, V, plan, TextStyle::Dim);
+            if grok && !compact {
+                wrapped(b, V, "xAI's page names this app Grok Build (xAI's shared sign-in)", TextStyle::Dim);
+            }
         }
     }
-    if s.ai_provider == Provider::ClaudeCode {
+
+    if p == Provider::ClaudeCode {
         if b.fits_rows(1) {
             b.text(0.0, "Account", TextStyle::Normal);
-            b.text(label_w, "your installed Claude Code and its sign-in (Pro or Max plan)", TextStyle::Normal);
-            b.next();
+            wrapped(b, V, "your installed Claude Code and its sign-in (Pro or Max plan)", TextStyle::Normal);
         }
-        if !compact && b.fits_rows(1) {
-            b.text(label_w, "fastcnsl runs claude -p and never sees the sign-in. Test checks it.", TextStyle::Dim);
-            b.next();
+        if !compact {
+            wrapped(b, V, "fastcnsl runs claude -p and never sees the sign-in. Test checks it.", TextStyle::Dim);
         }
-    } else if s.ai_account.is_some() && b.fits_rows(1) {
-        b.text(0.0, "API key", TextStyle::Normal);
-        b.text(label_w, "not used while signed in", TextStyle::Dim);
-        b.next();
-    } else if s.ai_provider == Provider::OpenRouter && s.ai_signing_in && b.fits_rows(1) {
-        b.text(0.0, "API key", TextStyle::Normal);
-        let text = "Waiting for the browser…";
-        b.text(label_w, text, TextStyle::Dim);
-        b.button(label_w + text.chars().count() as f32 + 2.0, "Cancel", Action::AiSignIn, false);
-        b.next();
     } else if b.fits_rows(1) {
         b.text(0.0, "API key", TextStyle::Normal);
-        let key = match (&s.ai_key, s.ai_key_env) {
-            (Some(k), _) => k.clone(),
-            (None, Some(var)) => format!("from {var}"),
-            (None, None) if s.ai_provider == Provider::Custom => "none (a local server needs none)".to_owned(),
-            (None, None) => "not set".to_owned(),
-        };
-        b.text(label_w, &key, TextStyle::Normal);
-        let mut c = label_w + key.chars().count() as f32 + 2.0;
-        if s.ai_provider == Provider::OpenRouter && s.ai_key.is_none() {
-            // OpenRouter makes a key for fastcnsl when the user signs in.
-            c = b.button(c, "Sign in with OpenRouter", Action::AiSignIn, true);
+        if s.ai_account.is_some() {
+            wrapped(b, V, "not used while signed in", TextStyle::Dim);
+        } else if p == Provider::OpenRouter && s.ai_signing_in {
+            text_and_buttons(b, V, "Waiting for the browser…", TextStyle::Dim, &[("Cancel", Action::AiSignIn, false)]);
+        } else {
+            let key = match (&s.ai_key, s.ai_key_env) {
+                (Some(k), _) => k.clone(),
+                (None, Some(var)) => format!("from {var}"),
+                (None, None) if p == Provider::Custom => "none (a local server needs none)".to_owned(),
+                (None, None) => "not set".to_owned(),
+            };
+            let mut buttons = Vec::new();
+            if p == Provider::OpenRouter && s.ai_key.is_none() {
+                // OpenRouter makes a key for fastcnsl when the user signs in.
+                buttons.push(("Sign in with OpenRouter", Action::AiSignIn, true));
+            }
+            buttons.push(("Paste key", Action::AiPasteKey, false));
+            if s.ai_key.is_some() {
+                buttons.push(("Remove", Action::AiRemoveKey, false));
+            }
+            text_and_buttons(b, V, &key, TextStyle::Normal, &buttons);
         }
-        let c = b.button(c, "Paste key", Action::AiPasteKey, false);
-        if s.ai_key.is_some() {
-            b.button(c, "Remove", Action::AiRemoveKey, false);
+        if p == Provider::OpenRouter && !compact {
+            wrapped(b, V, "openrouter/free picks a free model each time; models ending in :free are free too", TextStyle::Dim);
         }
-        b.next();
     }
-    if s.ai_provider == Provider::OpenRouter && !compact && b.fits_rows(1) {
-        b.text(label_w, "openrouter/free picks a free model each time; models ending in :free are free too", TextStyle::Dim);
-        b.next();
-    }
-    if s.ai_provider == Provider::Custom && b.fits_rows(1) {
+
+    if p == Provider::Custom && b.fits_rows(1) {
         b.text(0.0, "Address", TextStyle::Normal);
         if s.ai_base_url.is_empty() {
-            b.text(label_w, "set base_url in config.toml", TextStyle::Dim);
+            b.text(V, "set base_url in config.toml", TextStyle::Dim);
         } else {
-            b.text(label_w, &s.ai_base_url, TextStyle::Normal);
+            b.text(V, &s.ai_base_url, TextStyle::Normal);
         }
         b.next();
     }
+
     if b.fits_rows(1) {
         b.text(0.0, "Model", TextStyle::Normal);
         let model = if s.ai_model.is_empty() { "none chosen" } else { s.ai_model.as_str() };
-        b.text(label_w, model, TextStyle::Normal);
-        let c = b.button(label_w + model.chars().count() as f32 + 2.0, "Test", Action::AiTest, false);
-        // Room left on the panel's row, in characters.
-        let room = ((b.rect.w - 2.0 * b.pad) / b.m.cw).floor() - c;
-        if s.ai_status.chars().count() as f32 <= room {
+        b.text(V, model, TextStyle::Normal);
+        let c = b.button(V + model.chars().count() as f32 + 2.0, "Test", Action::AiTest, false);
+        if s.ai_status.chars().count() as f32 <= b.cols_left() - c {
             b.text(c, &s.ai_status, TextStyle::Dim);
             b.next();
         } else {
             // A long message (a failed sign-in says why) gets rows of its own.
             b.next();
-            let width = (((b.rect.w - 2.0 * b.pad) / b.m.cw).floor() - label_w).max(20.0) as usize;
-            for line in wrap(&s.ai_status, width) {
-                if !b.fits_rows(1) {
-                    break;
-                }
-                b.text(label_w, &line, TextStyle::Dim);
-                b.next();
-            }
+            wrapped(b, V, &s.ai_status, TextStyle::Dim);
         }
     }
+
     if !b.fits_rows(2) || s.ai_models.is_empty() {
         return;
     }
@@ -1763,7 +1918,7 @@ mod tests {
     fn claude_code_needs_no_key_and_says_whose_sign_in_it_uses() {
         let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::ClaudeCode, ..OptionsState::default() };
         let p = options_panel(&m(), &s, (0.0, 0.0));
-        assert!(p.buttons.iter().any(|b| b.action == Action::AiProvider(Provider::ClaudeCode) && b.label == "Claude Code"));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiProvider(Provider::ClaudeCode) && b.label == "with Claude Code"));
         assert!(!p.buttons.iter().any(|b| matches!(b.action, Action::AiPasteKey | Action::AiSignIn)));
         assert!(p.lines.iter().any(|l| l.text.contains("your installed Claude Code and its sign-in")));
         assert!(p.buttons.iter().any(|b| b.action == Action::AiTest));
@@ -1800,11 +1955,95 @@ mod tests {
     }
 
     #[test]
-    fn ai_page_off_has_only_the_provider_row() {
+    fn ai_page_off_says_so_and_has_only_the_providers() {
         let s = OptionsState { page: OptionsPage::Ai, ..OptionsState::default() };
         let p = options_panel(&m(), &s, (0.0, 0.0));
         assert!(p.buttons.iter().any(|b| b.action == Action::AiProvider(Provider::Off) && b.active));
-        assert!(!p.buttons.iter().any(|b| b.action == Action::AiPasteKey));
+        assert!(p.lines.iter().any(|l| l.text == "AI is off" && l.style == TextStyle::Title));
+        assert!(!p.lines.iter().any(|l| l.text == "in use" || l.text == "not ready"), "Off is not in use");
+        assert!(!p.buttons.iter().any(|b| b.style != ButtonStyle::Choice && b.style != ButtonStyle::Tab && b.style != ButtonStyle::Close));
+    }
+
+    /// The provider rows of an AI page.
+    fn provider_rows(p: &Panel) -> Vec<&Button> {
+        p.buttons.iter().filter(|b| b.style == ButtonStyle::Choice).collect()
+    }
+
+    #[test]
+    fn ai_page_lists_every_provider_with_only_the_chosen_one_lit() {
+        let all: Vec<Provider> = std::iter::once(Provider::Off).chain(Provider::CHOICES).collect();
+        for chosen in &all {
+            let s = OptionsState { page: OptionsPage::Ai, ai_provider: *chosen, ..OptionsState::default() };
+            let p = options_panel(&m(), &s, (0.0, 0.0));
+            let rows = provider_rows(&p);
+            let offered: Vec<Action> = rows.iter().map(|b| b.action).collect();
+            assert_eq!(offered, all.iter().map(|p| Action::AiProvider(*p)).collect::<Vec<_>>(), "each once, in order");
+            let lit: Vec<Action> = rows.iter().filter(|b| b.active).map(|b| b.action).collect();
+            assert_eq!(lit, [Action::AiProvider(*chosen)]);
+        }
+    }
+
+    #[test]
+    fn claude_and_claude_code_are_one_group_under_claude() {
+        let p = options_panel(&m(), &ai_state(), (0.0, 0.0));
+        let row = |p: Provider| *provider_rows(&options_panel(&m(), &ai_state(), (0.0, 0.0))).iter().find(|b| b.action == Action::AiProvider(p)).map(|b| &b.rect).unwrap();
+        let heading = p.lines.iter().find(|l| l.text == "Claude").expect("a Claude heading");
+        let (api, code, grok, router) = (row(Provider::Anthropic), row(Provider::ClaudeCode), row(Provider::Xai), row(Provider::OpenRouter));
+        assert!(heading.y < api.y && api.y < code.y, "both under the heading");
+        assert!(api.x > grok.x && code.x == api.x && router.x == grok.x, "indented, the others not");
+        let labels: Vec<&str> = provider_rows(&p).iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(labels, ["Off", "ChatGPT", "Grok", "with API key", "with Claude Code", "OpenRouter", "Custom"]);
+    }
+
+    #[test]
+    fn the_chosen_provider_says_in_use_or_what_it_needs() {
+        let tag = |p: &Panel| {
+            let row = provider_rows(p).into_iter().find(|b| b.active).unwrap().rect;
+            p.lines.iter().find(|l| l.y > row.y && l.y < row.y + row.h && l.x > row.x + row.w / 2.0).map(|l| (l.text.clone(), l.style))
+        };
+        // Ready: "in use" on its row, its model on the right.
+        let p = options_panel(&m(), &ai_state(), (0.0, 0.0));
+        assert_eq!(tag(&p), Some(("in use".to_owned(), TextStyle::Normal)));
+        assert!(p.lines.iter().any(|l| l.text == "Claude · with API key" && l.style == TextStyle::Title));
+        assert!(p.lines.iter().any(|l| l.text == "In use · model claude-opus-5-5"));
+        // No key, no sign-in: "not ready", and what to do.
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::OpenAi, ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert_eq!(tag(&p), Some(("not ready".to_owned(), TextStyle::Warn)));
+        assert!(p.lines.iter().any(|l| l.text == "Chosen, but not ready: sign in or paste a key." && l.style == TextStyle::Warn));
+        // Signed in, or a key in the environment, is enough.
+        for ready in [OptionsState { ai_account: Some("me@x.org".into()), ai_model: "gpt-5".into(), ..s.clone() }, OptionsState { ai_key_env: Some("OPENAI_API_KEY"), ai_model: "gpt-5".into(), ..s.clone() }] {
+            assert_eq!(tag(&options_panel(&m(), &ready, (0.0, 0.0))).map(|t| t.0), Some("in use".to_owned()));
+        }
+        // A key but no model yet.
+        let p = options_panel(&m(), &OptionsState { ai_key: Some("sk-…abcd".into()), ..s }, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text == "Chosen, but not ready: pick a model."));
+        // Claude Code brings its own sign-in.
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::ClaudeCode, ai_model: "sonnet".into(), ..OptionsState::default() };
+        assert_eq!(tag(&options_panel(&m(), &s, (0.0, 0.0))).map(|t| t.0), Some("in use".to_owned()));
+    }
+
+    #[test]
+    fn ai_details_are_right_of_the_providers_and_inside_the_panel() {
+        let states = [
+            ai_state(),
+            OptionsState { page: OptionsPage::Ai, ai_provider: Provider::OpenAi, ai_account: Some("someone.with.a.long.name@example.org".into()), ..OptionsState::default() },
+            OptionsState { page: OptionsPage::Ai, ai_provider: Provider::OpenRouter, ..OptionsState::default() },
+            OptionsState { page: OptionsPage::Ai, ai_provider: Provider::Custom, ..OptionsState::default() },
+            OptionsState { page: OptionsPage::Ai, ai_provider: Provider::Xai, ai_signing_in: true, ai_sign_in_code: Some("ABCD-1234".into()), ..OptionsState::default() },
+        ];
+        for s in states {
+            let p = options_panel(&m(), &s, (0.0, 0.0));
+            let list_right = provider_rows(&p).iter().map(|b| b.rect.x + b.rect.w).fold(0.0, f32::max);
+            for b in p.buttons.iter().filter(|b| matches!(b.style, ButtonStyle::Normal | ButtonStyle::Item)) {
+                assert!(b.rect.x > list_right, "{:?} right of the providers", b.action);
+                assert!(b.rect.x + b.rect.w <= p.rect.x + p.rect.w, "{:?} inside the panel", b.action);
+            }
+            let tab_bottom = p.buttons.iter().filter(|b| b.style == ButtonStyle::Tab).map(|b| b.rect.y + b.rect.h).fold(0.0, f32::max);
+            for l in p.lines.iter().filter(|l| l.y > tab_bottom && l.x > list_right) {
+                assert!(l.x + l.text.chars().count() as f32 * m().cw <= p.rect.x + p.rect.w, "{} inside", l.text);
+            }
+        }
     }
 
     #[test]

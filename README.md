@@ -186,7 +186,8 @@ bookmark lines too, such as the one with the error, and says so (*The -C
 option needs a folder. · Bookmarked line 4*).
 
 To set it up, open Options → AI and pick ChatGPT, Grok, Claude or
-OpenRouter.
+OpenRouter from the list on the left. The one in use is marked; one that
+isn't set up yet says *not ready*, and the right side says what it needs.
 
 - **ChatGPT with your plan:** click **Continue with ChatGPT** and sign in in
   the browser. Fixes then use your ChatGPT Plus or Pro plan's allowance, with
@@ -200,7 +201,8 @@ OpenRouter.
   do) and xAI's page calls it **Grok Build**. xAI decides which plans may
   be used this way; if it refuses yours, use an API key. The sign-in is
   kept in `grok-login.json`, readable only by you.
-- **Claude with your plan, through Claude Code:** pick **Claude Code**. If
+- **Claude with your plan, through Claude Code:** under **Claude**, pick
+  **with Claude Code**. If
   you have Claude Code installed and signed in (Pro or Max), fixes run
   through it: fastcnsl runs `claude -p` for each step and never sees your
   sign-in. On Windows a Claude Code installed in WSL works too. Each step
@@ -220,7 +222,7 @@ OpenRouter.
 Then pick a model. **Custom** works with any server that speaks the OpenAI
 chat format, such as a local Ollama (`base_url` in the settings file).
 
-Provider **Claude** needs an API key: Anthropic doesn't allow other apps to
+**Claude with API key** needs an API key: Anthropic doesn't allow other apps to
 sign in with Claude Pro or Max, so a plan is used only through your own
 Claude Code.
 

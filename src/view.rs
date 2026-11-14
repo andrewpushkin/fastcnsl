@@ -484,6 +484,7 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
             TextStyle::Normal => pal.ui_fg,
             TextStyle::Dim => pal.ui_dim,
             TextStyle::Key => pal.ansi[3],
+            TextStyle::Warn => pal.ansi[3].readable_on(pal.ui_bg, 4.5),
         };
         // Clip text that would run past the panel's right edge.
         let room = ((rc.x + rc.w - line.x) / m.cw).floor().max(0.0) as usize;
@@ -495,9 +496,39 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
         }
     }
 
+    // The chosen row of a list: the accent, toned towards the panel.
+    let chosen_bg = pal.ui_accent.mix(pal.ui_bg, 0.7);
     for (i, btn) in panel.buttons.iter().enumerate() {
         let br = btn.rect;
         let hovered = hover == Hover::PanelButton(i);
+        if btn.style == ButtonStyle::Choice {
+            let bg = if btn.active {
+                Some(chosen_bg)
+            } else if hovered {
+                Some(pal.ui_dim.mix(pal.ui_bg, 0.5))
+            } else {
+                None
+            };
+            if let Some(bg) = bg {
+                p.rounded(Layer::OverlayShapes, br.x, br.y, br.w, br.h, m.scale * 5.0, bg.rgba(1.0));
+            }
+            // The ring, its hole, and the dot in it when chosen.
+            let d = (m.ch * 0.8).round();
+            let (x, y) = ((br.x + m.cw).round(), (br.y + (br.h - d) / 2.0).round());
+            let ring = if btn.active { pal.ui_accent } else { pal.ui_dim };
+            let t = (2.0 * m.scale).round().max(1.0);
+            p.rounded(Layer::OverlayShapes, x, y, d, d, d / 2.0, ring.rgba(1.0));
+            p.rounded(Layer::OverlayShapes, x + t, y + t, d - 2.0 * t, d - 2.0 * t, d / 2.0 - t, bg.unwrap_or(pal.ui_bg).rgba(1.0));
+            if btn.active {
+                let dot = (d * 0.45).round();
+                let o = ((d - dot) / 2.0).round();
+                p.rounded(Layer::OverlayShapes, x + o, y + o, dot, dot, dot / 2.0, pal.ui_accent.rgba(1.0));
+            }
+            let fg = if btn.active || hovered { pal.foreground } else { pal.ui_fg };
+            let ty = (br.y + (br.h - m.ch) / 2.0).round();
+            p.text(Layer::OverlayText, &btn.label, (x + d + m.cw * 0.75).round(), ty, fg.rgba(1.0));
+            continue;
+        }
         if btn.style == ButtonStyle::Tab {
             // Text only; the active page is underlined in the accent colour.
             let fg = if btn.active || hovered { pal.foreground } else { pal.ui_dim };
@@ -527,7 +558,7 @@ fn draw_panel(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, panel: &Panel, ho
         }
         if btn.style == ButtonStyle::Item {
             let (bg, fg) = if btn.active {
-                (Some(pal.ui_accent), Rgb::hex(0xffffff))
+                (Some(chosen_bg), pal.foreground)
             } else if hovered {
                 (Some(pal.ui_dim.mix(pal.ui_bg, 0.5)), pal.foreground)
             } else {

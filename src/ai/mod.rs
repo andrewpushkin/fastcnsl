@@ -141,7 +141,8 @@ pub enum Provider {
 }
 
 impl Provider {
-    /// The providers Options → AI offers, after "Off".
+    /// Every provider but "Off": Options → AI lists each (its test checks).
+    #[cfg(test)]
     pub const CHOICES: [Provider; 6] = [Provider::OpenAi, Provider::Xai, Provider::Anthropic, Provider::ClaudeCode, Provider::OpenRouter, Provider::Custom];
 
     pub fn label(self) -> &'static str {

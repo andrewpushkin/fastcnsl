@@ -109,7 +109,13 @@ is used when the file has no key for that provider.
 
 **Options → AI** (a fifth page):
 
-- Provider: a row of buttons.
+- Provider: a list down the left, one ring each, the chosen one filled
+  and tinted. Anthropic and Claude Code are one group under "Claude"
+  ("with API key", "with Claude Code"). The chosen row says "in use", or
+  "not ready" when it lacks a key or sign-in (Claude Code: never; Custom:
+  no `base_url`; any: no model). The rest of this list is on the right,
+  under the provider's name and "In use · model …" or "Chosen, but not
+  ready: <what it needs>."
 - Key: shown as `sk-…a1b2` or "not set". **Paste key** takes it from the
   clipboard; **Remove** deletes it. No text field is needed.
 - Model: a list fetched from the provider's `GET /v1/models` once a key is

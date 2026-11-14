@@ -30,6 +30,9 @@ releases have a section.
   xAI's page).
 - **Claude Code** provider in Options → AI: fixes run through your
   installed Claude Code (also inside WSL on Windows) and its Pro or Max plan.
+- Options → AI lists the providers down the left, with Claude's two ways
+  (with API key, with Claude Code) together under **Claude**. The one in
+  use is marked; one not set up yet says *not ready* and what it needs.
 - **OpenRouter** provider in Options → AI, with free models: **Sign in
   with OpenRouter** (or paste a key) and fixes use `openrouter/free`, which
   picks a free model each time; free models are listed first.
