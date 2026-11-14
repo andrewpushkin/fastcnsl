@@ -3678,6 +3678,7 @@ impl ApplicationHandler<UserEvent> for App {
                     tab.search_with(|search, term| search.type_text(&text, term));
                     st.window.request_redraw();
                 } else if matches!(st.overlay, Overlay::None) {
+                    st.stop_autopilot(st.active, "you typed in the terminal");
                     st.write(text.into_bytes());
                 }
                 None
