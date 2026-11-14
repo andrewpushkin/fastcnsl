@@ -22,6 +22,7 @@ mod search;
 mod session;
 #[cfg(test)]
 mod testterm;
+mod textinput;
 mod shortcuts;
 mod theme;
 mod ui;
