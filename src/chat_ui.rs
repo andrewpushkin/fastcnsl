@@ -2,9 +2,6 @@
 //! the input box, and what a point in the panel hits. Pure geometry; the
 //! app owns the state and `view.rs` draws the result.
 
-// Used by the chat panel (wired in by the chat task); remove then.
-#![allow(dead_code)]
-
 use crate::ai::chat::{CardState, Chat, Entry};
 use crate::ai::context::Budget;
 use crate::grid_width;
@@ -34,11 +31,13 @@ pub struct ChatPanel {
     /// and the bookmarks the AI set while answering it.
     pub budget: Budget,
     pub bookmarked: Vec<u64>,
+    /// What the AI is doing while a message is answered ("Asking Claude…").
+    pub activity: String,
 }
 
 impl ChatPanel {
     pub fn new() -> Self {
-        ChatPanel { chat: Chat::new(), input: TextInput::new(), open: false, focused: false, scroll: 0.0, about: None, budget: Budget::new(), bookmarked: vec![] }
+        ChatPanel { chat: Chat::new(), input: TextInput::new(), open: false, focused: false, scroll: 0.0, about: None, budget: Budget::new(), bookmarked: vec![], activity: String::new() }
     }
 
     /// Clears the conversation; the panel stays as it is.

@@ -128,7 +128,6 @@ pub fn first_message(t: &mut impl TerminalText, env: &Env, listed: usize, target
 /// What a chat message carries, as a Fix's first request does: the
 /// commands, the bookmarked lines and the last output, with the command
 /// global line `about` belongs to marked and its output too.
-#[allow(dead_code)] // used once the chat panel is wired in
 pub fn chat_context(t: &mut impl TerminalText, env: &Env, listed: usize, about: Option<u64>) -> String {
     let commands = t.commands();
     if commands.is_empty() {

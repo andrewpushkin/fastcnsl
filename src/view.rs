@@ -72,7 +72,6 @@ pub enum Hover {
     /// A part of the search bars.
     Search(ui::SearchHit),
     /// A part of the AI chat panel.
-    #[allow(dead_code)] // set once the chat panel is wired in
     Chat(crate::chat_ui::ChatHit),
     Minimize,
     Maximize,
@@ -96,6 +95,9 @@ pub struct ChromeView<'a> {
     pub toast: Option<&'a str>,
     /// The grid size, in the bottom right corner for a while after a resize.
     pub size: Option<&'a str>,
+    /// The active tab's AI chat panel, if open, and whether it has the keyboard.
+    pub chat: Option<&'a crate::chat_ui::ChatLayout>,
+    pub chat_focused: bool,
 }
 
 fn rgb(c: alacritty_terminal::vte::ansi::Rgb) -> Rgb {
@@ -155,6 +157,10 @@ pub fn draw<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>,
         draw_search_bar(p, v, c.hover);
     }
     let m = Metrics { width: p.width, height: p.height, scale: v.scale, cw: p.cell.width, ch: p.cell.height };
+    if let Some(chat) = c.chat {
+        draw_chat(p, v.palette, v.scale, chat, c.hover, c.chat_focused);
+        p.set_face(Face::Terminal);
+    }
     draw_tab_bar(p, v.palette, &m, c);
     if let Some(panel) = c.panel {
         // In the panels' font, as app.rs laid them out.
@@ -192,6 +198,62 @@ fn draw_notice(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, text: &str, cent
     p.rounded(Layer::OverlayShapes, x - b, y - b, w + 2.0 * b, h + 2.0 * b, r + b, pal.ui_dim.rgba(0.6));
     p.rounded(Layer::OverlayShapes, x, y, w, h, r, pal.ui_bg.rgba(1.0));
     p.text(Layer::OverlayText, &shown, x + pad, (y + (h - m.ch) / 2.0).round(), pal.ui_fg.rgba(1.0));
+}
+
+/// The AI chat panel, from its layout (`chat_ui::layout`).
+fn draw_chat(p: &mut Painter<'_>, pal: &Palette, scale: f32, l: &crate::chat_ui::ChatLayout, hover: Hover, focused: bool) {
+    use crate::chat_ui::{ChatHit, Face as LineFace};
+    let a = l.area;
+    let b = scale.round().max(1.0);
+    p.rect(Layer::UiShapes, a.x, a.y, a.w, a.h, pal.ui_bg.rgba(1.0));
+    p.rect(Layer::UiShapes, a.x, a.y, b, a.h, pal.ui_dim.rgba(if hover == Hover::Chat(ChatHit::Divider) { 0.9 } else { 0.35 }));
+    p.rect(Layer::UiShapes, a.x, l.header.y + l.header.h - b, a.w, b, pal.ui_dim.rgba(0.25));
+    let r = 4.0 * scale;
+    for t in &l.tints {
+        p.rounded(Layer::UiShapes, t.x, t.y, t.w, t.h, r, pal.ui_dim.rgba(0.14));
+    }
+    p.set_face(Face::Ui);
+    let cell_h = p.cell.height;
+    p.text(Layer::UiText, &l.title, a.x + (10.0 * scale).round(), l.title_y, pal.ui_fg.rgba(1.0));
+    for (rect, hit, label) in &l.buttons {
+        let hot = hover == Hover::Chat(*hit);
+        p.rounded(Layer::UiShapes, rect.x, rect.y, rect.w, rect.h, r, if hot { pal.ui_accent.rgba(0.85) } else { pal.ui_dim.rgba(0.18) });
+        let tw = label.chars().map(crate::grid_width).sum::<usize>() as f32 * p.cell.width;
+        let fg = if hot { pal.ui_bg } else { pal.ui_fg };
+        p.text(Layer::UiText, label, (rect.x + (rect.w - tw) / 2.0).round(), (rect.y + (rect.h - cell_h) / 2.0).round(), fg.rgba(1.0));
+    }
+    for line in &l.lines {
+        let color = if line.dim { pal.ui_dim } else { pal.ui_fg };
+        if line.face == LineFace::Term {
+            p.set_face(Face::Terminal);
+            p.text(Layer::UiText, &line.text, line.x, line.y, color.rgba(1.0));
+            p.set_face(Face::Ui);
+        } else {
+            p.text(Layer::UiText, &line.text, line.x, line.y, color.rgba(1.0));
+        }
+    }
+    // The input box; its caret is hollow while the terminal has the keyboard.
+    let i = l.input;
+    let edge = if focused { pal.ui_accent.rgba(0.9) } else { pal.ui_dim.rgba(0.6) };
+    p.rounded(Layer::UiShapes, i.x - b, i.y - b, i.w + 2.0 * b, i.h + 2.0 * b, r + b, edge);
+    p.rounded(Layer::UiShapes, i.x, i.y, i.w, i.h, r, pal.background.rgba(1.0));
+    let pad = (crate::chat_ui::INPUT_PAD * scale).round();
+    let fg = if l.placeholder { pal.ui_dim } else { pal.foreground };
+    for (k, text) in l.input_lines.iter().enumerate() {
+        p.text(Layer::UiText, text, i.x + pad, i.y + pad + k as f32 * cell_h, fg.rgba(1.0));
+    }
+    let (cx, cy) = l.caret;
+    let w = (2.0 * scale).round().max(1.0);
+    if focused {
+        p.rect(Layer::UiText, cx, cy, w, cell_h, pal.foreground.rgba(1.0));
+    } else {
+        let cw = p.cell.width;
+        let c = pal.ui_dim.rgba(1.0);
+        p.rect(Layer::UiShapes, cx, cy, cw, b, c);
+        p.rect(Layer::UiShapes, cx, cy + cell_h - b, cw, b, c);
+        p.rect(Layer::UiShapes, cx, cy, b, cell_h, c);
+        p.rect(Layer::UiShapes, cx + cw - b, cy, b, cell_h, c);
+    }
 }
 
 fn draw_tab_bar(p: &mut Painter<'_>, pal: &Palette, m: &Metrics, c: &ChromeView<'_>) {
@@ -903,6 +965,8 @@ mod tests {
             activity: Vec::new(),
             toast: None,
             size: None,
+            chat: None,
+            chat_focused: false,
         }
     }
 
@@ -1300,6 +1364,23 @@ mod tests {
         c.paint(800.0, 300.0, |p| draw(p, &t, &f.view(), &ch));
         // Restore icon: two squares, more shapes than the maximize square.
         assert!(c.layer(Layer::UiShapes).len() > plain + 5);
+    }
+
+    #[test]
+    fn the_chat_panel_is_drawn_beside_the_terminal() {
+        let Some(mut c) = Canvas::new() else { return };
+        let f = Fixture::new();
+        let mut panel = crate::chat_ui::ChatPanel::new();
+        panel.chat.entries.push(crate::ai::chat::Entry::User("hello".into()));
+        let area = crate::ui::Rect { x: 500.0, y: 30.0, w: 400.0, h: 270.0 };
+        let l = crate::chat_ui::layout(area, (8.0, 16.0), (9.0, 18.0), 1.0, &panel, "Claude · sonnet", None);
+        let mut ch = chrome(vec!["t"]);
+        ch.chat = Some(&l);
+        c.paint(900.0, 300.0, |p| draw(p, &term("x"), &f.view(), &ch));
+        let shapes = c.layer(Layer::UiShapes);
+        assert!(shapes.iter().any(|i| i.pos[0] == 500.0 && i.pos[1] == 30.0), "panel background");
+        // Its text: the title, "You", "hello", the buttons and the placeholder.
+        assert!(c.glyph_count(Layer::UiText) >= "Claude · sonnetYouhelloNew chat×Copy".chars().filter(|c| !c.is_whitespace()).count());
     }
 
     #[test]

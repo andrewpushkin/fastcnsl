@@ -34,11 +34,12 @@ pub enum Command {
     PreviousBookmark,
     NextBookmark,
     AiFix,
+    AiChat,
 }
 
 impl Command {
     /// Every command, in the order the Options panel lists them.
-    pub const ALL: [Command; 20] = [
+    pub const ALL: [Command; 21] = [
         Command::NewTab,
         Command::CloseTab,
         Command::NextTab,
@@ -59,6 +60,7 @@ impl Command {
         Command::PreviousBookmark,
         Command::NextBookmark,
         Command::AiFix,
+        Command::AiChat,
     ];
 
     /// The name in the settings file's `[keys]` table.
@@ -84,6 +86,7 @@ impl Command {
             Command::PreviousBookmark => "previous_bookmark",
             Command::NextBookmark => "next_bookmark",
             Command::AiFix => "ai_fix",
+            Command::AiChat => "ai_chat",
         }
     }
 
@@ -110,6 +113,7 @@ impl Command {
             Command::PreviousBookmark => "Previous bookmark",
             Command::NextBookmark => "Next bookmark",
             Command::AiFix => "Fix last command with AI",
+            Command::AiChat => "Chat with AI",
         }
     }
 
@@ -159,6 +163,8 @@ impl Command {
             Command::NextBookmark => &["Ctrl+Shift+Down"],
             Command::AiFix if mac => &["Cmd+Shift+X"],
             Command::AiFix => &["Ctrl+Shift+X"],
+            Command::AiChat if mac => &["Cmd+Shift+I"],
+            Command::AiChat => &["Ctrl+Shift+I"],
         }
     }
 
@@ -183,7 +189,9 @@ impl Command {
     /// item carries its line, so it can't be compared with `action`.
     fn runs(self, action: Action) -> bool {
         match (self, action) {
-            (Command::ToggleBookmark, Action::ToggleBookmark(_)) | (Command::AiFix, Action::AiFix(_)) => true,
+            (Command::ToggleBookmark, Action::ToggleBookmark(_))
+            | (Command::AiFix, Action::AiFix(_))
+            | (Command::AiChat, Action::AiChat | Action::AiChatAt(_)) => true,
             _ => self.action() == Some(action),
         }
     }
@@ -624,6 +632,17 @@ mod tests {
         assert_eq!(k.keys_text(Command::AiFix), key);
         assert_eq!(k.hint(Action::AiFix(Some(3))), key);
         assert_eq!(k.hint(Action::AiFix(None)), key);
+    }
+
+    #[test]
+    fn chat_with_ai_has_a_key_and_a_menu_hint() {
+        let k = Keymap::default();
+        assert_eq!(Command::AiChat.name(), "ai_chat");
+        assert_eq!(Command::AiChat.label(), "Chat with AI");
+        let key = if cfg!(target_os = "macos") { "Cmd+Shift+I" } else { "Ctrl+Shift+I" };
+        assert_eq!(k.keys_text(Command::AiChat), key);
+        assert_eq!(k.hint(Action::AiChat), key);
+        assert_eq!(k.hint(Action::AiChatAt(1)), key);
     }
 
     #[test]

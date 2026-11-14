@@ -1,9 +1,6 @@
 //! The AI chat beside a tab: the conversation, the request loop, and the
 //! commands the AI proposes (cards the user may insert or run).
 
-// Used by the chat panel (wired in by the chat task); remove then.
-#![allow(dead_code)]
-
 use serde_json::{Value, json};
 use winit::event_loop::EventLoopProxy;
 
@@ -240,6 +237,7 @@ impl Chat {
         self.measure();
     }
 
+    #[cfg(test)]
     pub fn has_waiting_card(&self) -> bool {
         self.entries.iter().any(|e| matches!(e, Entry::Card(c) if c.state == CardState::Waiting))
     }

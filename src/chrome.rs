@@ -74,6 +74,14 @@ pub enum Action {
     /// Ask the AI to fix the command on this global line (see `lines`),
     /// or the last command.
     AiFix(Option<u64>),
+    /// Open the AI chat beside the active tab, or move the focus between
+    /// it and the terminal; the same for tab N (from its menu); open it
+    /// asking about the command on this global line.
+    AiChat,
+    AiChatAt(usize),
+    AskAiInChat(u64),
+    /// The chat panel's divider was dragged: its new share of the window.
+    AiChatWidth(f32),
     /// The one-time question before sending terminal text: go on or not.
     AiConfirm(bool),
     /// Options → AI: the provider, its key from the clipboard, removing
@@ -283,6 +291,7 @@ impl Menu {
             MenuItem::new("Find…", Action::Find),
             MenuItem::new("Copy", Action::Copy).enabled(has_selection),
             MenuItem::new("Paste", Action::Paste),
+            MenuItem::new("Chat with AI", Action::AiChat),
             MenuItem::separator(),
             MenuItem::new("Options…", Action::Options),
             MenuItem::new("About", Action::About),
@@ -301,6 +310,7 @@ impl Menu {
             MenuItem::separator(),
             MenuItem::new("Find…", Action::Find),
             MenuItem::new("Fix last command with AI", Action::AiFix(None)),
+            MenuItem::new("Chat with AI", Action::AiChat),
             MenuItem::separator(),
             MenuItem::new(toggle, Action::ToggleBookmark(line)).enabled(bookmarks.target.is_some()),
             MenuItem::new("Previous bookmark", Action::PreviousBookmark).enabled(bookmarks.any),
@@ -315,6 +325,7 @@ impl Menu {
         let toggle = if marked { "Remove bookmark" } else { "Add bookmark" };
         let items = vec![
             MenuItem::new("Fix this command", Action::AiFix(Some(line))),
+            MenuItem::new("Ask AI in chat", Action::AskAiInChat(line)),
             MenuItem::separator(),
             MenuItem::new(toggle, Action::ToggleBookmark(line)),
         ];
@@ -330,6 +341,7 @@ impl Menu {
             MenuItem::separator(),
             MenuItem::new("Previous tab", Action::PreviousTab).enabled(tabs > 1),
             MenuItem::new("Next tab", Action::NextTab).enabled(tabs > 1),
+            MenuItem::new("Chat with AI", Action::AiChatAt(index)),
             MenuItem::separator(),
             MenuItem::new("Copy all text", Action::CopyTabText(index)),
             MenuItem::new("Save text to file", Action::SaveTabText(index)),
@@ -1352,6 +1364,20 @@ mod tests {
     }
 
     #[test]
+    fn menus_offer_the_chat() {
+        let k = Keymap::default();
+        let ctx = Menu::context(0.0, 0.0, false, BookmarkMenu::default(), &k);
+        let labels: Vec<_> = ctx.items.iter().map(|i| i.label.as_str()).collect();
+        let fix = labels.iter().position(|l| *l == "Fix last command with AI").unwrap();
+        assert_eq!(labels[fix + 1], "Chat with AI");
+        assert_eq!(ctx.items[fix + 1].action, Some(Action::AiChat));
+        let gutter = Menu::gutter(0.0, 0.0, 41, false, &k);
+        assert_eq!(gutter.items[1].action, Some(Action::AskAiInChat(41)));
+        assert!(Menu::main(0.0, 0.0, false, 1, &k).items.iter().any(|i| i.label == "Chat with AI" && i.action == Some(Action::AiChat)));
+        assert!(Menu::tab(0.0, 0.0, 2, "t", false, 3, &k).items.iter().any(|i| i.label == "Chat with AI" && i.action == Some(Action::AiChatAt(2))));
+    }
+
+    #[test]
     fn context_menu_fixes_the_last_command() {
         let menu = Menu::context(0.0, 0.0, false, BookmarkMenu::default(), &Keymap::default());
         let fix = menu.items.iter().find(|i| matches!(i.action, Some(Action::AiFix(_)))).unwrap();
@@ -1570,6 +1596,7 @@ mod tests {
             [
                 Action::PreviousTab,
                 Action::NextTab,
+                Action::AiChatAt(2),
                 Action::CopyTabText(2),
                 Action::SaveTabText(2),
                 Action::ToggleTabLog(2),

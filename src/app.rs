@@ -20,7 +20,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
 use crate::ai::{self, AiEvent};
-use crate::chat_ui::ChatPanel;
+use crate::chat_ui::{self, ChatPanel};
 use crate::chrome::{self, Action, BookmarkMenu, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
 use crate::config::{Config, ConfigWatcher, GpuBackend, Setting, ThemeMode};
 use crate::detect;
@@ -290,6 +290,28 @@ impl Tab {
 
     /// Forgets line positions cached for a terminal other than the one
     /// shown now (a window built or dropped since): they don't hold in it.
+    /// Enter pressed at the prompt, with `typed` (if any) still on its way
+    /// to the shell: records the command for the gutter, code colouring
+    /// and the log. Returns the global line Enter was on, and the program
+    /// the command starts if it is another one.
+    fn note_enter(&mut self, typed: &str) -> (u64, Option<String>) {
+        let term = self.session.term.lock();
+        let mut line = highlight::command_line(term.grid());
+        if !typed.is_empty() && !line.trim_end().ends_with(typed) {
+            line = format!("{} {typed}", line.trim_end());
+        }
+        self.code.on_enter(term.grid(), &line);
+        let at = self.lines.cursor_line(term.grid());
+        self.lines.on_enter(term.grid());
+        let ran = detect::program_name(&line).filter(|name| *name != self.app);
+        drop(term);
+        // The command line goes into the log as entered.
+        if let Err(e) = self.log_pass(Upto::Cursor) {
+            log::warn!("logging: {e}");
+        }
+        (at, ran)
+    }
+
     fn sync_lines(&mut self) {
         if self.scroller.changes() != self.shown_changes {
             self.shown_changes = self.scroller.changes();
@@ -303,11 +325,20 @@ enum Overlay {
     Menu(Menu),
     Options,
     About,
-    /// Asks before a Fix first sends terminal text to the provider; holds
-    /// the line the Fix is for.
-    AiConfirm(Option<u64>),
+    /// Asks before a Fix or a chat message first sends terminal text to
+    /// the provider.
+    AiConfirm(Confirm),
     /// "You're using your ChatGPT plan", once after the first sign-in.
     AiWelcome,
+}
+
+/// What the AI confirm panel lets go on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Confirm {
+    /// A Fix of the command on this global line, or the last one.
+    Fix(Option<u64>),
+    /// The chat message in the active tab's input box.
+    Chat,
 }
 
 /// A sign-in under way: its job, provider, the flag that cancels it, and
@@ -317,6 +348,15 @@ struct SignIn {
     provider: ai::Provider,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     code: Option<(String, String)>,
+}
+
+/// Who answers, for notices: the provider, or the plan it spends.
+fn ai_label(client: &ai::client::Client, provider: ai::Provider) -> &'static str {
+    match (client.on_plan(), provider) {
+        (true, ai::Provider::Xai) => "Grok (your plan)",
+        (true, _) => "ChatGPT (your plan)",
+        (false, p) => p.label(),
+    }
 }
 
 /// The email signed in to ChatGPT, if signed in.
@@ -789,7 +829,10 @@ impl App {
                     el.exit();
                 }
             }
-            Action::Find => st.tab_mut().search_with(|search, term| search.open_in(term)),
+            Action::Find => {
+                st.tab_mut().chat.focused = false;
+                st.tab_mut().search_with(|search, term| search.open_in(term));
+            }
             Action::Copy => st.copy_selection(),
             Action::Paste => st.paste(),
             Action::SelectAll => st.tab_mut().shown(|term| {
@@ -890,13 +933,30 @@ impl App {
             Action::AiFix(at) => st.ai_fix(&self.cfg, at),
             Action::AiConfirm(go) => {
                 let provider = self.cfg.ai.provider;
-                if go && let Some(at) = confirming {
+                if go && let Some(what) = confirming {
                     if !self.cfg.ai.confirmed.contains(&provider) {
                         self.change_config(|c| c.ai.confirmed.push(provider));
                     }
                     if let Some(st) = self.state.as_mut() {
-                        st.ai_fix(&self.cfg, at);
+                        match what {
+                            Confirm::Fix(at) => st.ai_fix(&self.cfg, at),
+                            Confirm::Chat => st.send_chat(&self.cfg, true),
+                        }
                     }
+                }
+            }
+            Action::AiChat => st.toggle_chat(&self.cfg),
+            Action::AiChatAt(i) => {
+                if i < st.tabs.len() {
+                    st.select_tab(i);
+                    st.open_chat(&self.cfg, None);
+                }
+            }
+            Action::AskAiInChat(line) => st.open_chat(&self.cfg, Some(line)),
+            Action::AiChatWidth(share) => {
+                self.change_config(|c| c.ai.panel_width = share);
+                if let Some(st) = self.state.as_mut() {
+                    st.resize_grid(&self.cfg);
                 }
             }
             Action::OptionsPage(page) => {
@@ -1035,6 +1095,12 @@ fn mouse_button(b: WinitButton) -> Option<MouseButton> {
         WinitButton::Right => MouseButton::Right,
         _ => return None,
     })
+}
+
+/// The chat panel's share of a window `width` wide with its divider
+/// dragged to `x`: rounded to hundredths (it is saved), 0.2 to 0.8.
+fn chat_share(width: f32, x: f32) -> f32 {
+    (((width - x) / width).clamp(0.2, 0.8) * 100.0).round() / 100.0
 }
 
 /// Columns that fit in a window `width` wide with `pad` on both sides,
@@ -1600,6 +1666,8 @@ impl State {
         let top = self.top();
         let scale = self.scale();
         let term_w = self.tab().chat.open.then(|| self.term_width(cfg));
+        let chat = self.chat_layout(cfg);
+        let chat_focused = self.tab().chat.focused && self.focused && matches!(self.overlay, Overlay::None);
         // Lock through a cloned handle so the guard doesn't borrow `self.tabs`
         // (the tab bar needs every tab's title while the active tab updates).
         let shared = self.tabs[self.active].session.term.clone();
@@ -1664,7 +1732,7 @@ impl State {
                 palette: &self.palette,
                 search: &tab.search,
                 code,
-                focused: self.focused && matches!(self.overlay, Overlay::None),
+                focused: self.focused && matches!(self.overlay, Overlay::None) && !(tab.chat.open && tab.chat.focused),
                 bold_is_bright: cfg.bold_is_bright,
                 scale,
                 padding: padding_px(cfg, scale),
@@ -1696,6 +1764,8 @@ impl State {
                 activity: self.tabs.iter().map(|t| t.activity).collect(),
                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                 size: size_text.as_deref(),
+                chat: chat.as_ref(),
+                chat_focused,
             };
             self.renderer.build(|p| view::draw(p, term, &v, &c));
         }
@@ -1725,26 +1795,36 @@ impl State {
         gutter > 0.0 && x < pad + gutter
     }
 
-    /// Asks the AI to fix the command on global line `at` (None: the last
-    /// command), with the commands before it as context.
-    fn ai_fix(&mut self, cfg: &Config, at: Option<u64>) {
-        let provider = cfg.ai.provider;
+    /// The client and model the settings describe; else says what is
+    /// missing, opening Options → AI when something is not set up yet.
+    fn ai_client(&mut self, cfg: &Config) -> Option<(ai::client::Client, String)> {
         let model = cfg.ai.model_or_default();
         let client = match ai::client::Client::new(&cfg.ai, &self.ai_keys) {
             Ok(_) if model.is_empty() => Err(ai::AiError::NoModel),
             r => r,
         };
-        let client = match client {
-            Ok(c) => c,
+        match client {
+            Ok(c) => Some((c, model)),
             // Not set up yet: the page where it is.
             Err(e @ (ai::AiError::NoProvider | ai::AiError::NoKey | ai::AiError::NoModel | ai::AiError::NoAddress)) => {
                 self.open_ai_options(cfg);
-                return self.show(format!("AI: {e}"));
+                self.show(format!("AI: {e}"));
+                None
             }
-            Err(e) => return self.show(format!("AI: {e}")),
-        };
+            Err(e) => {
+                self.show(format!("AI: {e}"));
+                None
+            }
+        }
+    }
+
+    /// Asks the AI to fix the command on global line `at` (None: the last
+    /// command), with the commands before it as context.
+    fn ai_fix(&mut self, cfg: &Config, at: Option<u64>) {
+        let provider = cfg.ai.provider;
+        let Some((client, model)) = self.ai_client(cfg) else { return };
         if !cfg.ai.confirmed.contains(&provider) {
-            self.overlay = Overlay::AiConfirm(at);
+            self.overlay = Overlay::AiConfirm(Confirm::Fix(at));
             self.panel_offset = (0.0, 0.0);
             self.window.request_redraw();
             return;
@@ -1769,11 +1849,7 @@ impl State {
         self.ai_budget = ai::context::Budget::new();
         let context = self.ai_budget.take_up_to(context, ai::context::FIRST_MAX);
         self.ai_bookmarked.clear();
-        self.ai_label = match (client.on_plan(), provider) {
-            (true, ai::Provider::Xai) => "Grok (your plan)",
-            (true, _) => "ChatGPT (your plan)",
-            (false, p) => p.label(),
-        };
+        self.ai_label = ai_label(&client, provider);
         let tab_id = tab.id;
         let job = self.ai_job_number();
         self.ai_job = Some((job, tab_id));
@@ -1781,11 +1857,295 @@ impl State {
         self.show_for(format!("Asking {}… Esc cancels", provider.label()), Duration::from_secs(120));
     }
 
+    /// The active tab's chat panel, laid out; None while it is closed.
+    fn chat_layout(&self, cfg: &Config) -> Option<chat_ui::ChatLayout> {
+        let tab = self.tabs.get(self.active)?;
+        if !tab.chat.open {
+            return None;
+        }
+        let (w, h) = self.renderer.size();
+        let px = self.chat_px(cfg, tab);
+        let top = self.top();
+        let area = ui::Rect { x: w as f32 - px, y: top, w: px, h: h as f32 - top };
+        let (ui, term) = (self.renderer.ui_cell(), self.renderer.cell());
+        let title = format!("{} · {}", cfg.ai.provider.label(), cfg.ai.model_or_default());
+        let chat = &tab.chat;
+        let status = if chat.chat.job.is_some() {
+            Some(chat.activity.clone())
+        } else if chat.chat.near_limit() {
+            Some("This chat is long; start a New chat".to_owned())
+        } else {
+            chat.about.map(|line| format!("Asking about the command on line {}", line + 1))
+        };
+        Some(chat_ui::layout(area, (ui.width, ui.height), (term.width, term.height), self.scale(), chat, &title, status))
+    }
+
+    /// Opens the active tab's chat with the focus in it; `about` is the
+    /// command (global line) the next message asks about.
+    fn open_chat(&mut self, cfg: &Config, about: Option<u64>) {
+        if self.ai_client(cfg).is_none() {
+            return;
+        }
+        let tab = self.tab_mut();
+        tab.search.blur();
+        tab.chat.focused = true;
+        if about.is_some() {
+            tab.chat.about = about;
+        }
+        if !tab.chat.open {
+            tab.chat.open = true;
+            self.resize_grid(cfg);
+        }
+        self.window.request_redraw();
+    }
+
+    /// `ai_chat`: opens the chat, or moves the focus between it and the terminal.
+    fn toggle_chat(&mut self, cfg: &Config) {
+        let chat = &self.tab().chat;
+        if chat.open && chat.focused {
+            self.tab_mut().chat.focused = false;
+            self.window.request_redraw();
+        } else {
+            self.open_chat(cfg, None);
+        }
+    }
+
+    fn close_chat(&mut self, cfg: &Config) {
+        let chat = &mut self.tab_mut().chat;
+        chat.open = false;
+        chat.focused = false;
+        self.resize_grid(cfg);
+        self.window.request_redraw();
+    }
+
+    /// Sends the active tab's message (`typed`; else Continue: only the
+    /// results of the run commands) with the tab's commands and output.
+    fn send_chat(&mut self, cfg: &Config, typed: bool) {
+        let chat = &self.tab().chat;
+        if chat.chat.job.is_some() || (typed && chat.input.is_empty()) {
+            return;
+        }
+        let provider = cfg.ai.provider;
+        let Some((client, model)) = self.ai_client(cfg) else { return };
+        if !cfg.ai.confirmed.contains(&provider) {
+            self.overlay = Overlay::AiConfirm(Confirm::Chat);
+            self.panel_offset = (0.0, 0.0);
+            self.window.request_redraw();
+            return;
+        }
+        let shell = shell_name(cfg);
+        let tab = &mut self.tabs[self.active];
+        let text = typed.then(|| tab.chat.input.take());
+        let format = client.format();
+        let mut budget = ai::context::Budget::new();
+        let mut live = tab.session.term.lock();
+        let history = if live.mode().contains(TermMode::ALT_SCREEN) {
+            const FULL: &str = "The terminal shows a full-screen program; its lines are not sent.";
+            tab.chat.chat.ask(format, text.as_deref(), FULL, |_| FULL.to_owned())
+        } else {
+            let snap = crate::history::scroll::settled(&mut live, &tab.session.history);
+            let grid = live.grid();
+            let end = tab.lines.cursor_line(grid);
+            let env = ai::context::Env { shell, os: std::env::consts::OS, program: tab.app.clone() };
+            let mut t = TabText { snap: &snap, grid, lines: &mut tab.lines, end };
+            let context = ai::context::chat_context(&mut t, &env, cfg.ai.listed_commands, tab.chat.about);
+            let context = budget.take_up_to(context, ai::chat::CONTEXT_MAX);
+            tab.chat.chat.ask(format, text.as_deref(), &context, |line| {
+                use ai::context::TerminalText;
+                match ai::context::command_of(&t.commands(), line) {
+                    Some(i) => budget.take(ai::context::output(&mut t, i)),
+                    None => "(no output)".to_owned(),
+                }
+            })
+        };
+        drop(live);
+        let label = ai_label(&client, provider);
+        let job = self.ai_job_number();
+        let tab = &mut self.tabs[self.active];
+        tab.chat.budget = budget;
+        tab.chat.bookmarked.clear();
+        tab.chat.about = None;
+        tab.chat.scroll = 0.0;
+        tab.chat.chat.job = Some(job);
+        tab.chat.activity = format!("Asking {label}… Esc stops");
+        ai::chat::start(job, tab.id, client, model, history, self.proxy.clone());
+        self.window.request_redraw();
+    }
+
+    /// A click on a chat button.
+    fn on_chat_hit(&mut self, cfg: &Config, hit: chat_ui::ChatHit) {
+        use ai::chat::{CardState, Entry};
+        use chat_ui::ChatHit as H;
+        let tab_id = self.tab().id;
+        let card_command = |st: &Self, i: usize| match st.tab().chat.chat.entries.get(i) {
+            Some(Entry::Card(c)) => Some(c.command.clone()),
+            _ => None,
+        };
+        let set_state = |st: &mut Self, i: usize, state: CardState| {
+            if let Some(Entry::Card(c)) = st.tab_mut().chat.chat.entries.get_mut(i) {
+                c.state = state;
+            }
+        };
+        const NOT_TYPED: &str = "Nothing typed: a full-screen program is open";
+        match hit {
+            H::Divider | H::Input | H::Messages => {}
+            H::NewChat => self.tab_mut().chat.new_chat(),
+            H::Close => return self.close_chat(cfg),
+            H::Copy(i) => {
+                let text = match self.tab().chat.chat.entries.get(i) {
+                    Some(Entry::User(t) | Entry::Ai(t) | Entry::Note(t)) => t.clone(),
+                    Some(Entry::Card(c)) => c.command.clone(),
+                    None => return,
+                };
+                if let Some(cb) = self.clipboard.as_mut()
+                    && let Err(e) = cb.set_text(text)
+                {
+                    log::warn!("copy failed: {e}");
+                }
+            }
+            H::Insert(i) => {
+                let Some(command) = card_command(self, i) else { return };
+                if self.insert_command(tab_id, &command) {
+                    set_state(self, i, CardState::Inserted);
+                } else {
+                    self.tab_mut().chat.chat.entries.push(Entry::Note(NOT_TYPED.to_owned()));
+                }
+            }
+            H::Run(i) => {
+                let Some(command) = card_command(self, i) else { return };
+                if !self.insert_command(tab_id, &command) {
+                    self.tab_mut().chat.chat.entries.push(Entry::Note(NOT_TYPED.to_owned()));
+                    return self.window.request_redraw();
+                }
+                let (line, ran) = self.tab_mut().note_enter(&ai::fix::insert_text(&command));
+                self.write(b"\r".as_slice());
+                if let Some(name) = ran {
+                    self.tab_mut().app = name;
+                    self.relabel();
+                }
+                set_state(self, i, CardState::Ran { line });
+            }
+            H::Continue(_) => self.send_chat(cfg, false),
+        }
+        self.window.request_redraw();
+    }
+
+    /// A key while the chat has the focus. Nothing reaches the shell.
+    fn on_chat_key(&mut self, cfg: &Config, event: &KeyEvent) {
+        let m = self.mods;
+        let chat = &mut self.tabs[self.active].chat;
+        let input = &mut chat.input;
+        match &event.logical_key {
+            Key::Named(NamedKey::Enter) if m.shift_key() => input.newline(),
+            Key::Named(NamedKey::Enter) => self.send_chat(cfg, true),
+            Key::Named(NamedKey::Escape) if chat.chat.job.is_some() => {
+                chat.chat.job = None;
+                chat.chat.entries.push(ai::chat::Entry::Note("Stopped".to_owned()));
+            }
+            Key::Named(NamedKey::Escape) => chat.focused = false,
+            Key::Named(NamedKey::Backspace) => input.backspace(),
+            Key::Named(NamedKey::Delete) => input.delete(),
+            Key::Named(NamedKey::ArrowLeft) => input.left(),
+            Key::Named(NamedKey::ArrowRight) => input.right(),
+            Key::Named(NamedKey::Home) => input.home(),
+            Key::Named(NamedKey::End) => input.end(),
+            Key::Character(c) if (m.control_key() || m.super_key()) && c.eq_ignore_ascii_case("v") => self.paste(),
+            _ => {
+                if m.control_key() || m.super_key() {
+                    return;
+                }
+                if let Some(text) = event.text.as_deref() {
+                    input.insert(text);
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// Mouse over the chat panel (or its divider): hover, cursor, and the
+    /// divider's drag. False when the pointer is elsewhere.
+    fn on_chat_mouse_move(&mut self, cfg: &Config, x: f32, y: f32) -> bool {
+        let Some(l) = self.chat_layout(cfg) else { return false };
+        if self.chat_drag.is_some() {
+            let w = self.renderer.size().0 as f32;
+            self.chat_drag = Some(chat_share(w, x));
+            self.resize_grid(cfg);
+            self.set_cursor(CursorIcon::ColResize);
+            self.window.request_redraw();
+            return true;
+        }
+        if self.selecting || !(l.area.contains(x, y) || l.divider.contains(x, y)) {
+            return false;
+        }
+        let hit = l.hit(x, y);
+        let hover = match hit {
+            Some(chat_ui::ChatHit::Input | chat_ui::ChatHit::Messages | chat_ui::ChatHit::Divider) | None => Hover::None,
+            Some(h) => Hover::Chat(h),
+        };
+        if hover != self.hover || self.scrollbar.hover || self.search_hover {
+            self.hover = hover;
+            self.scrollbar.hover = false;
+            self.search_hover = false;
+            self.window.request_redraw();
+        }
+        self.set_cursor(match hit {
+            Some(chat_ui::ChatHit::Divider) => CursorIcon::ColResize,
+            Some(chat_ui::ChatHit::Input) => CursorIcon::Text,
+            Some(chat_ui::ChatHit::Messages) | None => CursorIcon::Default,
+            Some(_) => CursorIcon::Pointer,
+        });
+        true
+    }
+
+    /// A press on the chat panel; false when it was elsewhere.
+    fn on_chat_press(&mut self, cfg: &Config, button: WinitButton) -> bool {
+        let (x, y) = self.mouse;
+        let Some(l) = self.chat_layout(cfg) else { return false };
+        if !(l.area.contains(x, y) || l.divider.contains(x, y)) {
+            return false;
+        }
+        if button != WinitButton::Left {
+            return true;
+        }
+        let hit = l.hit(x, y);
+        if hit == Some(chat_ui::ChatHit::Divider) {
+            self.chat_drag = Some(cfg.ai.panel_width);
+            return true;
+        }
+        let tab = self.tab_mut();
+        tab.search.blur();
+        tab.chat.focused = true;
+        if let Some(hit) = hit {
+            self.on_chat_hit(cfg, hit);
+        }
+        self.window.request_redraw();
+        true
+    }
+
+    /// The wheel over the chat panel scrolls its messages; false elsewhere.
+    fn on_chat_wheel(&mut self, cfg: &Config, delta: MouseScrollDelta) -> bool {
+        let (x, y) = self.mouse;
+        let Some(l) = self.chat_layout(cfg) else { return false };
+        if !l.area.contains(x, y) {
+            return false;
+        }
+        let step = 3.0 * self.renderer.ui_cell().height;
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, dy) => dy * step,
+            MouseScrollDelta::PixelDelta(p) => p.y as f32,
+        };
+        let chat = &mut self.tab_mut().chat;
+        chat.scroll = (chat.scroll + dy).clamp(0.0, l.content_height);
+        self.window.request_redraw();
+        true
+    }
+
     /// An answer from an AI request thread.
     fn on_ai(&mut self, event: AiEvent) {
         let signed_out = matches!(
             &event,
             AiEvent::Fixed { result: Err(ai::AiError::SignInAgain), .. }
+                | AiEvent::ChatTurn { result: Err(ai::AiError::SignInAgain), .. }
                 | AiEvent::Models { result: Err(ai::AiError::SignInAgain), .. }
                 | AiEvent::Tested { result: Err(ai::AiError::SignInAgain), .. }
         );
@@ -1794,8 +2154,25 @@ impl State {
             self.ai_grok_account = grok_account();
         }
         match event {
-            // Handled once the chat panel is wired in.
-            AiEvent::ChatTurn { .. } => {}
+            AiEvent::ChatTurn { job, tab, result } => {
+                let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
+                let chat = &mut self.tabs[i].chat;
+                if chat.chat.job != Some(job) {
+                    return;
+                }
+                chat.chat.job = None;
+                match result {
+                    Ok(turn) => chat.chat.on_turn(turn),
+                    Err(e) => chat.chat.entries.push(ai::chat::Entry::Note(format!("AI: {e}"))),
+                }
+                if !chat.bookmarked.is_empty() {
+                    let lines: Vec<String> = chat.bookmarked.drain(..).map(|l| (l + 1).to_string()).collect();
+                    let s = if lines.len() == 1 { "" } else { "s" };
+                    chat.chat.entries.push(ai::chat::Entry::Note(format!("Bookmarked line{s} {}", lines.join(", "))));
+                }
+                chat.scroll = 0.0;
+                self.window.request_redraw();
+            }
             AiEvent::Fixed { job, tab, result } => {
                 if self.ai_job.map(|(j, _)| j) != Some(job) {
                     return;
@@ -1817,12 +2194,20 @@ impl State {
                 }
             }
             AiEvent::Tools { job, tab, calls, reply } => {
-                // A cancelled Fix, or its tab closed: dropping `reply` ends it.
-                if self.ai_job != Some((job, tab)) {
+                // A cancelled Fix or chat message, or its tab closed:
+                // dropping `reply` ends it.
+                let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
+                let fix = self.ai_job == Some((job, tab));
+                if !fix && self.tabs[i].chat.chat.job != Some(job) {
                     return;
                 }
-                let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
                 let t = &mut self.tabs[i];
+                // The Fix's budget and bookmarks live on the state, a chat's on its tab.
+                let (mut budget, mut bookmarked) = if fix {
+                    (std::mem::replace(&mut self.ai_budget, ai::context::Budget::new()), std::mem::take(&mut self.ai_bookmarked))
+                } else {
+                    (std::mem::replace(&mut t.chat.budget, ai::context::Budget::new()), std::mem::take(&mut t.chat.bookmarked))
+                };
                 let mut live = t.session.term.lock();
                 let results: Vec<String> = if live.mode().contains(TermMode::ALT_SCREEN) {
                     calls.iter().map(|_| "the terminal shows a full-screen program".to_owned()).collect()
@@ -1831,14 +2216,26 @@ impl State {
                     let grid = live.grid();
                     let end = t.lines.cursor_line(grid);
                     let mut text = TabText { snap: &snap, grid, lines: &mut t.lines, end };
-                    let budget = &mut self.ai_budget;
-                    let added = &mut self.ai_bookmarked;
-                    calls.iter().map(|c| budget.take(ai::context::run_tool(&mut text, &c.name, &c.input, added))).collect()
+                    calls.iter().map(|c| budget.take(ai::context::run_tool(&mut text, &c.name, &c.input, &mut bookmarked))).collect()
                 };
                 drop(live);
                 let _ = reply.send(results);
+                if fix {
+                    self.ai_budget = budget;
+                    self.ai_bookmarked = bookmarked;
+                } else {
+                    t.chat.budget = budget;
+                    t.chat.bookmarked = bookmarked;
+                }
                 if let Some(line) = calls.iter().find(|c| c.name == "get_output").and_then(|c| c.input["line"].as_i64()) {
-                    self.show_for(format!("Asking {}… reading the output of line {line}", self.ai_label), Duration::from_secs(120));
+                    let reading = format!("reading the output of line {line}");
+                    if fix {
+                        self.show_for(format!("Asking {}… {reading}", self.ai_label), Duration::from_secs(120));
+                    } else {
+                        let a = &mut self.tabs[i].chat.activity;
+                        let asking = a.split('…').next().unwrap_or("Asking").to_owned();
+                        *a = format!("{asking}… {reading} · Esc stops");
+                    }
                 }
                 self.window.request_redraw();
             }
@@ -2052,23 +2449,27 @@ impl State {
 
     /// Types `command` at the prompt of the tab with id `tab`, without
     /// running it.
-    fn insert_command(&mut self, tab: u64, command: &str) {
-        let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
+    /// Types `command` at the prompt of the tab with id `tab`, without
+    /// running it; false if nothing was typed (a full-screen program is
+    /// open, or the command is empty).
+    fn insert_command(&mut self, tab: u64, command: &str) -> bool {
+        let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return false };
         let text = ai::fix::insert_text(command);
         if text.is_empty() {
-            return;
+            return false;
         }
         let tab = &mut self.tabs[i];
         let mut live = tab.session.term.lock();
         let mode = *live.mode();
         if mode.contains(TermMode::ALT_SCREEN) {
-            return;
+            return false;
         }
         tab.scroller.go_bottom(&mut live);
         live.selection = None;
         drop(live);
         tab.session.write(input::paste_bytes(&text, mode));
         self.window.request_redraw();
+        true
     }
 
     /// Viewport cell under the pointer: (grid point, side, col, row).
@@ -2181,6 +2582,11 @@ impl State {
     fn paste(&mut self) {
         let Some(text) = self.clipboard_text() else { return };
         let tab = &mut self.tabs[self.active];
+        if tab.chat.open && tab.chat.focused {
+            tab.chat.input.insert(&text);
+            self.window.request_redraw();
+            return;
+        }
         if tab.search.focused {
             tab.search_with(|search, term| search.type_text(text.lines().next().unwrap_or(""), term));
             return;
@@ -2329,6 +2735,7 @@ impl State {
                 Command::NextBookmark if !alt_screen => return Some(Action::NextBookmark),
                 Command::CycleTheme => return Some(Action::Theme(self.theme_mode.next())),
                 Command::AiFix => return Some(Action::AiFix(None)),
+                Command::AiChat => return Some(Action::AiChat),
                 Command::NextTab | Command::PreviousTab => {
                     self.cycle_tab(cmd == Command::NextTab);
                     return None;
@@ -2346,6 +2753,11 @@ impl State {
             return None;
         }
 
+        if self.tab().chat.open && self.tab().chat.focused {
+            self.on_chat_key(cfg, &event);
+            return None;
+        }
+
         let tab = &mut self.tabs[self.active];
         if tab.search.open && matches!(event.logical_key, Key::Named(NamedKey::F3)) {
             let dir = if m.shift_key() { Direction::Right } else { Direction::Left };
@@ -2360,22 +2772,11 @@ impl State {
             return None;
         }
 
-        let term = tab.session.term.lock();
-        let mode = *term.mode();
+        let mode = *tab.session.term.lock().mode();
         let bytes = input::encode_key(&event.logical_key, event.text.as_deref(), m, mode)?;
         let mut ran = None;
         if matches!(event.logical_key, Key::Named(NamedKey::Enter)) && !mode.contains(TermMode::ALT_SCREEN) {
-            let line = highlight::command_line(term.grid());
-            tab.code.on_enter(term.grid(), &line);
-            tab.lines.on_enter(term.grid());
-            ran = detect::program_name(&line).filter(|name| *name != tab.app);
-            drop(term);
-            // The command line goes into the log as entered.
-            if let Err(e) = tab.log_pass(Upto::Cursor) {
-                log::warn!("logging: {e}");
-            }
-        } else {
-            drop(term);
+            ran = tab.note_enter("").1;
         }
         // Typing goes back to the live terminal, at the bottom.
         let mut live = tab.session.term.lock();
@@ -2529,6 +2930,9 @@ impl State {
             self.set_cursor(if grab { CursorIcon::Grab } else { CursorIcon::Default });
             return;
         }
+        if self.on_chat_mouse_move(cfg, x, y) {
+            return;
+        }
 
         let top = self.top();
         let scale = self.scale();
@@ -2601,6 +3005,10 @@ impl State {
         if !pressed {
             if button == WinitButton::Left {
                 self.selecting = false;
+                if let Some(share) = self.chat_drag.take() {
+                    self.window.request_redraw();
+                    return Some(Action::AiChatWidth(share));
+                }
                 let dragged = self.panel_drag.take().is_some() | self.scrollbar.drag.take().is_some();
                 if dragged {
                     self.window.request_redraw();
@@ -2714,6 +3122,14 @@ impl State {
                 _ => {}
             }
             return None;
+        }
+
+        if pressed && self.on_chat_press(cfg, button) {
+            return None;
+        }
+        if pressed && button == WinitButton::Left {
+            // A click in the terminal gives it the keyboard.
+            self.tab_mut().chat.focused = false;
         }
 
         let top = self.top();
@@ -2867,6 +3283,9 @@ impl State {
             return;
         }
         if !matches!(self.overlay, Overlay::None) || self.mouse.1 < self.top() {
+            return;
+        }
+        if self.on_chat_wheel(cfg, delta) {
             return;
         }
         let Some(whole) = self.wheel_lines(delta) else { return };
@@ -3093,7 +3512,10 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::KeyboardInput { event, .. } => st.on_key(cfg, event),
             WindowEvent::Ime(Ime::Commit(text)) => {
                 let tab = &mut st.tabs[st.active];
-                if tab.search.focused {
+                if tab.chat.open && tab.chat.focused && matches!(st.overlay, Overlay::None) {
+                    tab.chat.input.insert(&text);
+                    st.window.request_redraw();
+                } else if tab.search.focused {
                     tab.search_with(|search, term| search.type_text(&text, term));
                     st.window.request_redraw();
                 } else if matches!(st.overlay, Overlay::None) {
@@ -3196,6 +3618,13 @@ mod tests {
         assert!((mid - 0.5).abs() < 0.01, "{mid}");
         assert_eq!(flash_alpha(FLASH_FOR), 0.0);
         assert_eq!(flash_alpha(FLASH_FOR * 2), 0.0);
+    }
+
+    #[test]
+    fn dragging_the_divider_gives_a_rounded_share() {
+        assert_eq!(chat_share(900.0, 400.0), 0.56);
+        assert_eq!(chat_share(900.0, 10.0), 0.8);
+        assert_eq!(chat_share(900.0, 890.0), 0.2);
     }
 
     #[test]

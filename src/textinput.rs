@@ -1,8 +1,5 @@
 //! A text box's contents and caret: the AI chat's input.
 
-// Used by the chat panel (wired in by the chat task); remove then.
-#![allow(dead_code)]
-
 /// Text being typed, with a caret (a byte index on a `char` boundary).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TextInput {
