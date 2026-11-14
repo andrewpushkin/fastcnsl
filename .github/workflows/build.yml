@@ -163,17 +163,18 @@ jobs:
             --notes "Build ${VERSION##*.} of \`main\` (${GITHUB_SHA::7}). Downloads: see the assets below." \
             --latest
 
-  # Package repositories on GitHub Pages (README "Install"):
+  # The website and the package repositories on GitHub Pages (README "Install"):
+  #   https://<owner>.github.io/<repo>/      website/index.html (scripts/website.sh)
   #   https://<owner>.github.io/<repo>/apt   Debian, Ubuntu
   #   https://<owner>.github.io/<repo>/rpm   Fedora, RHEL, openSUSE
-  # Each holds the latest build only; older ones are on the releases page.
+  # The repositories hold the latest build only; older ones are on the releases page.
   # One-time setup, until then this job is skipped:
   # - Settings → Pages → Source: GitHub Actions
   # - Settings → Secrets → Actions: REPO_SIGNING_KEY = an armored gpg RSA
   #   secret key without a passphrase; it signs both repositories. Keep the
   #   same key forever: users trust it once, a new key breaks their updates.
   repos:
-    name: Publish package repositories
+    name: Publish website and package repositories
     needs: release
     runs-on: ubuntu-24.04
     permissions:
@@ -198,12 +199,14 @@ jobs:
           fi
       - uses: actions/checkout@v4
         if: steps.key.outputs.ok == 'true'
+        with:
+          fetch-depth: 0 # full history: the website shows the version
       - uses: actions/download-artifact@v4
         if: steps.key.outputs.ok == 'true'
         with:
           name: fastcnsl-linux-x86_64
           path: dist
-      - name: Build the repositories
+      - name: Build the repositories and the website
         if: steps.key.outputs.ok == 'true'
         run: |
           sudo apt-get install -y --no-install-recommends apt-utils createrepo-c rpm
@@ -211,7 +214,7 @@ jobs:
           APT_REPO_URL="$SITE/apt" scripts/apt-repo.sh site/apt dist/*.deb
           RPM_REPO_URL="$SITE/rpm" scripts/rpm-repo.sh site/rpm dist/*.rpm
           touch site/.nojekyll
-          printf '<!doctype html><meta charset="utf-8"><title>fastcnsl packages</title>\n<p><a href="apt/">apt repository</a> (Debian, Ubuntu) · <a href="rpm/">rpm repository</a> (Fedora, RHEL, openSUSE)\n' > site/index.html
+          scripts/website.sh site
       - uses: actions/configure-pages@v5
         if: steps.key.outputs.ok == 'true'
       - uses: actions/upload-pages-artifact@v3

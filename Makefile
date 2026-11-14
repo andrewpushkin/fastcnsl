@@ -39,6 +39,7 @@
 #   make check-all        type-check Linux and Windows (macOS: make macos-arm64)
 #   make screenshot       run on a virtual display -> dist/screenshots/
 #   make shell            interactive shell in the dev container
+#   make website          the website (website/index.html) -> dist/website/, no Docker needed
 #
 # Benchmark against Konsole, xterm, Ptyxis and GNOME Terminal on Ubuntu
 # 26.04 (docker/bench-ubuntu-26.04.Dockerfile, scripts/bench/):
@@ -84,7 +85,7 @@ DEV_STAMP := target/.image-dev
 DEV_RUN    = $(call docker_run,$(DEV_IMAGE),target)
 
 .PHONY: all $(PLATFORMS) $(PACKAGES) \
-	build run debug tests test clippy fmt check-all screenshot shell bench bench-host bench-windows clean distclean
+	build run debug tests test clippy fmt check-all screenshot shell website bench bench-host bench-windows clean distclean
 
 # ---------------------------------------------------------------- releases
 
@@ -182,6 +183,9 @@ screenshot: build
 
 shell: $(DEV_STAMP)
 	$(DEV_RUN) bash
+
+website:
+	VERSION=$(VERSION) scripts/website.sh dist/website
 
 # ---------------------------------------------------------------- benchmark
 

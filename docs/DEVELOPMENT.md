@@ -33,10 +33,18 @@ make tests            # unit tests (not run by GitHub Actions)
 make clippy           # lints
 make check-all        # type-check Linux and Windows (macOS: make macos-arm64)
 make screenshot       # headless UI run -> dist/screenshots/*.png
+make website          # the website -> dist/website/index.html
 make clean
 ```
 
 The README's screenshots in `docs/` come from `make screenshot`.
+
+The website, <https://andrewpushkin.github.io/fastcnsl/>, is the single
+file `website/index.html`. `scripts/website.sh` fills in the version and
+copies the screenshots from `docs/`; each release publishes it on GitHub
+Pages together with the apt and rpm repositories. Its speed charts repeat
+numbers from [BENCHMARK.md](BENCHMARK.md), so update both after a new
+measurement.
 
 GitHub Actions (`.github/workflows/build.yml`) lints and builds every
 package on each pull request and push to `main`, using the same Makefile
@@ -122,6 +130,7 @@ the window closes.
 | `src/theme.rs`      | dark and light palettes, OS theme detection       |
 | `wsl-relay/`        | `fastcnsl-wsl`, the WSL tab relay on Windows    |
 | `docker/`, `scripts/package/`, `packaging/` | release builds    |
+| `website/`, `scripts/website.sh` | the website on GitHub Pages |
 
 [wgpu]: https://wgpu.rs
 [alacritty_terminal]: https://crates.io/crates/alacritty_terminal
