@@ -481,6 +481,17 @@ asks the user.
 There is no list of forbidden commands. Such a list is easy to get around
 and gives false comfort. Autopilot is a plain choice to let the AI act.
 
+**As built in stage 3** (`docs/superpowers/plans/2026-11-14-ai-autopilot.md`):
+the switch reads "Autopilot off/on" and is read when a message is sent.
+Stops end the turn gracefully: the call being run is answered "stopped:
+<reason>", the rest "not run: stopped", and a note says why; a second Esc
+drops the turn at once. Typing in the terminal stops only a turn under
+way; between messages it leaves Autopilot on. After 25 commands the turn
+ends with a note rather than a question. `wait` waits the whole time it
+asks for (the output may stay quiet while a slow command works);
+`send_keys` takes `text`, `enter` and `ctrl_c`. Stop takes New chat's
+place in the header while a reply is awaited.
+
 ### Clients (`src/ai/`)
 
 - A common interface: send a conversation with tools, get back a stream of

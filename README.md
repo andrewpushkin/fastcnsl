@@ -260,6 +260,27 @@ Drag the panel's left edge to change its width (`panel_width`, kept for
 next time); **×** closes it and **New chat** starts over. A chat lasts as
 long as its tab and is never saved to disk.
 
+**Autopilot.** Click **Autopilot off** in the chat's header to turn it on
+(the switch and the tab's name turn yellow). From the next message, the AI
+runs the commands it chooses by itself, one at a time, reads what they
+print and goes on until the task is done, then says so. Each command it
+runs is typed at your prompt with Enter, so it shows in the scrollback and
+the log like your own, and the chat shows it with its last lines of output.
+A command counts as finished once its output has been quiet for 1.5
+seconds; one that keeps printing is handed over as "still running" after
+30 seconds. The AI can wait longer for a slow command (up to a minute at a
+time) and type into a running one, such as answering `[Y/n]` or pressing
+Ctrl+C. It is told never to type passwords and to stop and ask instead.
+
+Autopilot stops, and switches off, when you press **Stop** or Esc in the
+chat, type or paste in the terminal, when a full-screen program opens,
+after 25 commands for one message (send another message to let it go on),
+or when you switch it off or close the chat. There is no list of
+forbidden commands: turning it on is a plain choice to let the AI act in
+that terminal, with your rights. Text a command prints can try to steer
+the AI (a file or web page written for that), and with Autopilot on the AI
+acts on what it reads, so use it where a wrong command can do little harm.
+
 ### Tabs
 
 Each tab has its own shell, scrollback and search, and is labelled with the

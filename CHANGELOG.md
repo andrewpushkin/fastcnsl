@@ -11,6 +11,10 @@ releases have a section.
   commands and output as a fix does, and suggests commands you can insert
   at the prompt or run with one click; after a run, Continue hands it the
   output. Ask AI in chat, beside a command, asks about that one.
+- **Autopilot** in the chat: switched on, the AI runs the commands it
+  chooses by itself, reads their output once it goes quiet, can wait for
+  slow commands and answer prompts, and goes on until the task is done.
+  Stop, Esc, typing in the terminal or a full-screen program ends it.
 - **Fix a command with AI.** Click the time beside a command and choose
   **Fix this command**, or press Ctrl+Shift+X (or right-click and choose
   **Fix last command with AI**) for the last one: ChatGPT,
