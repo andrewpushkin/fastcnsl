@@ -20,6 +20,9 @@ releases have a section.
   xAI's page).
 - **Claude Code** provider in Options → AI: fixes run through your
   installed Claude Code (also inside WSL on Windows) and its Pro or Max plan.
+- **OpenRouter** provider in Options → AI, with free models: **Sign in
+  with OpenRouter** (or paste a key) and fixes use `openrouter/free`, which
+  picks a free model each time; free models are listed first.
 - Jumping to a bookmark scrolls there smoothly and briefly highlights the line.
 - `fastcnsl new-tab`, `close-tab` and `quit` only reach windows of the same
   version; `--pid` naming another version's window is refused.

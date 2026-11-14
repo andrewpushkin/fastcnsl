@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use super::grok::{self, GrokLogin};
 use super::login::{self, Login};
+use super::openrouter;
 use super::wire::{self, Format, Reply, Request};
 use super::{AiConfig, AiError, Keys, Provider};
 
@@ -65,6 +66,7 @@ impl Client {
             Provider::OpenAi => OPENAI_BASE,
             Provider::Xai => XAI_BASE,
             Provider::Anthropic => ANTHROPIC_BASE,
+            Provider::OpenRouter => &openrouter::api_base(&openrouter::site()),
             Provider::Custom if cfg.base_url.trim().is_empty() => return Err(AiError::NoAddress),
             Provider::Custom => cfg.base_url.trim(),
         };
@@ -155,6 +157,11 @@ impl Client {
             self.claude_code()?;
             return Ok(super::claude_code::MODELS.iter().map(|m| (*m).to_owned()).collect());
         }
+        if self.provider == Provider::OpenRouter {
+            // Only the models that can call tools: Fix needs them.
+            let ids = wire::parse_models(&read_text(self.request("/models?supported_parameters=tools", None)?)?)?;
+            return Ok(openrouter::order_models(ids));
+        }
         let path = if self.format() == Format::Messages { "/models?limit=1000" } else { "/models" };
         wire::parse_models(&read_text(self.request(path, None)?)?)
     }
@@ -195,6 +202,14 @@ impl Client {
                     log::warn!("AI: Grok plan refused: {}", text.chars().take(500).collect::<String>());
                     return Err(AiError::GrokPlan);
                 }
+                if self.provider == Provider::OpenRouter
+                    && matches!(status, 402 | 429)
+                    && let Some(message) = openrouter::error_message(&text)
+                {
+                    // Its reason says what to do (the free models' daily
+                    // limit, credits to add).
+                    return Err(AiError::Api { status, message });
+                }
                 Err(wire::error_for(status, &text))
             }
             Err(e) => {
@@ -207,11 +222,15 @@ impl Client {
     fn request_once(&self, path: &str, body: Option<&str>, header: &Option<(&'static str, String)>) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         let url = format!("{}{path}", self.base);
         let anthropic = self.format() == Format::Messages;
+        let named: &[(&str, &str)] = if self.provider == Provider::OpenRouter { &openrouter::ATTRIBUTION } else { &[] };
         match body {
             Some(b) => {
                 let mut r = self.agent.post(&url).header("content-type", "application/json");
                 if let Some((name, value)) = header {
                     r = r.header(*name, value);
+                }
+                for (name, value) in named {
+                    r = r.header(*name, *value);
                 }
                 if anthropic {
                     r = r.header("anthropic-version", ANTHROPIC_VERSION);
@@ -222,6 +241,9 @@ impl Client {
                 let mut r = self.agent.get(&url);
                 if let Some((name, value)) = header {
                     r = r.header(*name, value);
+                }
+                for (name, value) in named {
+                    r = r.header(*name, *value);
                 }
                 if anthropic {
                     r = r.header("anthropic-version", ANTHROPIC_VERSION);
@@ -439,6 +461,21 @@ mod tests {
         assert!(got.join().unwrap().to_lowercase().starts_with("get /models?limit=1000 "));
         let dead = Client::with_base(Provider::Xai, "k", "http://127.0.0.1:9");
         assert!(matches!(dead.models(), Err(AiError::Network(_))));
+    }
+
+    #[test]
+    fn openrouter_names_fastcnsl_lists_tool_models_and_says_why_it_is_limited() {
+        let (base, got) = serve_once(200, r#"{"data":[{"id":"a/paid"},{"id":"b/x:free"}]}"#);
+        let c = Client::with_base(Provider::OpenRouter, "sk-or", &base);
+        assert_eq!(c.models().unwrap(), ["openrouter/free", "b/x:free", "a/paid"]);
+        let raw = got.join().unwrap().to_lowercase();
+        assert!(raw.starts_with("get /models?supported_parameters=tools "), "{raw}");
+        assert!(raw.contains("authorization: bearer sk-or") && raw.contains("x-openrouter-title: fastcnsl") && raw.contains("http-referer: https://"), "{raw}");
+
+        let (base, got) = serve_once(429, r#"{"error":{"message":"Rate limit exceeded: free-models-per-day","code":429}}"#);
+        let e = Client::with_base(Provider::OpenRouter, "sk-or", &base).send(&req()).unwrap_err();
+        assert_eq!(e, AiError::Api { status: 429, message: "Rate limit exceeded: free-models-per-day".into() });
+        assert!(got.join().unwrap().to_lowercase().starts_with("post /chat/completions "));
     }
 
     const COMPLETED: &str = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n";

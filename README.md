@@ -184,7 +184,8 @@ and reads the output of an earlier command when it needs it. It can
 bookmark lines too, such as the one with the error, and says so (*The -C
 option needs a folder. · Bookmarked line 4*).
 
-To set it up, open Options → AI and pick ChatGPT, Grok or Claude.
+To set it up, open Options → AI and pick ChatGPT, Grok, Claude or
+OpenRouter.
 
 - **ChatGPT with your plan:** click **Continue with ChatGPT** and sign in in
   the browser. Fixes then use your ChatGPT Plus or Pro plan's allowance, with
@@ -203,8 +204,17 @@ To set it up, open Options → AI and pick ChatGPT, Grok or Claude.
   through it: fastcnsl runs `claude -p` for each step and never sees your
   sign-in. On Windows a Claude Code installed in WSL works too. Each step
   takes a few seconds longer than with an API key.
-- **With an API key** (ChatGPT, Grok, Claude): copy the key from the
-  provider's website and click **Paste key**.
+- **Free, through OpenRouter:** pick **OpenRouter** and click **Sign in
+  with OpenRouter**. You sign in (or sign up) on OpenRouter's page and it
+  makes a key for fastcnsl, kept in `ai-keys.toml` like a pasted one (you
+  can delete it at openrouter.ai/settings/keys). The model
+  `openrouter/free` picks a free model that can use fastcnsl's tools for
+  each step; models ending in `:free` are free too, and the list shows
+  them first. Free models allow only a few requests a day (OpenRouter
+  raises the limit once you have bought some credits) and their answers
+  are weaker than the paid ones'.
+- **With an API key** (ChatGPT, Grok, Claude, OpenRouter): copy the key
+  from the provider's website and click **Paste key**.
 
 Then pick a model. **Custom** works with any server that speaks the OpenAI
 chat format, such as a local Ollama (`base_url` in the settings file).

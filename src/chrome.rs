@@ -1047,7 +1047,7 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
     }
     if s.ai_provider == Provider::Off {
         if b.fits_rows(1) {
-            b.text(label_w, "Pick one to fix commands with AI. You need an API key from it.", TextStyle::Dim);
+            b.text(label_w, "Pick one to fix commands with AI. OpenRouter has free models.", TextStyle::Dim);
             b.next();
         }
         return;
@@ -1107,6 +1107,12 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
         b.text(0.0, "API key", TextStyle::Normal);
         b.text(label_w, "not used while signed in", TextStyle::Dim);
         b.next();
+    } else if s.ai_provider == Provider::OpenRouter && s.ai_signing_in && b.fits_rows(1) {
+        b.text(0.0, "API key", TextStyle::Normal);
+        let text = "Waiting for the browser…";
+        b.text(label_w, text, TextStyle::Dim);
+        b.button(label_w + text.chars().count() as f32 + 2.0, "Cancel", Action::AiSignIn, false);
+        b.next();
     } else if b.fits_rows(1) {
         b.text(0.0, "API key", TextStyle::Normal);
         let key = match (&s.ai_key, s.ai_key_env) {
@@ -1116,10 +1122,19 @@ fn ai_page(b: &mut PanelBuilder<'_>, s: &OptionsState) {
             (None, None) => "not set".to_owned(),
         };
         b.text(label_w, &key, TextStyle::Normal);
-        let c = b.button(label_w + key.chars().count() as f32 + 2.0, "Paste key", Action::AiPasteKey, false);
+        let mut c = label_w + key.chars().count() as f32 + 2.0;
+        if s.ai_provider == Provider::OpenRouter && s.ai_key.is_none() {
+            // OpenRouter makes a key for fastcnsl when the user signs in.
+            c = b.button(c, "Sign in with OpenRouter", Action::AiSignIn, true);
+        }
+        let c = b.button(c, "Paste key", Action::AiPasteKey, false);
         if s.ai_key.is_some() {
             b.button(c, "Remove", Action::AiRemoveKey, false);
         }
+        b.next();
+    }
+    if s.ai_provider == Provider::OpenRouter && !compact && b.fits_rows(1) {
+        b.text(label_w, "openrouter/free picks a free model each time; models ending in :free are free too", TextStyle::Dim);
         b.next();
     }
     if s.ai_provider == Provider::Custom && b.fits_rows(1) {
@@ -1728,6 +1743,29 @@ mod tests {
         assert!(!p.buttons.iter().any(|b| matches!(b.action, Action::AiPasteKey | Action::AiSignIn)));
         assert!(p.lines.iter().any(|l| l.text.contains("your installed Claude Code and its sign-in")));
         assert!(p.buttons.iter().any(|b| b.action == Action::AiTest));
+    }
+
+    #[test]
+    fn openrouter_offers_sign_in_or_a_key_and_says_what_is_free() {
+        let s = OptionsState { page: OptionsPage::Ai, ai_provider: Provider::OpenRouter, ai_model: "openrouter/free".into(), ..OptionsState::default() };
+        let p = options_panel(&m(), &s, (0.0, 0.0));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiProvider(Provider::OpenRouter) && b.label == "OpenRouter"));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiSignIn && b.label == "Sign in with OpenRouter"));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiPasteKey));
+        assert!(p.lines.iter().any(|l| l.text.contains("openrouter/free picks a free model")));
+
+        // Waiting for the browser: Cancel, no other way in meanwhile.
+        let waiting = OptionsState { ai_signing_in: true, ..s.clone() };
+        let p = options_panel(&m(), &waiting, (0.0, 0.0));
+        assert!(p.lines.iter().any(|l| l.text == "Waiting for the browser…"));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiSignIn && b.label == "Cancel"));
+        assert!(!p.buttons.iter().any(|b| b.action == Action::AiPasteKey));
+
+        // With a key: no sign-in, and it can be removed.
+        let keyed = OptionsState { ai_key: Some("sk-…abcd".into()), ..s };
+        let p = options_panel(&m(), &keyed, (0.0, 0.0));
+        assert!(!p.buttons.iter().any(|b| b.action == Action::AiSignIn));
+        assert!(p.buttons.iter().any(|b| b.action == Action::AiRemoveKey));
     }
 
     #[test]

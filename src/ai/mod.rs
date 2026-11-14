@@ -6,6 +6,7 @@ pub mod client;
 pub mod context;
 pub mod fix;
 pub mod grok;
+pub mod openrouter;
 pub mod keys;
 pub mod login;
 pub mod wire;
@@ -125,6 +126,9 @@ pub enum Provider {
     /// The user's installed Claude Code (`claude -p`), with its own sign-in.
     #[serde(rename = "claude-code")]
     ClaudeCode,
+    /// OpenRouter: many providers' models with one key, some free.
+    #[serde(rename = "openrouter")]
+    OpenRouter,
     /// Any server with the Chat Completions format at `[ai] base_url`,
     /// such as a local Ollama.
     Custom,
@@ -132,7 +136,7 @@ pub enum Provider {
 
 impl Provider {
     /// The providers Options → AI offers, after "Off".
-    pub const CHOICES: [Provider; 5] = [Provider::OpenAi, Provider::Xai, Provider::Anthropic, Provider::ClaudeCode, Provider::Custom];
+    pub const CHOICES: [Provider; 6] = [Provider::OpenAi, Provider::Xai, Provider::Anthropic, Provider::ClaudeCode, Provider::OpenRouter, Provider::Custom];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -141,6 +145,7 @@ impl Provider {
             Provider::Xai => "Grok",
             Provider::Anthropic => "Claude",
             Provider::ClaudeCode => "Claude Code",
+            Provider::OpenRouter => "OpenRouter",
             Provider::Custom => "Custom",
         }
     }
@@ -153,6 +158,7 @@ impl Provider {
             Provider::Xai => "xai",
             Provider::Anthropic => "anthropic",
             Provider::ClaudeCode => "claude-code",
+            Provider::OpenRouter => "openrouter",
             Provider::Custom => "custom",
         }
     }
@@ -163,16 +169,19 @@ impl Provider {
             Provider::OpenAi => Some("OPENAI_API_KEY"),
             Provider::Xai => Some("XAI_API_KEY"),
             Provider::Anthropic => Some("ANTHROPIC_API_KEY"),
+            Provider::OpenRouter => Some("OPENROUTER_API_KEY"),
             Provider::Off | Provider::ClaudeCode | Provider::Custom => None,
         }
     }
 
-    /// The model used when none is chosen. Only Claude has one: the others
-    /// list many, and a built-in name would go stale.
+    /// The model used when none is chosen: Claude's newest, and on
+    /// OpenRouter its router to free models. The others list many, and a
+    /// built-in name would go stale.
     pub fn default_model(self) -> &'static str {
         match self {
             Provider::Anthropic => "claude-opus-5-5",
             Provider::ClaudeCode => "sonnet",
+            Provider::OpenRouter => openrouter::FREE_ROUTER,
             _ => "",
         }
     }
@@ -187,7 +196,8 @@ impl Provider {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiConfig {
-    /// "openai", "xai", "anthropic", "custom", or "" for no AI.
+    /// "openai", "xai", "anthropic", "claude-code", "openrouter", "custom",
+    /// or "" for no AI.
     pub provider: Provider,
     /// The model, as the provider names it; "" for the provider's default.
     pub model: String,

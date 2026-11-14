@@ -434,7 +434,7 @@ fn callback_page(text: &str) -> String {
 }
 
 /// How long the browser has to come back.
-const SIGN_IN_TIME: std::time::Duration = std::time::Duration::from_secs(300);
+pub(crate) const SIGN_IN_TIME: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Signs in: opens the sign-in page with `open`, waits on `listener` for
 /// the browser to come back (until `cancel` or five minutes), trades the
@@ -469,7 +469,9 @@ pub fn sign_in_with(
     let mut retried = false;
     loop {
         let new_registration = login.client_id.is_empty();
-        let (mut browser, outcome) = wait_for_browser(&listener, &pending, &login.client_id, cancel, deadline)?;
+        let saved_client = login.client_id.clone();
+        let check = |target: &str| parse_callback(target, &pending, &saved_client);
+        let (mut browser, outcome) = wait_for_browser(&listener, CALLBACK_PATH, check, "ChatGPT", cancel, deadline)?;
         let (code, client_id) = match outcome {
             Ok(c) => c,
             Err(e) => {
@@ -535,20 +537,18 @@ fn save_locked(login: &Login, path: &Path) {
     }
 }
 
-/// The callback's code and client id, or why it was refused.
-type Callback = Result<(String, String), String>;
-
-/// Waits for the browser's callback. Other requests (the icon) get a 404
-/// and the wait goes on. The connection is returned unanswered with the
-/// checked code and client id (or why not), so the page can say how the
-/// sign-in ended.
-fn wait_for_browser(
+/// Waits for the browser's callback at `path`. Other requests (the icon)
+/// get a 404 and the wait goes on. The connection is returned unanswered
+/// with what `check` made of the address (or why it was refused), so the
+/// page can say how the sign-in ended. `name` is for the log.
+pub(crate) fn wait_for_browser<T>(
     listener: &std::net::TcpListener,
-    pending: &Pending,
-    saved_client: &str,
+    path: &str,
+    check: impl Fn(&str) -> Result<T, String>,
+    name: &str,
     cancel: &std::sync::atomic::AtomicBool,
     deadline: std::time::Instant,
-) -> Result<(std::net::TcpStream, Callback), AiError> {
+) -> Result<(std::net::TcpStream, Result<T, String>), AiError> {
     use std::io::Read;
     use std::sync::atomic::Ordering;
     loop {
@@ -572,22 +572,22 @@ fn wait_for_browser(
         let n = stream.read(&mut buf).unwrap_or(0);
         let head = String::from_utf8_lossy(&buf[..n]);
         let target = head.lines().next().and_then(|l| l.split(' ').nth(1)).unwrap_or("").to_owned();
-        if !target.starts_with(CALLBACK_PATH) {
+        if target.split('?').next() != Some(path) {
             answer_browser(&mut stream, "404 Not Found", "fastcnsl: not here");
             continue;
         }
-        let result = parse_callback(&target, pending, saved_client);
+        let result = check(&target);
         // Names and lengths only: the values are secrets.
         let shape: Vec<String> = target.split_once('?').map_or("", |(_, q)| q).split('&').map(|kv| match kv.split_once('=') {
             Some((k, v)) => format!("{k}({})", v.len()),
             None => kv.to_owned(),
         }).collect();
-        log::info!("ChatGPT sign-in: the browser came back ({}): {}", if result.is_ok() { "ok" } else { "refused" }, shape.join(" "));
+        log::info!("{name} sign-in: the browser came back ({}): {}", if result.is_ok() { "ok" } else { "refused" }, shape.join(" "));
         return Ok((stream, result));
     }
 }
 
-fn answer_browser(stream: &mut std::net::TcpStream, status: &str, text: &str) {
+pub(crate) fn answer_browser(stream: &mut std::net::TcpStream, status: &str, text: &str) {
     use std::io::Write;
     let html = callback_page(text);
     let _ = write!(stream, "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{html}", html.len());

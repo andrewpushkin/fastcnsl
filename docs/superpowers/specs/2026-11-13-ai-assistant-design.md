@@ -380,6 +380,35 @@ Claude Code and its sign-in (Pro or Max plan)" and that fastcnsl runs
 `claude -p` and never sees the sign-in. Models: `sonnet` (default),
 `opus`, `haiku`, Claude Code's aliases. Test sends one tiny request.
 
+### OpenRouter (stage 1f)
+
+A provider "OpenRouter" (`provider = "openrouter"`, key `openrouter` in
+`ai-keys.toml` or `OPENROUTER_API_KEY`) for its free models: Chat
+Completions at `https://openrouter.ai/api/v1`, Bearer key. Default model
+`openrouter/free` (OpenRouter's router to a free model that supports what
+the request needs, tools here).
+
+**Sign in with OpenRouter**: OpenRouter's own OAuth PKCE for apps. The
+browser opens `https://openrouter.ai/auth?callback_url=http://127.0.0.1:
+<any free port>/callback&code_challenge=…&code_challenge_method=S256&
+state=…&key_label=fastcnsl`; back at `/callback?code=…&state=…`, `POST
+/api/v1/auth/keys {code, code_verifier, code_challenge_method}` gives
+`{key}`, saved in `ai-keys.toml` as if pasted. No tokens to refresh or
+revoke: the user deletes the key on OpenRouter's keys page, or **Remove**
+forgets it here.
+
+**Requests** carry OpenRouter's app headers: `HTTP-Referer` (the
+repository URL from `Cargo.toml`), `X-OpenRouter-Title: fastcnsl`,
+`X-OpenRouter-Categories: cli-agent`. Models: `GET
+/models?supported_parameters=tools`, then `openrouter/free`, the `:free`
+models, the rest. A 402 or 429 shows OpenRouter's own reason (the free
+models' daily limit, credits to add).
+
+**Options → AI, OpenRouter**: the key row with **Sign in with
+OpenRouter** (while no key is in the file), **Paste key**, **Remove**;
+while signing in, "Waiting for the browser…" and **Cancel**; a dim line
+that `openrouter/free` picks a free model and `:free` models are free.
+
 ### The chat panel
 
 - Per tab, on the right, `panel_width` of the window, with a divider that
@@ -504,6 +533,7 @@ and gives false comfort. Autopilot is a plain choice to let the AI act.
    Responses API (above).
 1d. **Grok sign-in**: a SuperGrok or X Premium plan, by device code.
 1e. **Claude Code**: a Claude plan through the user's own `claude -p`.
+1f. **OpenRouter**: its free models, a key by OpenRouter's sign-in for apps.
 2. **Chat**: the split and resize, the panel, focus, cards with Insert and
    Run, the `run_command` loop with Autopilot fixed off.
 3. **Autopilot**: the switch, "finished" detection, `wait` and

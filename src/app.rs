@@ -1816,6 +1816,12 @@ impl State {
                 // Said where it is seen even with Options closed.
                 self.show(ai::login::outcome_text(provider.label(), &result));
                 match result {
+                    Ok(_) if provider == ai::Provider::OpenRouter => {
+                        // The sign-in saved the key it got in the keys file.
+                        self.ai_keys = ai::Keys::path().map(|p| ai::Keys::load(&p)).unwrap_or_default();
+                        self.ai_status = String::new();
+                        self.ai_reset_model = true;
+                    }
                     Ok(email) if provider == ai::Provider::Xai => {
                         self.ai_status = String::new();
                         self.ai_grok_account = Some(email);
@@ -1848,7 +1854,8 @@ impl State {
         }
     }
 
-    /// Options → AI → Continue with ChatGPT (or Grok): opens the browser to
+    /// Options → AI → Continue with ChatGPT (or Grok, or Sign in with
+    /// OpenRouter): opens the browser to
     /// sign in; pressed again while waiting (Cancel), stops waiting.
     fn sign_in_or_cancel(&mut self, provider: ai::Provider) {
         if let Some(signin) = self.ai_signin.take() {
@@ -1862,6 +1869,7 @@ impl State {
         self.ai_status.clear();
         match provider {
             ai::Provider::Xai => ai::grok::sign_in(job, self.proxy.clone(), cancel),
+            ai::Provider::OpenRouter => ai::openrouter::sign_in(job, self.proxy.clone(), cancel),
             _ => ai::login::sign_in(job, self.proxy.clone(), cancel),
         }
     }
