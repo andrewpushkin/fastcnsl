@@ -55,6 +55,9 @@ pub struct View<'a> {
     /// For the scrollbar: the tab's history rows and how far up the view is
     /// (see `Scroller::metrics`); None takes them from the terminal drawn.
     pub scroll: Option<(usize, usize)>,
+    /// Width of the terminal's part of the window when a chat panel takes
+    /// the rest; None: the whole window.
+    pub width: Option<f32>,
 }
 
 /// What the pointer is over, for hover highlights.
@@ -498,7 +501,7 @@ fn draw_flash(p: &mut Painter<'_>, v: &View<'_>) {
     }
     let ch = p.cell.height;
     let y = v.top + v.padding + rows.start as f32 * ch;
-    p.rect(Layer::Background, 0.0, y, p.width, rows.len() as f32 * ch, v.palette.ui_accent.rgba(0.3 * a));
+    p.rect(Layer::Background, 0.0, y, v.width.unwrap_or(p.width), rows.len() as f32 * ch, v.palette.ui_accent.rgba(0.3 * a));
 }
 
 /// Bookmarked lines: a bar at the left. With a gutter it sits under the
@@ -693,7 +696,7 @@ fn draw_grid<T: EventListener>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>
 fn draw_scrollbar<T>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>) {
     let grid = term.grid();
     let (hist, offset) = v.scroll.unwrap_or((grid.history_size(), grid.display_offset()));
-    let Some(g) = ui::scroll_geometry(p.width, v.top, p.height, v.scale, hist, grid.screen_lines(), offset) else {
+    let Some(g) = ui::scroll_geometry(v.width.unwrap_or(p.width), v.top, p.height, v.scale, hist, grid.screen_lines(), offset) else {
         return;
     };
     let a = v.scrollbar_alpha;
@@ -710,7 +713,7 @@ fn draw_scrollbar<T>(p: &mut Painter<'_>, term: &Term<T>, v: &View<'_>) {
 fn draw_search_bar(p: &mut Painter<'_>, v: &View<'_>, hover: Hover) {
     let s = v.search;
     let (cw, ch) = (p.cell.width, p.cell.height);
-    let g = ui::search_geometry(p.width, v.top, v.scale, cw, ch, s.boxes.len(), s.picker);
+    let g = ui::search_geometry(v.width.unwrap_or(p.width), v.top, v.scale, cw, ch, s.boxes.len(), s.picker);
     for (i, b) in s.boxes.iter().enumerate() {
         draw_search_box(p, v, &g, i, b, hover);
     }
@@ -881,6 +884,7 @@ mod tests {
                 bookmarks: &[],
                 flash: None,
                 scroll: None,
+                width: None,
             }
         }
     }
@@ -1296,6 +1300,18 @@ mod tests {
         c.paint(800.0, 300.0, |p| draw(p, &t, &f.view(), &ch));
         // Restore icon: two squares, more shapes than the maximize square.
         assert!(c.layer(Layer::UiShapes).len() > plain + 5);
+    }
+
+    #[test]
+    fn the_scrollbar_stays_left_of_the_chat_panel() {
+        let Some(mut c) = Canvas::new() else { return };
+        let f = Fixture::new();
+        let many: String = (0..20).map(|i| format!("line {i}\r\n")).collect();
+        let v = View { width: Some(400.0), ..f.view() };
+        c.paint(900.0, 300.0, |p| draw(p, &term(&many), &v, &chrome(vec![])));
+        let x = 400.0 - crate::ui::scrollbar_width(1.0);
+        let bar: Vec<_> = c.layer(Layer::UiShapes).iter().filter(|i| i.kind == 3 && i.pos[1] >= 30.0).map(|i| i.pos[0]).collect();
+        assert!(!bar.is_empty() && bar.iter().all(|&bx| bx >= x - 1.0 && bx < 400.0), "{bar:?}");
     }
 
     #[test]

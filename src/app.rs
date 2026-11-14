@@ -20,6 +20,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Theme, UserAttentionType, Window, WindowId};
 
 use crate::ai::{self, AiEvent};
+use crate::chat_ui::ChatPanel;
 use crate::chrome::{self, Action, BookmarkMenu, Caption, Menu, Metrics, OptionsPage, OptionsState, Panel};
 use crate::config::{Config, ConfigWatcher, GpuBackend, Setting, ThemeMode};
 use crate::detect;
@@ -154,6 +155,10 @@ struct Tab {
     search_view: u64,
     /// The log is still writing lines from history (see `TabLog::write_new`).
     log_behind: bool,
+    /// This tab's grid: narrower than the window while its chat is open.
+    grid: WindowSize,
+    /// The AI chat beside this tab.
+    chat: ChatPanel,
 }
 
 impl Tab {
@@ -386,6 +391,9 @@ struct State {
     /// While dragging a panel by its header: the pointer and offset at the
     /// start of the drag.
     panel_drag: Option<((f32, f32), (f32, f32))>,
+    /// While dragging the chat panel's divider: the panel's share of the
+    /// window, saved to `[ai] panel_width` on release.
+    chat_drag: Option<f32>,
     /// When the last frame finished, and how long it took to build and
     /// present: output redraws are paced by these.
     last_frame: Instant,
@@ -593,7 +601,7 @@ impl App {
         theme::spawn_os_theme_watcher(self.proxy.clone(), Some(os_dark));
         let palette = Palette::for_mode(cfg.theme, os_dark);
 
-        let grid = grid_size(&renderer, cfg, scale);
+        let grid = grid_size(&renderer, cfg, scale, 0.0);
         let mut st = State {
             window,
             renderer,
@@ -635,6 +643,7 @@ impl App {
             frames: FrameStats::new(),
             panel_offset: (0.0, 0.0),
             panel_drag: None,
+            chat_drag: None,
             keymap: Keymap::new(&cfg.keys),
             capturing: None,
             pending_keys: None,
@@ -680,7 +689,7 @@ impl App {
         if old.antialiasing != cfg.antialiasing {
             st.renderer.set_subpixel(cfg.antialiasing.subpixel(crate::render::system_subpixel()));
         }
-        if old.padding != cfg.padding || old.line_numbers != cfg.line_numbers {
+        if old.padding != cfg.padding || old.line_numbers != cfg.line_numbers || old.ai.panel_width != cfg.ai.panel_width {
             st.resize_grid(cfg);
         }
         if old.theme != cfg.theme {
@@ -1028,16 +1037,23 @@ fn mouse_button(b: WinitButton) -> Option<MouseButton> {
     })
 }
 
-fn grid_size(r: &Renderer, cfg: &Config, scale: f64) -> WindowSize {
+/// Columns that fit in a window `width` wide with `pad` on both sides,
+/// the gutter, the scrollbar and a chat panel `panel` wide; at least 2.
+fn columns(width: f32, pad: f32, gutter: f32, scrollbar: f32, cell_w: f32, panel: f32) -> u16 {
+    ((width - panel - 2.0 * pad - gutter - scrollbar) / cell_w).floor().max(2.0) as u16
+}
+
+/// The grid that fits the window, less a chat panel `panel` px wide.
+fn grid_size(r: &Renderer, cfg: &Config, scale: f64, panel: f32) -> WindowSize {
     let (w, h) = r.size();
     let cell = r.cell();
     let pad = padding_px(cfg, scale as f32);
     let sb = ui::scrollbar_width(scale as f32);
     let bar = chrome::tab_bar_height(&Metrics { width: w as f32, height: h as f32, scale: scale as f32, cw: cell.width, ch: cell.height });
-    let cols = ((w as f32 - 2.0 * pad - gutter_px(cfg, cell.width, pad) - sb) / cell.width).floor().max(2.0);
+    let cols = columns(w as f32, pad, gutter_px(cfg, cell.width, pad), sb, cell.width, panel);
     let lines = ((h as f32 - 2.0 * pad - bar) / cell.height).floor().max(1.0);
     WindowSize {
-        num_cols: cols as u16,
+        num_cols: cols,
         num_lines: lines as u16,
         cell_width: cell.width as u16,
         cell_height: cell.height as u16,
@@ -1123,7 +1139,9 @@ impl State {
         let searcher = Searcher::new(move || {
             let _ = proxy.send_event(UserEvent::History(id));
         });
-        let session = Session::spawn(cfg, self.grid, listener.clone())
+        // New tabs have no chat open: the window's whole width.
+        let grid = grid_size(&self.renderer, cfg, self.window.scale_factor(), 0.0);
+        let session = Session::spawn(cfg, grid, listener.clone())
             .map_err(|e| format!("starting {}: {e}", if cfg.shell.is_empty() { "shell" } else { &cfg.shell }))?;
         let code_theme = if self.palette.dark { &cfg.code_theme_dark } else { &cfg.code_theme_light };
         self.tabs.push(Tab {
@@ -1147,6 +1165,8 @@ impl State {
             searcher,
             search_view: 0,
             log_behind: false,
+            grid,
+            chat: ChatPanel::new(),
         });
         self.relabel();
         self.select_tab(self.tabs.len() - 1);
@@ -1379,6 +1399,7 @@ impl State {
 
     fn select_tab(&mut self, i: usize) {
         self.active = i.min(self.tabs.len() - 1);
+        self.grid = self.tabs[self.active].grid;
         self.tabs[self.active].activity = false;
         self.selecting = false;
         self.reported_button = None;
@@ -1397,13 +1418,19 @@ impl State {
         self.select_tab(i);
     }
 
+    /// Sizes each tab's grid to the window, less its chat panel; tabs
+    /// whose size changed are resized (the shell is told).
     fn resize_grid(&mut self, cfg: &Config) {
-        let size = grid_size(&self.renderer, cfg, self.window.scale_factor());
-        let g = self.grid;
-        if (size.num_cols, size.num_lines, size.cell_width, size.cell_height) == (g.num_cols, g.num_lines, g.cell_width, g.cell_height) {
-            return;
-        }
-        for tab in &mut self.tabs {
+        let scale = self.window.scale_factor();
+        let same = |a: WindowSize, b: WindowSize| (a.num_cols, a.num_lines, a.cell_width, a.cell_height) == (b.num_cols, b.num_lines, b.cell_width, b.cell_height);
+        let mut changed = false;
+        for i in 0..self.tabs.len() {
+            let size = grid_size(&self.renderer, cfg, scale, self.chat_px(cfg, &self.tabs[i]));
+            let tab = &mut self.tabs[i];
+            let g = tab.grid;
+            if same(size, g) {
+                continue;
+            }
             if size.num_cols != g.num_cols {
                 // Text reflows; recorded row positions no longer hold.
                 tab.code.clear();
@@ -1414,13 +1441,39 @@ impl State {
             if let Some(log) = tab.log.as_mut() {
                 log.invalidate();
             }
+            tab.grid = size;
+            changed = true;
         }
-        let counts_changed = (size.num_cols, size.num_lines) != (g.num_cols, g.num_lines);
-        self.grid = size;
-        self.resized_at = Some(Instant::now());
-        if counts_changed {
-            self.show_size();
+        let g = self.grid;
+        let size = match self.tabs.get(self.active) {
+            Some(tab) => tab.grid,
+            None => grid_size(&self.renderer, cfg, scale, 0.0),
+        };
+        if changed {
+            self.resized_at = Some(Instant::now());
         }
+        if !same(size, g) {
+            self.grid = size;
+            if (size.num_cols, size.num_lines) != (g.num_cols, g.num_lines) {
+                self.show_size();
+            }
+        }
+    }
+
+    /// Width of tab's chat panel in pixels; 0 while it is closed.
+    fn chat_px(&self, cfg: &Config, tab: &Tab) -> f32 {
+        if !tab.chat.open {
+            return 0.0;
+        }
+        let active = self.tabs.get(self.active).is_some_and(|t| t.id == tab.id);
+        let share = self.chat_drag.filter(|_| active).unwrap_or(cfg.ai.panel_width);
+        (self.renderer.size().0 as f32 * share).round()
+    }
+
+    /// Width of the active tab's terminal: the window less its chat panel.
+    fn term_width(&self, cfg: &Config) -> f32 {
+        let w = self.renderer.size().0 as f32;
+        self.tabs.get(self.active).map_or(w, |t| w - self.chat_px(cfg, t))
     }
 
     /// Background tab `i` printed something: puts a bell on it.
@@ -1546,6 +1599,7 @@ impl State {
         let panel = self.panel(cfg);
         let top = self.top();
         let scale = self.scale();
+        let term_w = self.tab().chat.open.then(|| self.term_width(cfg));
         // Lock through a cloned handle so the guard doesn't borrow `self.tabs`
         // (the tab bar needs every tab's title while the active tab updates).
         let shared = self.tabs[self.active].session.term.clone();
@@ -1624,6 +1678,7 @@ impl State {
                 bookmarks: &tab.bookmarked,
                 flash,
                 scroll: Some(scroll),
+                width: term_w,
             };
             let c = ChromeView {
                 caption: self.caption(),
@@ -2477,13 +2532,14 @@ impl State {
 
         let top = self.top();
         let scale = self.scale();
+        let term_w = self.term_width(cfg);
         let tab = &mut self.tabs[self.active];
         let (hist, scrolled) = tab.scroll_metrics();
         let (screen, offset) = tab.shown(|t| (t.grid().screen_lines(), t.grid().display_offset()));
-        let geo = ui::scroll_geometry(m.width, top, m.height, scale, hist, screen, scrolled);
+        let geo = ui::scroll_geometry(term_w, top, m.height, scale, hist, screen, scrolled);
 
         let over_bar = geo.as_ref().is_some_and(|g| g.track.contains(x, y));
-        let sg = ui::search_geometry(m.width, top, scale, m.cw, m.ch, tab.search.boxes.len(), tab.search.picker);
+        let sg = ui::search_geometry(term_w, top, scale, m.cw, m.ch, tab.search.boxes.len(), tab.search.picker);
         let over_search = tab.search.open && sg.contains(x, y);
         let search_button = match sg.hit(x, y).filter(|_| tab.search.open) {
             None | Some(SearchHit::Bar(_)) => Hover::None,
@@ -2662,11 +2718,12 @@ impl State {
 
         let top = self.top();
         let scale = self.scale();
+        let term_w = self.term_width(cfg);
         if pressed && button == WinitButton::Left {
             let tab = &mut self.tabs[self.active];
             if tab.search.open {
                 let s = &mut tab.search;
-                let g = ui::search_geometry(m.width, top, scale, m.cw, m.ch, s.boxes.len(), s.picker);
+                let g = ui::search_geometry(term_w, top, scale, m.cw, m.ch, s.boxes.len(), s.picker);
                 if let Some(hit) = g.hit(x, y) {
                     match hit {
                         SearchHit::Close(i) => s.remove_box(i),
@@ -2692,7 +2749,7 @@ impl State {
             }
             let (hist, scrolled) = tab.scroll_metrics();
             let screen = tab.shown(|t| t.grid().screen_lines());
-            if let Some(g) = ui::scroll_geometry(m.width, top, m.height, scale, hist, screen, scrolled)
+            if let Some(g) = ui::scroll_geometry(term_w, top, m.height, scale, hist, screen, scrolled)
                 && g.track.contains(x, y)
             {
                 if g.thumb.contains(x, y) {
@@ -2901,7 +2958,7 @@ impl State {
                 self.frames.replies += 1;
                 self.tabs[i].session.write(s.into_bytes());
             }
-            TermEvent::TextAreaSizeRequest(format) => self.tabs[i].session.write(format(self.grid).into_bytes()),
+            TermEvent::TextAreaSizeRequest(format) => self.tabs[i].session.write(format(self.tabs[i].grid).into_bytes()),
             TermEvent::Bell => {
                 if !self.focused {
                     self.window.request_user_attention(Some(UserAttentionType::Informational));
@@ -3139,6 +3196,13 @@ mod tests {
         assert!((mid - 0.5).abs() < 0.01, "{mid}");
         assert_eq!(flash_alpha(FLASH_FOR), 0.0);
         assert_eq!(flash_alpha(FLASH_FOR * 2), 0.0);
+    }
+
+    #[test]
+    fn grid_size_leaves_room_for_the_panel() {
+        assert_eq!(columns(1000.0, 10.0, 0.0, 10.0, 10.0, 0.0), 97);
+        assert_eq!(columns(1000.0, 10.0, 0.0, 10.0, 10.0, 400.0), 57);
+        assert_eq!(columns(300.0, 10.0, 0.0, 10.0, 10.0, 290.0), 2); // never below 2
     }
 
     #[test]
