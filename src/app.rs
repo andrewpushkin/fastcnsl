@@ -1969,7 +1969,7 @@ impl State {
         tab.chat.scroll = 0.0;
         tab.chat.chat.job = Some(job);
         tab.chat.activity = format!("Asking {label}… Esc stops");
-        ai::chat::start(job, tab.id, client, model, history, self.proxy.clone());
+        ai::chat::start(job, tab.id, client, model, history, false, self.proxy.clone());
         self.window.request_redraw();
     }
 
@@ -2155,6 +2155,8 @@ impl State {
             self.ai_grok_account = grok_account();
         }
         match event {
+            // Answered once Autopilot is wired in; dropping `reply` ends the turn.
+            AiEvent::Drive { .. } => {}
             AiEvent::ChatTurn { job, tab, result } => {
                 let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return };
                 let chat = &mut self.tabs[i].chat;
