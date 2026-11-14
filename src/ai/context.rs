@@ -122,8 +122,34 @@ pub fn first_message(t: &mut impl TerminalText, env: &Env, listed: usize, target
         Some(line) => command_of(&commands, line)?,
         None => last,
     };
+    Some(listing(t, env, listed, Some((fix, "<- fix this one"))))
+}
+
+/// What a chat message carries, as a Fix's first request does: the
+/// commands, the bookmarked lines and the last output, with the command
+/// global line `about` belongs to marked and its output too.
+#[allow(dead_code)] // used once the chat panel is wired in
+pub fn chat_context(t: &mut impl TerminalText, env: &Env, listed: usize, about: Option<u64>) -> String {
+    let commands = t.commands();
+    if commands.is_empty() {
+        return format!("{}\n\nNo commands yet.\n", env_line(env));
+    }
+    let mark = about.and_then(|line| command_of(&commands, line)).map(|i| (i, "<- the user asks about this one"));
+    listing(t, env, listed, mark)
+}
+
+fn env_line(env: &Env) -> String {
+    format!("Shell: {} · OS: {} · Program: {}", env.shell, env.os, env.program)
+}
+
+/// The env line, the last `listed` commands (command `mark.0` marked with
+/// `mark.1`), the bookmarked lines, the marked command's output and the
+/// last command's. The tab must have a command.
+fn listing(t: &mut impl TerminalText, env: &Env, listed: usize, mark: Option<(usize, &str)>) -> String {
+    let commands = t.commands();
+    let last = commands.len() - 1;
     let bookmarks = t.bookmarks();
-    let mut out = format!("Shell: {} · OS: {} · Program: {}\n\nCommands in this tab (newest last):\n", env.shell, env.os, env.program);
+    let mut out = format!("{}\n\nCommands in this tab (newest last):\n", env_line(env));
     for i in commands.len().saturating_sub(listed.max(1))..commands.len() {
         let (line, secs) = commands[i];
         let text = t.lines(line..line + 1).into_iter().next().unwrap_or_default();
@@ -134,7 +160,12 @@ pub fn first_message(t: &mut impl TerminalText, env: &Env, listed: usize, target
         if !marked.is_empty() {
             let _ = write!(out, "  bookmarked: {}", marked.join(", "));
         }
-        out.push_str(if i == fix { "  <- fix this one\n" } else { "\n" });
+        match mark {
+            Some((m, text)) if m == i => {
+                let _ = writeln!(out, "  {text}");
+            }
+            _ => out.push('\n'),
+        }
     }
     let kept: Vec<u64> = bookmarks.iter().copied().filter(|&b| b >= t.first_line()).collect();
     if !kept.is_empty() {
@@ -151,13 +182,13 @@ pub fn first_message(t: &mut impl TerminalText, env: &Env, listed: usize, target
             }
         }
     }
-    if fix != last {
+    if let Some((m, _)) = mark.filter(|&(m, _)| m != last) {
         out.push('\n');
-        out.push_str(&output(t, fix));
+        out.push_str(&output(t, m));
     }
     out.push('\n');
     out.push_str(&output(t, last));
-    Some(out)
+    out
 }
 
 /// Runs one of the terminal tools; the text is the tool's result. Lines
@@ -294,6 +325,18 @@ mod tests {
         assert!(m.contains("  line 1901 02:01  l1900  89 lines  <- fix this one"), "{m}");
         assert!(m.contains("--- output of line 1901 ---") && m.contains("--- output of line 1991 ---"));
         assert!(first_message(&mut Fake { commands: vec![], ..fake() }, &env(), 50, None).is_none());
+    }
+
+    #[test]
+    fn chat_context_marks_the_command_asked_about() {
+        let mut t = fake();
+        let m = chat_context(&mut t, &env(), 50, Some(5));
+        assert!(m.contains("  line 1 01:00  l0  1899 lines  bookmarked: 6  <- the user asks about this one"), "{m}");
+        assert!(m.contains("--- output of line 1 ---") && m.contains("--- output of line 1991 ---"), "{m}");
+        let plain = chat_context(&mut fake(), &env(), 50, None);
+        assert!(!plain.contains("<-") && plain.contains("--- output of line 1991 ---"), "{plain}");
+        let empty = chat_context(&mut Fake { commands: vec![], ..fake() }, &env(), 50, None);
+        assert_eq!(empty, "Shell: bash · OS: linux · Program: tar\n\nNo commands yet.\n");
     }
 
     #[test]

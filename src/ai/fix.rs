@@ -23,6 +23,12 @@ pub const MAX_REQUESTS: usize = 6;
 
 /// The tools a Fix offers: two that read and mark the terminal, and the answer.
 pub fn tools() -> [Tool; 3] {
+    let [get_output, add_bookmark] = read_tools();
+    [get_output, add_bookmark, fix_tool()]
+}
+
+/// The two tools that read and mark the terminal (Fix and chat).
+pub fn read_tools() -> [Tool; 2] {
     [
         Tool {
             name: "get_output",
@@ -48,7 +54,6 @@ pub fn tools() -> [Tool; 3] {
                 "additionalProperties": false,
             }),
         },
-        fix_tool(),
     ]
 }
 

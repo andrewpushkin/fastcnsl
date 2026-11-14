@@ -1739,6 +1739,8 @@ impl State {
             self.ai_grok_account = grok_account();
         }
         match event {
+            // Handled once the chat panel is wired in.
+            AiEvent::ChatTurn { .. } => {}
             AiEvent::Fixed { job, tab, result } => {
                 if self.ai_job.map(|(j, _)| j) != Some(job) {
                     return;

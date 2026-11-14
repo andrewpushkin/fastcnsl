@@ -1,6 +1,7 @@
 //! The AI assistant: provider settings, API keys, and (in later modules)
 //! the requests that ask a model to fix a command.
 
+pub mod chat;
 pub mod claude_code;
 pub mod client;
 pub mod context;
@@ -23,6 +24,9 @@ pub enum AiEvent {
     /// UI thread; one result per call goes back on `reply`. Dropping
     /// `reply` unanswered ends the Fix.
     Tools { job: u64, tab: u64, calls: Vec<wire::ToolCall>, reply: std::sync::mpsc::Sender<Vec<String>> },
+    /// The answer to a chat message in the tab with id `tab`.
+    #[allow(dead_code)] // read once the chat panel is wired in
+    ChatTurn { job: u64, tab: u64, result: Result<chat::Turn, AiError> },
     /// A Fix for the tab with id `tab`.
     Fixed { job: u64, tab: u64, result: Result<fix::Fix, AiError> },
     /// The model list for Options → AI.
