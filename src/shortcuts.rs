@@ -480,7 +480,7 @@ pub fn fixed() -> Vec<(&'static str, &'static str)> {
         ("Tab (in search)", "Next search box"),
         ("Esc", "Close search, menu or panel"),
         ("Right click", "Copy / paste / bookmark menu"),
-        ("Middle click", "Paste; close tab on tab bar"),
+        ("Middle click", "Paste selection (or clipboard); close tab on tab bar"),
         ("Shift+drag", "Select inside mouse apps (vim, htop)"),
     ]
 }

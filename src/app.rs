@@ -2732,9 +2732,22 @@ impl State {
 
     fn paste(&mut self) {
         let Some(text) = self.clipboard_text() else { return };
+        self.paste_text(&text);
+    }
+
+    /// Middle click: the selected text if there is any, else the clipboard.
+    fn paste_selection(&mut self) {
+        let sel = self.tab_mut().shown(|t| t.selection_to_string()).filter(|t| !t.is_empty());
+        match sel {
+            Some(text) => self.paste_text(&logging::keep_last_lines(text, logging::COPY_LINES).0),
+            None => self.paste(),
+        }
+    }
+
+    fn paste_text(&mut self, text: &str) {
         let tab = &mut self.tabs[self.active];
         if tab.chat.open && tab.chat.focused {
-            tab.chat.input.insert(&text);
+            tab.chat.input.insert(text);
             self.window.request_redraw();
             return;
         }
@@ -2744,7 +2757,7 @@ impl State {
         }
         let mode = *tab.session.term.lock().mode();
         self.stop_autopilot(self.active, "you typed in the terminal");
-        self.write(input::paste_bytes(&text, mode));
+        self.write(input::paste_bytes(text, mode));
     }
 
     fn scrolled(&mut self) {
@@ -3394,7 +3407,7 @@ impl State {
             }
             (WinitButton::Middle, true) => {
                 drop(live);
-                self.paste();
+                self.paste_selection();
             }
             _ => {}
         }

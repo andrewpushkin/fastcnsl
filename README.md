@@ -416,7 +416,7 @@ changed.
 
 **Mouse.** Drag to select, double-click to select a word, triple-click for a
 line. Right-click opens the copy, paste and bookmark menu; middle-click
-pastes. A click on a line's time or number offers **Fix this command** and
+pastes the selected text, or the clipboard when nothing is selected. A click on a line's time or number offers **Fix this command** and
 the bookmark. On a tab, middle-click closes it and right-click opens the tab
 menu. Hold Shift to select text in programs that use the mouse themselves
 (vim, htop).
