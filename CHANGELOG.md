@@ -4,6 +4,11 @@ Notable changes to fastcnsl, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
+## Unreleased
+
+- Middle-click pastes the selected text at the prompt; with nothing
+  selected it pastes the clipboard, as before.
+
 ## 0.1.193 (2026-11-14)
 
 - **Chat with AI** about a tab: right-click the tab (or press
