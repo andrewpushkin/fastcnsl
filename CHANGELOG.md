@@ -4,7 +4,7 @@ Notable changes to fastcnsl, newest first. Versions are
 `0.1.<number of commits>`, so they are not consecutive here: only the tagged
 releases have a section.
 
-## Unreleased
+## 0.1.197 (2026-11-20)
 
 - Middle-click pastes the selected text at the prompt; with nothing
   selected it pastes the clipboard, as before.
