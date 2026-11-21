@@ -35,8 +35,8 @@ jobs:
     name: Lints
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
         with:
           path: .cache/cargo
           key: cargo-dev-${{ hashFiles('Cargo.lock') }}
@@ -57,10 +57,10 @@ jobs:
           - target: windows-arm64
             packages: windows-arm64-zip windows-arm64-setup
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history: the version counts commits
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .cache/cargo
           key: cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
@@ -69,7 +69,7 @@ jobs:
         run: make ${{ matrix.target }}
       - name: Package
         run: make ${{ matrix.packages }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: fastcnsl-${{ matrix.target }}
           path: |
@@ -84,13 +84,13 @@ jobs:
     name: macos-arm64
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - run: |
           rustup toolchain install 1.91 --profile minimal --target aarch64-apple-darwin
           rustup default 1.91
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -101,7 +101,7 @@ jobs:
         run: scripts/package/macos-arm64.sh build
       - name: Package
         run: scripts/package/macos-arm64.sh dmg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: fastcnsl-macos-arm64
           path: dist/*.dmg
@@ -115,12 +115,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Version
         run: echo "VERSION=$(scripts/get_version.sh)" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -197,11 +197,11 @@ jobs:
             printf '%s\n' "$REPO_SIGNING_KEY" | gpg --batch --import
             echo "ok=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.key.outputs.ok == 'true'
         with:
           fetch-depth: 0 # full history: the website shows the version
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: steps.key.outputs.ok == 'true'
         with:
           name: fastcnsl-linux-x86_64
@@ -215,12 +215,13 @@ jobs:
           RPM_REPO_URL="$SITE/rpm" scripts/rpm-repo.sh site/rpm dist/*.rpm
           touch site/.nojekyll
           scripts/website.sh site
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         if: steps.key.outputs.ok == 'true'
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         if: steps.key.outputs.ok == 'true'
         with:
           path: site
-      - uses: actions/deploy-pages@v4
+          include-hidden-files: true # site/.nojekyll
+      - uses: actions/deploy-pages@v5
         if: steps.key.outputs.ok == 'true'
         id: deploy
