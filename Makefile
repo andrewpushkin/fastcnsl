@@ -96,7 +96,7 @@ all: $(PACKAGES)
 
 # Image per platform, rebuilt when its Dockerfile changes.
 target/.image-%: docker/%.Dockerfile
-	docker build -f $< -t fastcnsl-$* docker
+	docker buildx build --load -f $< -t fastcnsl-$* docker
 	@mkdir -p $(dir $@) && touch $@
 
 # Windows images also download Microsoft's ConPTY with this script.
@@ -104,7 +104,7 @@ target/.image-windows-x86_64 target/.image-windows-arm64: docker/conpty.sh
 
 # macOS: same as the pattern rule, plus the optional SDK overrides.
 target/.image-macos-arm64: docker/macos-arm64.Dockerfile
-	docker build $(MACOS_SDK_ARGS) -f $< -t fastcnsl-macos-arm64 docker
+	docker buildx build --load $(MACOS_SDK_ARGS) -f $< -t fastcnsl-macos-arm64 docker
 	@mkdir -p $(dir $@) && touch $@
 
 LINUX   = $(call docker_run,fastcnsl-linux-x86_64,target/linux-x86_64) scripts/package/linux-x86_64.sh
@@ -145,7 +145,7 @@ macos-arm64-dmg: macos-arm64
 # ------------------------------------------------------------- development
 
 $(DEV_STAMP): Dockerfile.dev
-	docker build -f Dockerfile.dev -t $(DEV_IMAGE) docker
+	docker buildx build --load -f Dockerfile.dev -t $(DEV_IMAGE) docker
 	@mkdir -p $(dir $@) && touch $@
 
 build: $(DEV_STAMP)
